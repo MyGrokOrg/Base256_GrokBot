@@ -295,15 +295,31 @@ namespace detail_math {
     return a;
 }
 
+namespace detail_math {
+// sin/cos/tan of |x| through the dd path. Returns false for |x| >= 2^100
+// (caller falls back to the float256 reduction).
+inline bool trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) {
+    if (ilogb(ax) >= detail_dd::kTrigExactExp) return false;
+    const detail_dd::dd r = detail_dd::reduce_pio2(ax, quad);
+    detail_dd::sincos_reduced(r, s, c);
+    return true;
+}
+} // namespace detail_math
+
 [[nodiscard]] inline float256 sin(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan() || x.iszero()) return x;
     if (x.isinf()) return float256::qnan();
     int quad = 0;
     const bool neg = x.signbit();
+    detail_dd::dd sd, cd;
+    if (detail_math::trig_dd(abs(x), sd, cd, quad)) {
+        detail_dd::dd y = (quad & 1) ? cd : sd;
+        if (quad >= 2) y = -y;
+        const float256 out = y.round();
+        return neg ? -out : out;
+    }
     float256 r = reduce_trig(x, quad);
-    // Exact multiples of π/2 reduce to 0. Taylor then yields a spurious −0
-    // in the odd quadrants (sin(π), cos(π/2)).
     if (r.iszero()) {
         switch (quad) {
             case 0: return copysign(float256::zero(), x);
@@ -331,6 +347,15 @@ namespace detail_math {
     if (x.isinf()) return float256::qnan();
     if (x.iszero()) return float256::one();
     int quad = 0;
+    detail_dd::dd sd, cd;
+    if (detail_math::trig_dd(abs(x), sd, cd, quad)) {
+        switch (quad) {
+            case 0: return cd.round();
+            case 1: return (-sd).round();
+            case 2: return (-cd).round();
+            default: return sd.round();
+        }
+    }
     float256 r = reduce_trig(x, quad);
     if (r.iszero()) {
         switch (quad) {
@@ -356,10 +381,14 @@ namespace detail_math {
     if (x.isinf()) return float256::qnan();
     if (x.iszero()) return x;
     int quad = 0;
+    detail_dd::dd sd, cd;
+    if (detail_math::trig_dd(abs(x), sd, cd, quad)) {
+        // tan = s/c in even quadrants, -c/s in odd ones.
+        const float256 t = ((quad & 1) ? -(cd / sd) : sd / cd).round();
+        return x.signbit() ? -t : t;
+    }
     const float256 r = reduce_trig(x, quad);
     if (r.iszero()) {
-        // Exact multiple of π/2. Even quadrants are kπ (signed zero);
-        // odd quadrants are the poles.
         if ((quad & 1) == 0) return copysign(float256::zero(), x);
         return float256::inf(x.signbit());
     }

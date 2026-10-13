@@ -54,7 +54,7 @@ if(BUILD_TESTING)
         add_test(NAME mpfr_diff COMMAND mpfr_diff ${BASE256_MPFR_CASES} 12345)
         # Elementary-function error bounds (ulps) against a 1100-bit MPFR reference.
         set(BASE256_ULP_CASES "300" CACHE STRING "Random cases per function for the ctest ulp run")
-        set(BASE256_ULP_FUNCS "exp exp2 expm1 log log2 log10 logn1 log1p log1pn cbrt pow")
+        set(BASE256_ULP_FUNCS "exp exp2 expm1 log log2 log10 logn1 log1p log1pn cbrt pow sin cos tan sin_kpi cos_kpi tan_kpi")
         add_executable(mpfr_ulp tests/mpfr_ulp.cpp)
         target_include_directories(mpfr_ulp PRIVATE ${MPFR_INCLUDE_DIR})
         target_link_libraries(mpfr_ulp PRIVATE base256 ${MPFR_LIBRARY} ${GMP_LIBRARY})

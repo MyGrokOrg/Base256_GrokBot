@@ -206,4 +206,54 @@ struct Scaled { dd m; int k; };
     return y;
 }
 
+/// Cody–Waite reduction by π/2 split into five float256 parts (~1190 bits):
+/// x = k·π/2 + r, |r| <= π/4, quadrant = k mod 4. Valid for |x| < 2^100
+/// (k is an exact float256 integer and the reduced angle keeps > 474 bits).
+inline constexpr int kTrigExactExp = 100;
+[[nodiscard]] inline dd reduce_pio2(float256 x, int& quadrant) {
+    const auto& c = consts();
+    const float256 kf = base256::round(x / c.pio2[0]);
+    dd r = dd(x) - two_prod(kf, c.pio2[0]);
+    r = r - two_prod(kf, c.pio2[1]);
+    r = r - two_prod(kf, c.pio2[2]);
+    r = r - two_prod(kf, c.pio2[3]);
+    r = r - dd(kf * c.pio2[4]);
+    const float256 q = float256::remainder_impl(kf, float256::from_int(4), false, nullptr);
+    int qi = static_cast<int>(q.to_double());
+    if (qi < 0) qi += 4;
+    quadrant = qi;
+    return r;
+}
+
+/// sin and cos of a dd |r| <= ~0.8: Taylor at r/2^8, then 8 double-angle steps.
+inline void sincos_reduced(const dd& r, dd& s, dd& c) {
+    const dd one{float256::one()};
+    if (r.hi.iszero()) { s = r; c = one; return; }
+    if (base256::abs(r.hi) < base256::ldexp(float256::one(), -120)) {
+        const dd r2 = r * r;
+        s = r - r2 * r / dd(float256::from_int(6));
+        c = one - ldexp(r2, -1);
+        return;
+    }
+    constexpr int kHalf = 8;
+    const dd x = ldexp(r, -kHalf);
+    const dd x2 = x * x;
+    dd ts = x, ss = x, tc = one, sc = one;
+    const float256 tiny = base256::ldexp(float256::one(), -490);
+    for (int n = 1; n <= 40; ++n) {
+        ts = -(ts * x2 / dd(float256::from_int((2 * n) * (2 * n + 1))));
+        tc = -(tc * x2 / dd(float256::from_int((2 * n - 1) * (2 * n))));
+        ss = ss + ts;
+        sc = sc + tc;
+        if (base256::abs(tc.hi) < tiny) break;
+    }
+    for (int i = 0; i < kHalf; ++i) {
+        const dd s2 = ldexp(ss * sc, 1);
+        sc = one - ldexp(ss * ss, 1);
+        ss = s2;
+    }
+    s = ss;
+    c = sc;
+}
+
 } // namespace base256::detail_dd

@@ -284,6 +284,18 @@ inline void sincos(float256 x, float256* sin_out, float256* cos_out) {
     }
     int quad = 0;
     const bool neg = x.signbit();
+    {
+        detail_dd::dd sd, cd;
+        if (detail_math::trig_dd(abs(x), sd, cd, quad)) {
+            detail_dd::dd sv = (quad & 1) ? cd : sd;
+            detail_dd::dd cv = (quad & 1) ? -sd : cd;
+            if (quad >= 2) { sv = -sv; cv = -cv; }
+            const float256 so = sv.round();
+            if (sin_out) *sin_out = neg ? -so : so;
+            if (cos_out) *cos_out = cv.round();
+            return;
+        }
+    }
     const float256 r = reduce_trig(x, quad);
     float256 ss;
     float256 cc;

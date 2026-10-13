@@ -87,6 +87,7 @@ struct Fn {
     double lo, hi; bool logscale; bool neg_too;
     double bound;
     double maxabs;
+    int gen = 0;  // 1: near multiples of pi/2
 };
 } // namespace
 
@@ -108,6 +109,9 @@ int main(int argc, char** argv) {
         {"sin",   [](float256 x){return sin(x);},   mpfr_sin,   -120, 100, true, true, 1, 0},
         {"cos",   [](float256 x){return cos(x);},   mpfr_cos,   -120, 100, true, true, 1, 0},
         {"tan",   [](float256 x){return tan(x);},   mpfr_tan,   -120, 100, true, true, 1, 0},
+        {"sin_kpi",[](float256 x){return sin(x);},  mpfr_sin,   0, 99, false, true, 1, 0, 1},
+        {"cos_kpi",[](float256 x){return cos(x);},  mpfr_cos,   0, 99, false, true, 1, 0, 1},
+        {"tan_kpi",[](float256 x){return tan(x);},  mpfr_tan,   0, 99, false, true, 1, 0, 1},
         {"atan",  [](float256 x){return atan(x);},  mpfr_atan,  -120, 300, true, true, 1, 0},
         {"asin",  [](float256 x){return asin(x);},  mpfr_asin,  -120, 0, true, true, 1, 1},
         {"acos",  [](float256 x){return acos(x);},  mpfr_acos,  -120, 0, true, true, 1, 1},
@@ -131,6 +135,20 @@ int main(int argc, char** argv) {
         double worst = 0; float256 wx;
         for (long i = 0; i < n; ++i) {
             float256 x = rnd_in(f.lo, f.hi, f.logscale);
+            if (f.gen == 1) {
+                // the float256 nearest to k*pi/2 for k up to 2^(lo..hi)
+                const int bits = static_cast<int>(f.lo + (f.hi - f.lo) * std::uniform_real_distribution<double>(0, 1)(rng));
+                float256 k = trunc(ldexp(rnd_in(0, 1, false), bits)) + float256::one();
+                mpfr_t t; mpfr_init2(t, 1400);
+                mpfr_const_pi(t, MPFR_RNDN); mpfr_div_2ui(t, t, 1, MPFR_RNDN);
+                mpfr_t km; mpfr_init2(km, 300); to_mpfr(km, k);
+                mpfr_mul(t, t, km, MPFR_RNDN);
+                mpfr_t q; mpfr_init2(q, 237); mpfr_set(q, t, MPFR_RNDN);
+                // read back via hex string
+                char* str = nullptr; mpfr_asprintf(&str, "%Ra", q);
+                x = float256::parse(str).value();
+                mpfr_free_str(str); mpfr_clears(t, km, q, (mpfr_ptr)0);
+            }
             if (f.neg_too && (rng() & 1)) x = -x;
             if (f.maxabs > 0 && abs(x) > float256(f.maxabs)) { --i; continue; }
             to_mpfr(xm, x);

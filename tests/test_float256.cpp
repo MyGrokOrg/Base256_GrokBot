@@ -343,16 +343,19 @@ int main() {
         CHECK(base256::atan2(float256::one(), ninf) == float256::pi());
     }
 
-    // --- trig at exact multiples of the library π --------------------------
+    // --- trig next to multiples of π: float256::pi() is π rounded, so
+    // sin(pi()) is the rounding residual π - pi(), not zero.
     {
-        CHECK(base256::sin(float256::pi()).iszero() && !base256::sin(float256::pi()).signbit());
-        CHECK(base256::sin(-float256::pi()).iszero() && base256::sin(-float256::pi()).signbit());
-        CHECK(base256::cos(float256::pi() * float256::half()).iszero());
-        CHECK(!base256::cos(float256::pi() * float256::half()).signbit());
+        const float256 d_pi = float256::parse("0xe.6c89452821e638d01377be5466cf34e90c6cc0ac29b7c97c50dd3f84d58p-240").value();
+        const float256 d_pio2 = float256::parse("0x7.3644a29410f31c6809bbdf2a33679a748636605614dbe4be286e9fc26acp-240").value();
+        CHECK(base256::sin(float256::pi()) == d_pi);
+        CHECK(base256::sin(-float256::pi()) == -d_pi);
+        CHECK(base256::cos(float256::pi() * float256::half()) == d_pio2);
         CHECK(base256::cos(float256::pi()) == -float256::one());
-        CHECK(base256::tan(float256::pi()).iszero() && !base256::tan(float256::pi()).signbit());
-        CHECK(base256::tan(float256::pi() * float256::half()).isinf());
-        CHECK(!base256::tan(float256::pi() * float256::half()).signbit());
+        CHECK(base256::tan(float256::pi()) == -d_pi);
+        CHECK(base256::tan(float256::pi() * float256::half()) > ldexp(float256::one(), 236));
+        // 1e22 reduces through Cody–Waite with the 1190-bit π/2.
+        CHECK(abs(base256::sin(float256(1e22)) + "0.8522008497671888017727"_f256) < "1e-22"_f256);
     }
 
     // --- rint (ties to even), modf, nextup ---------------------------------
