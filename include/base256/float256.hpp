@@ -736,7 +736,11 @@ constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
         if (uc.kind == Kind::inf && uc.sign != psign) return pack(make_nan());
         return inf(psign);
     }
-    if (a_z || b_z) return pack(uc);
+    if (a_z || b_z) {
+        // (±0) + c: exact. Two zeros of opposite sign sum to +0.
+        if (uc.kind == Kind::zero) return zero(psign && uc.sign);
+        return pack(uc);
+    }
 
     const u512 p = mul_wide(ua.sig, ub.sig);
     int pexp = ua.wexp + ub.wexp;

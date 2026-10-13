@@ -464,6 +464,15 @@ int main() {
         CHECK(y.to_double() == std::ldexp(1.0, -1065));
     }
 
+    // --- regression: fma with an exact zero product ----------------------
+    {
+        const float256 z = float256::zero(), nz = -float256::zero();
+        CHECK(!base256::fma(z, z, nz).signbit());   // +0 + -0 = +0
+        CHECK(!base256::fma(nz, z, z).signbit());   // -0 + +0 = +0
+        CHECK(base256::fma(nz, z, nz).signbit());   // -0 + -0 = -0
+        CHECK(base256::fma(z, float256::one(), float256(3.0)) == float256(3.0));
+    }
+
     std::cout << "passed=" << g_pass << " failed=" << g_fails << "\n";
     return g_fails ? 1 : 0;
 }
