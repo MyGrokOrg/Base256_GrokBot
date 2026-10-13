@@ -80,6 +80,52 @@ float256 rnd_in(double lo, double hi, bool logscale) {
     return base256::ldexp(float256::one() + t, ex);
 }
 
+// x = M·2^E (M a 237-bit integer) that is unusually close to a multiple of
+// π/2: M is a multiple of the largest continued-fraction denominator q <= 2^237
+// of α = frac(2^E · 2/π), so M·α is within about M/q² of an integer.
+float256 hard_trig(long E) {
+    const long prec = (E > 0 ? E : 0) + 1000;
+    mpfr_t c; mpfr_init2(c, prec);
+    mpfr_const_pi(c, MPFR_RNDN); mpfr_ui_div(c, 2, c, MPFR_RNDN);
+    if (E >= 0) mpfr_mul_2ui(c, c, static_cast<unsigned long>(E), MPFR_RNDN);
+    else mpfr_div_2ui(c, c, static_cast<unsigned long>(-E), MPFR_RNDN);
+    mpfr_frac(c, c, MPFR_RNDN);
+    mpfr_mul_2ui(c, c, 700, MPFR_RNDN);
+    mpz_t a, b, q0, q1, t, lim, qq;
+    mpz_inits(a, b, q0, q1, t, lim, qq, (mpz_ptr)0);
+    mpfr_get_z(a, c, MPFR_RNDZ);
+    mpz_set_ui(b, 1); mpz_mul_2exp(b, b, 700);  // α = a/b
+    mpz_set_ui(lim, 1); mpz_mul_2exp(lim, lim, 237);
+    mpz_set_ui(q0, 0); mpz_set_ui(q1, 1);  // q_{-1}, q_0 for α < 1: CF [0; a1, a2, ...]
+    // Euclid on b/a gives partial quotients of α = a/b.
+    mpz_t num, den; mpz_inits(num, den, (mpz_ptr)0);
+    mpz_set(num, b); mpz_set(den, a);
+    mpz_set_ui(q0, 1); mpz_set_ui(q1, 0);  // q_{-1}=0? use standard: q_{-2}=1? keep q_prev=0, q_cur=1
+    mpz_set_ui(q0, 0); mpz_set_ui(q1, 1);
+    mpz_set(qq, q1);
+    while (mpz_sgn(den) != 0) {
+        mpz_fdiv_qr(t, num, num, den);       // t = partial quotient
+        mpz_swap(num, den);
+        mpz_mul(t, t, q1); mpz_add(t, t, q0);  // q_new = t q1 + q0
+        if (mpz_cmp(t, lim) >= 0) break;
+        mpz_set(q0, q1); mpz_set(q1, t);
+        mpz_set(qq, q1);
+    }
+    // M = m·q in [2^236, 2^237)
+    mpz_t M; mpz_init(M);
+    mpz_sub_ui(t, lim, 1);
+    mpz_fdiv_q(t, t, qq);
+    mpz_mul(M, t, qq);
+    mpfr_t xm; mpfr_init2(xm, 237);
+    mpfr_set_z_2exp(xm, M, E, MPFR_RNDN);
+    char* str = nullptr; mpfr_asprintf(&str, "%Ra", xm);
+    const float256 x = float256::parse(str).value();
+    mpfr_free_str(str);
+    mpfr_clears(c, xm, (mpfr_ptr)0);
+    mpz_clears(a, b, q0, q1, t, lim, qq, num, den, M, (mpz_ptr)0);
+    return x;
+}
+
 int mpfr_lngamma_abs(mpfr_ptr r, mpfr_srcptr x, mpfr_rnd_t rnd) { int sg; return mpfr_lgamma(r, &sg, x, rnd); }
 
 struct Fn {
@@ -89,7 +135,7 @@ struct Fn {
     double lo, hi; bool logscale; bool neg_too;
     double bound;
     double maxabs;
-    int gen = 0;  // 1: near multiples of pi/2, 2: 1 - 2^[lo,hi), 3: 1 + 2^[lo,hi), 4: negated, 5: 2 ± 2^[lo,hi)
+    int gen = 0;  // 1: near multiples of pi/2, 2: 1 - 2^[lo,hi), 3: 1 + 2^[lo,hi), 4: negated, 5: 2 ± 2^[lo,hi), 6: hard_trig(E in [lo,hi))
 };
 } // namespace
 
@@ -118,6 +164,14 @@ int main(int argc, char** argv) {
         {"acos1", [](float256 x){return acos(x);},  mpfr_acos,  -236, -1, true, true, 1, 0, 2},
         {"atanh1",[](float256 x){return atanh(x);}, mpfr_atanh, -236, -1, true, true, 1, 0, 2},
         {"acosh1",[](float256 x){return acosh(x);}, mpfr_acosh, -236, -1, true, false, 1, 0, 3},
+        {"sin_all",[](float256 x){return sin(x);},  mpfr_sin,   -120, 262143, true, true, 1, 0},
+        {"cos_all",[](float256 x){return cos(x);},  mpfr_cos,   -120, 262143, true, true, 1, 0},
+        {"tan_all",[](float256 x){return tan(x);},  mpfr_tan,   -120, 262143, true, true, 1, 0},
+        {"sin_kbig",[](float256 x){return sin(x);}, mpfr_sin,   100, 262140, false, true, 1, 0, 1},
+        {"sin_hard",[](float256 x){return sin(x);}, mpfr_sin,   -236, 261907, false, true, 1, 0, 6},
+        {"cos_hard",[](float256 x){return cos(x);}, mpfr_cos,   -236, 261907, false, true, 1, 0, 6},
+        {"tan_hard",[](float256 x){return tan(x);}, mpfr_tan,   -236, 261907, false, true, 1, 0, 6},
+        {"sin_hardcw",[](float256 x){return sin(x);}, mpfr_sin, -236, -137, false, true, 1, 0, 6},
         {"atan",  [](float256 x){return atan(x);},  mpfr_atan,  -120, 300, true, true, 1, 0},
         {"asin",  [](float256 x){return asin(x);},  mpfr_asin,  -120, 0, true, true, 1, 1},
         {"acos",  [](float256 x){return acos(x);},  mpfr_acos,  -120, 0, true, true, 1, 1},
@@ -150,13 +204,14 @@ int main(int argc, char** argv) {
             if (f.gen == 5) x = float256::two() + x;
             if (f.gen == 3) x = float256::one() + rnd_in(f.lo, f.hi, true);
             if (f.gen == 2) x = copysign(float256::one() - rnd_in(f.lo, f.hi, true), x);
+            if (f.gen == 6) x = hard_trig(static_cast<long>(f.lo + (f.hi - f.lo) * std::uniform_real_distribution<double>(0, 1)(rng)));
             if (f.gen == 1) {
                 // the float256 nearest to k*pi/2 for k up to 2^(lo..hi)
                 const int bits = static_cast<int>(f.lo + (f.hi - f.lo) * std::uniform_real_distribution<double>(0, 1)(rng));
                 float256 k = trunc(ldexp(rnd_in(0, 1, false), bits)) + float256::one();
-                mpfr_t t; mpfr_init2(t, 1400);
+                mpfr_t t; mpfr_init2(t, bits + 1400);
                 mpfr_const_pi(t, MPFR_RNDN); mpfr_div_2ui(t, t, 1, MPFR_RNDN);
-                mpfr_t km; mpfr_init2(km, 300); to_mpfr(km, k);
+                mpfr_t km; mpfr_init2(km, 300 + 0 * bits); to_mpfr(km, k);
                 mpfr_mul(t, t, km, MPFR_RNDN);
                 mpfr_t q; mpfr_init2(q, 237); mpfr_set(q, t, MPFR_RNDN);
                 // read back via hex string
