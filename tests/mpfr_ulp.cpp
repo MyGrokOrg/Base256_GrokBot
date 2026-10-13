@@ -87,7 +87,7 @@ struct Fn {
     double lo, hi; bool logscale; bool neg_too;
     double bound;
     double maxabs;
-    int gen = 0;  // 1: near multiples of pi/2, 2: 1 - 2^[lo,hi)
+    int gen = 0;  // 1: near multiples of pi/2, 2: 1 - 2^[lo,hi), 3: 1 + 2^[lo,hi)
 };
 } // namespace
 
@@ -114,6 +114,8 @@ int main(int argc, char** argv) {
         {"tan_kpi",[](float256 x){return tan(x);},  mpfr_tan,   0, 99, false, true, 1, 0, 1},
         {"asin1", [](float256 x){return asin(x);},  mpfr_asin,  -236, -1, true, true, 1, 0, 2},
         {"acos1", [](float256 x){return acos(x);},  mpfr_acos,  -236, -1, true, true, 1, 0, 2},
+        {"atanh1",[](float256 x){return atanh(x);}, mpfr_atanh, -236, -1, true, true, 1, 0, 2},
+        {"acosh1",[](float256 x){return acosh(x);}, mpfr_acosh, -236, -1, true, false, 1, 0, 3},
         {"atan",  [](float256 x){return atan(x);},  mpfr_atan,  -120, 300, true, true, 1, 0},
         {"asin",  [](float256 x){return asin(x);},  mpfr_asin,  -120, 0, true, true, 1, 1},
         {"acos",  [](float256 x){return acos(x);},  mpfr_acos,  -120, 0, true, true, 1, 1},
@@ -137,6 +139,7 @@ int main(int argc, char** argv) {
         double worst = 0; float256 wx;
         for (long i = 0; i < n; ++i) {
             float256 x = rnd_in(f.lo, f.hi, f.logscale);
+            if (f.gen == 3) x = float256::one() + rnd_in(f.lo, f.hi, true);
             if (f.gen == 2) x = copysign(float256::one() - rnd_in(f.lo, f.hi, true), x);
             if (f.gen == 1) {
                 // the float256 nearest to k*pi/2 for k up to 2^(lo..hi)

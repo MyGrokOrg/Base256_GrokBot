@@ -84,42 +84,51 @@ namespace detail_spec {
 
 [[nodiscard]] inline float256 asinh(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    using detail_dd::dd;
     if (x.isnan() || x.isinf() || x.iszero()) return x;
-    const bool s = x.signbit();
     const float256 a = abs(x);
     float256 y;
-    // asinh(x) = log(x + sqrt(x^2+1)); for large x, log(2x).
-    const float256 thresh = ldexp(float256::one(), 64);
-    if (a > thresh) {
-        y = log(a) + float256::ln2();
+    if (a < ldexp(float256::one(), -120)) {
+        y = (dd(a) - dd(a * a * a / float256::from_int(6))).round();
+    } else if (a > ldexp(float256::one(), 300)) {
+        y = (detail_dd::log(dd(a)) + detail_dd::ln2()).round();  // log(2a); 1/(4a^2) is negligible
     } else {
-        y = log1p(a + a * a / (float256::one() + sqrt(a * a + float256::one())));
+        const dd r = detail_dd::sqrt(detail_dd::two_prod(a, a) + dd(float256::one()));
+        y = detail_dd::log(dd(a) + r).round();
     }
-    return s ? -y : y;
+    return x.signbit() ? -y : y;
 }
 
 [[nodiscard]] inline float256 acosh(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    using detail_dd::dd;
     if (x.isnan()) return x;
     if (x < float256::one()) return float256::qnan();
     if (x == float256::one()) return float256::zero();
     if (x.isinf()) return x;
-    const float256 thresh = ldexp(float256::one(), 64);
-    if (x > thresh) return log(x) + float256::ln2();
-    // acosh(x) = log(x + sqrt(x^2-1)) = log1p(x-1 + sqrt((x-1)(x+1)))
-    const float256 xm1 = x - float256::one();
-    return log1p(xm1 + sqrt(xm1 * (x + float256::one())));
+    if (x > ldexp(float256::one(), 300)) return (detail_dd::log(dd(x)) + detail_dd::ln2()).round();
+    const dd xm1 = detail_dd::two_sum(x, -float256::one());
+    const dd xp1 = detail_dd::two_sum(x, float256::one());
+    return detail_dd::log(dd(x) + detail_dd::sqrt(xm1 * xp1)).round();
 }
 
 [[nodiscard]] inline float256 atanh(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    using detail_dd::dd;
     if (x.isnan()) return x;
     if (x.iszero()) return x;
     const float256 a = abs(x);
     if (a > float256::one()) return float256::qnan();
     if (a == float256::one()) return float256::inf(x.signbit());
-    // atanh(x) = 1/2 log((1+x)/(1-x)) = 1/2 log1p(2x/(1-x))
-    const float256 y = log1p((a + a) / (float256::one() - a)) * float256::half();
+    float256 y;
+    if (a < ldexp(float256::one(), -120)) {
+        y = (dd(a) + dd(a * a * a / float256::from_int(3))).round();
+    } else {
+        // (log(1 + a) - log(1 - a)) / 2, with 1 ± a exact as dd.
+        const dd lp = detail_dd::log(detail_dd::two_sum(float256::one(), a));
+        const dd lm = detail_dd::log(detail_dd::two_sum(float256::one(), -a));
+        y = detail_dd::ldexp(lp - lm, -1).round();
+    }
     return x.signbit() ? -y : y;
 }
 

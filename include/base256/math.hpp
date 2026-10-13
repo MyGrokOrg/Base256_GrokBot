@@ -547,45 +547,64 @@ namespace detail_math {
 
 [[nodiscard]] inline float256 sinh(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    using detail_dd::dd;
     if (x.isnan() || x.isinf() || x.iszero()) return x;
     const float256 a = abs(x);
     float256 y;
-    if (a < float256::one()) {
-        // (e^a - e^{-a})/2 = (em + em/(em+1))/2, exact in expm1.
-        // exp(a) - exp(-a) cancels the whole result when |a| << 1.
-        const float256 em = expm1(a);
-        y = (em + em / (em + float256::one())) * float256::half();
+    if (a > float256(181800)) {
+        y = float256::inf(false);
+    } else if (a < ldexp(float256::one(), -120)) {
+        y = (dd(a) + dd(a * a * a / float256::from_int(6))).round();
+    } else if (a <= float256(0.34)) {
+        // (em + em/(em+1))/2 with em = expm1(a): no cancellation.
+        const dd em = detail_dd::expm1_reduced(dd(a));
+        y = detail_dd::ldexp(em + em / (em + dd(float256::one())), -1).round();
     } else {
-        const float256 e = exp(a);
-        y = (e - float256::one() / e) * float256::half();
+        const detail_dd::Scaled e = detail_dd::exp_scaled(dd(a));
+        if (e.k > 300) {
+            y = detail_dd::round_scaled(e.m, e.k - 1);
+        } else {
+            const dd E = detail_dd::ldexp(e.m, e.k);
+            y = detail_dd::ldexp(E - dd(float256::one()) / E, -1).round();
+        }
     }
     return x.signbit() ? -y : y;
 }
 [[nodiscard]] inline float256 cosh(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    using detail_dd::dd;
     if (x.isnan()) return x;
     if (x.isinf()) return float256::inf(false);
     const float256 a = abs(x);
-    if (a < float256::one()) {
-        // cosh(x) = 1 + 2 sinh(x/2)^2 keeps the departure from 1.
-        const float256 s = sinh(a * float256::half());
-        return float256::one() + (s + s) * s;
+    if (a > float256(181800)) return float256::inf(false);
+    if (a < ldexp(float256::one(), -120)) return (dd(float256::one()) + dd(ldexp(a * a, -1))).round();
+    if (a <= float256(0.34)) {
+        // 1 + em^2 / (2 (1 + em))
+        const dd em = detail_dd::expm1_reduced(dd(a));
+        return (dd(float256::one()) + detail_dd::ldexp(em * em / (em + dd(float256::one())), -1)).round();
     }
-    const float256 e = exp(a);
-    return (e + float256::one() / e) * float256::half();
+    const detail_dd::Scaled e = detail_dd::exp_scaled(dd(a));
+    if (e.k > 300) return detail_dd::round_scaled(e.m, e.k - 1);
+    const dd E = detail_dd::ldexp(e.m, e.k);
+    return detail_dd::ldexp(E + dd(float256::one()) / E, -1).round();
 }
 [[nodiscard]] inline float256 tanh(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    using detail_dd::dd;
     if (x.isnan()) return x;
     if (x.isinf()) return copysign(float256::one(), x);
     if (x.iszero()) return x;
     const float256 a = abs(x);
-    // 1 - tanh(x) ≈ 2 exp(-2|x|) drops below ½ ulp(1) once |x| >= 83,
-    // so the result is exactly ±1. Below that, exp(2x) is still finite;
-    // past it, exp(2x) overflows and (inf-1)/(inf+1) would be NaN.
+    // 1 - tanh(x) ≈ 2 exp(-2|x|) is below ulp(1)/4 once |x| >= 83.
     if (a >= float256::from_int(83)) return copysign(float256::one(), x);
-    const float256 e = expm1(x + x);
-    return e / (e + float256::two());
+    float256 y;
+    if (a < ldexp(float256::one(), -120)) {
+        y = (dd(a) - dd(a * a * a / float256::from_int(3))).round();
+    } else {
+        const dd em = detail_dd::expm1(dd(a + a));
+        y = (em / (em + dd(float256::two()))).round();
+    }
+    return x.signbit() ? -y : y;
 }
 
 /// Exact: x - trunc(x/y)*y, sign of x. invalid for y == 0 or x infinite.
