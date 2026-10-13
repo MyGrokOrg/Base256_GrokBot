@@ -195,7 +195,8 @@ public:
         return true;
     }
 
-    // this := floor(this / divisor), returns remainder. Divisor is a BigInt.
+    // this := floor(this / divisor), returns remainder. Knuth, TAOCP 4.3.1
+    // Algorithm D on 32-bit limbs: O(len(this) * len(divisor)).
     BigInt divmod(const BigInt& divisor) {
         if (divisor.is_zero()) return {};
         if (*this < divisor) {
@@ -203,26 +204,106 @@ public:
             d.clear();
             return rem;
         }
-        const int nbits = bit_length();
-        BigInt quot;
-        BigInt rem;
-        for (int i = nbits - 1; i >= 0; --i) {
-            rem.shl(1);
-            if (bit(i)) rem.add_u32(1);
-            if (!(rem < divisor)) {
-                rem.sub(divisor);
-                // set bit i of quot
-                const int limb = i / 32;
-                const int b = i % 32;
-                if (limb >= static_cast<int>(quot.d.size())) {
-                    quot.d.resize(static_cast<std::size_t>(limb) + 1, 0);
+        const std::size_t n = divisor.d.size();
+        if (n == 1) {
+            const std::uint64_t v = divisor.d[0];
+            std::uint64_t rem = 0;
+            for (std::size_t i = d.size(); i-- > 0;) {
+                const std::uint64_t cur = (rem << 32) | d[i];
+                d[i] = static_cast<std::uint32_t>(cur / v);
+                rem = cur % v;
+            }
+            normalize();
+            return BigInt(rem);
+        }
+        const std::size_t m = d.size() - n;
+        const int sh = std::countl_zero(divisor.d.back());
+        // Normalize: shift so the divisor's top limb has its high bit set.
+        std::vector<std::uint32_t> v(n), u(d.size() + 1, 0);
+        for (std::size_t i = n; i-- > 0;) {
+            std::uint64_t x = static_cast<std::uint64_t>(divisor.d[i]) << sh;
+            if (sh && i > 0) x |= static_cast<std::uint64_t>(divisor.d[i - 1]) >> (32 - sh);
+            v[i] = static_cast<std::uint32_t>(x);
+        }
+        u[d.size()] = sh ? static_cast<std::uint32_t>(static_cast<std::uint64_t>(d.back()) >> (32 - sh)) : 0;
+        for (std::size_t i = d.size(); i-- > 0;) {
+            std::uint64_t x = static_cast<std::uint64_t>(d[i]) << sh;
+            if (sh && i > 0) x |= static_cast<std::uint64_t>(d[i - 1]) >> (32 - sh);
+            u[i] = static_cast<std::uint32_t>(x);
+        }
+        std::vector<std::uint32_t> q(m + 1, 0);
+        const std::uint64_t B = 1ULL << 32;
+        for (std::size_t j = m + 1; j-- > 0;) {
+            const std::uint64_t num = (static_cast<std::uint64_t>(u[j + n]) << 32) | u[j + n - 1];
+            std::uint64_t qhat = num / v[n - 1];
+            std::uint64_t rhat = num % v[n - 1];
+            while (qhat >= B || qhat * v[n - 2] > ((rhat << 32) | u[j + n - 2])) {
+                --qhat;
+                rhat += v[n - 1];
+                if (rhat >= B) break;
+            }
+            // u[j..j+n] -= qhat * v
+            std::int64_t borrow = 0;
+            std::uint64_t carry = 0;
+            for (std::size_t i = 0; i < n; ++i) {
+                const std::uint64_t p = qhat * v[i] + carry;
+                carry = p >> 32;
+                const std::int64_t t = static_cast<std::int64_t>(u[i + j]) - borrow -
+                                       static_cast<std::int64_t>(p & 0xFFFFFFFFULL);
+                u[i + j] = static_cast<std::uint32_t>(t);
+                borrow = t < 0 ? 1 : 0;
+            }
+            const std::int64_t t = static_cast<std::int64_t>(u[j + n]) - borrow -
+                                   static_cast<std::int64_t>(carry);
+            u[j + n] = static_cast<std::uint32_t>(t);
+            if (t < 0) {
+                // add back
+                --qhat;
+                std::uint64_t c = 0;
+                for (std::size_t i = 0; i < n; ++i) {
+                    const std::uint64_t s2 = static_cast<std::uint64_t>(u[i + j]) + v[i] + c;
+                    u[i + j] = static_cast<std::uint32_t>(s2);
+                    c = s2 >> 32;
                 }
-                quot.d[static_cast<std::size_t>(limb)] |= (1u << b);
+                u[j + n] = static_cast<std::uint32_t>(static_cast<std::uint64_t>(u[j + n]) + c);
+            }
+            q[j] = static_cast<std::uint32_t>(qhat);
+        }
+        // Remainder: u[0..n-1] >> sh
+        BigInt rem;
+        rem.d.resize(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            std::uint64_t x = static_cast<std::uint64_t>(u[i]) >> sh;
+            if (sh) x |= (static_cast<std::uint64_t>(u[i + 1]) << (32 - sh)) & 0xFFFFFFFFULL;
+            rem.d[i] = static_cast<std::uint32_t>(x);
+        }
+        rem.normalize();
+        d = std::move(q);
+        normalize();
+        return rem;
+    }
+
+    // this *= b (schoolbook; intended for a small b).
+    void mul(const BigInt& b) {
+        if (is_zero() || b.is_zero()) { d.clear(); return; }
+        std::vector<std::uint32_t> r(d.size() + b.d.size(), 0);
+        for (std::size_t i = 0; i < b.d.size(); ++i) {
+            std::uint64_t c = 0;
+            const std::uint64_t bi = b.d[i];
+            for (std::size_t j = 0; j < d.size(); ++j) {
+                const std::uint64_t t = static_cast<std::uint64_t>(r[i + j]) + bi * d[j] + c;
+                r[i + j] = static_cast<std::uint32_t>(t);
+                c = t >> 32;
+            }
+            std::size_t k = i + d.size();
+            while (c) {
+                const std::uint64_t t = static_cast<std::uint64_t>(r[k]) + c;
+                r[k++] = static_cast<std::uint32_t>(t);
+                c = t >> 32;
             }
         }
-        quot.normalize();
-        *this = std::move(quot);
-        return rem;
+        d = std::move(r);
+        normalize();
     }
 
     void sub(const BigInt& b) {
@@ -286,8 +367,19 @@ public:
         BigInt tmp = *this;
         std::string s;
         while (!tmp.is_zero()) {
-            const std::uint32_t r = tmp.divmod10();
-            s.push_back(static_cast<char>('0' + r));
+            // divide by 10^9 per step
+            std::uint64_t rem = 0;
+            for (std::size_t i = tmp.d.size(); i-- > 0;) {
+                const std::uint64_t cur = (rem << 32) | tmp.d[i];
+                tmp.d[i] = static_cast<std::uint32_t>(cur / 1000000000ULL);
+                rem = cur % 1000000000ULL;
+            }
+            tmp.normalize();
+            for (int k = 0; k < 9; ++k) {
+                s.push_back(static_cast<char>('0' + rem % 10));
+                rem /= 10;
+                if (tmp.is_zero() && rem == 0) break;
+            }
         }
         std::reverse(s.begin(), s.end());
         return s;
