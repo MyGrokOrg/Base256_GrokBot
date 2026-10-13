@@ -507,6 +507,34 @@ int main() {
         CHECK(float256(1.0L / 3.0L).to_long_double() == 1.0L / 3.0L);
     }
 
+    // --- signaling NaN handling and payload propagation ------------------
+    {
+        const float256 one = float256::one();
+        const float256 sn = float256::snan();
+        CHECK(sn.issignaling());
+        CHECK(!float256::qnan().issignaling());
+        CHECK(!sn.quieted().issignaling() && sn.quieted().isnan());
+        CHECK(base256::fmin(sn, one).isnan());
+        CHECK(base256::fmax(one, sn).isnan());
+        CHECK(!base256::fmin(sn, one).issignaling());
+        CHECK(base256::fmin(float256::qnan(), one) == one);
+        CHECK(base256::minimum(float256::qnan(), one).isnan());
+        CHECK(base256::minimum_number(sn, one) == one);
+        CHECK(base256::minimum(-float256::zero(), float256::zero()).signbit());
+        CHECK(!base256::maximum(-float256::zero(), float256::zero()).signbit());
+        // arithmetic: result is the first NaN operand's payload, quieted
+        auto bits = float256::snan().raw_bits();
+        bits[0] = 0xABCDULL;
+        const float256 payload = float256::from_bits(bits);
+        CHECK(payload.issignaling());
+        const float256 r = payload + one;
+        CHECK(r.isnan() && !r.issignaling());
+        CHECK(r.raw_bits()[0] == 0xABCDULL);
+        CHECK((one * payload).raw_bits()[0] == 0xABCDULL);
+        CHECK((-payload).issignaling());          // sign ops are quiet-computational
+        CHECK(base256::abs(payload).issignaling());
+    }
+
     std::cout << "passed=" << g_pass << " failed=" << g_fails << "\n";
     return g_fails ? 1 : 0;
 }

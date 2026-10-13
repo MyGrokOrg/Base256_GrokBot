@@ -312,6 +312,16 @@ public:
 
     [[nodiscard]] constexpr bool signbit()     const noexcept { return sign_bit(); }
     [[nodiscard]] constexpr bool isnan()       const noexcept { return biased_exp() == detail::kExpAllOnes && !frac_bits().is_zero(); }
+    /// True for a signaling NaN (quiet bit, fraction bit 235, clear).
+    [[nodiscard]] constexpr bool issignaling() const noexcept {
+        return isnan() && (bits_[3] & (1ULL << 43)) == 0;
+    }
+    /// The same NaN with the quiet bit set (payload kept); other values unchanged.
+    [[nodiscard]] constexpr float256 quieted() const noexcept {
+        float256 r = *this;
+        if (isnan()) r.bits_[3] |= (1ULL << 43);
+        return r;
+    }
     [[nodiscard]] constexpr bool isinf()       const noexcept { return biased_exp() == detail::kExpAllOnes &&  frac_bits().is_zero(); }
     [[nodiscard]] constexpr bool isfinite()    const noexcept { return biased_exp() != detail::kExpAllOnes; }
     [[nodiscard]] constexpr bool isnormal()    const noexcept {
@@ -1238,21 +1248,58 @@ inline std::string float256::to_bit_string() const {
     return float256::from_bits(b);
 }
 
+[[nodiscard]] constexpr bool issignaling(float256 x) noexcept { return x.issignaling(); }
+
+// fmin/fmax (C23 semantics, IEEE 754-2008 minNum/maxNum): a quiet NaN operand
+// is treated as missing data and the other operand is returned; a signaling
+// NaN operand yields a quiet NaN (its payload, quieted). Opposite-signed zeros:
+// fmin gives -0, fmax gives +0.
 [[nodiscard]] constexpr float256 fmin(float256 a, float256 b) noexcept {
+    if (a.issignaling()) return a.quieted();
+    if (b.issignaling()) return b.quieted();
     if (a.isnan()) return b;
     if (b.isnan()) return a;
-    // IEEE 754: minNum of opposite-signed zeros is −0.
     if (a.iszero() && b.iszero())
         return float256::zero(a.signbit() || b.signbit());
     return a < b ? a : b;
 }
 [[nodiscard]] constexpr float256 fmax(float256 a, float256 b) noexcept {
+    if (a.issignaling()) return a.quieted();
+    if (b.issignaling()) return b.quieted();
     if (a.isnan()) return b;
     if (b.isnan()) return a;
-    // IEEE 754: maxNum of opposite-signed zeros is +0.
     if (a.iszero() && b.iszero())
         return float256::zero(a.signbit() && b.signbit());
     return a > b ? a : b;
+}
+
+// IEEE 754-2019 minimum/maximum: any NaN operand propagates (quieted);
+// -0 < +0.
+[[nodiscard]] constexpr float256 minimum(float256 a, float256 b) noexcept {
+    if (a.isnan()) return a.quieted();
+    if (b.isnan()) return b.quieted();
+    if (a.iszero() && b.iszero()) return float256::zero(a.signbit() || b.signbit());
+    return a < b ? a : b;
+}
+[[nodiscard]] constexpr float256 maximum(float256 a, float256 b) noexcept {
+    if (a.isnan()) return a.quieted();
+    if (b.isnan()) return b.quieted();
+    if (a.iszero() && b.iszero()) return float256::zero(a.signbit() && b.signbit());
+    return a > b ? a : b;
+}
+// IEEE 754-2019 minimumNumber/maximumNumber: a NaN operand (quiet or
+// signaling) is ignored in favour of a number; NaN only if both are NaN.
+[[nodiscard]] constexpr float256 minimum_number(float256 a, float256 b) noexcept {
+    if (a.isnan() && b.isnan()) return a.quieted();
+    if (a.isnan()) return b;
+    if (b.isnan()) return a;
+    return minimum(a, b);
+}
+[[nodiscard]] constexpr float256 maximum_number(float256 a, float256 b) noexcept {
+    if (a.isnan() && b.isnan()) return a.quieted();
+    if (a.isnan()) return b;
+    if (b.isnan()) return a;
+    return maximum(a, b);
 }
 
 [[nodiscard]] constexpr float256 fma(float256 a, float256 b, float256 c) noexcept {
