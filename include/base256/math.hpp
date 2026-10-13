@@ -395,8 +395,9 @@ inline bool trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) 
     return sin(x) / cos(x);
 }
 
-[[nodiscard]] inline float256 atan(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+namespace detail_math {
+// float256 arctangent, a few ulps; seed for the dd correction below.
+[[nodiscard]] inline float256 atan_seed(float256 x) {
     if (x.isnan() || x.isinf()) {
         if (x.isinf()) return copysign(float256::pi() * float256::half(), x);
         return x;
@@ -438,6 +439,59 @@ inline bool trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) 
     return sign ? -sum : sum;
 }
 
+
+// atan2 seed for finite (y, x) not both zero.
+[[nodiscard]] inline float256 atan2_seed(float256 y, float256 x) {
+    if (x.iszero()) return copysign(float256::pi() * float256::half(), y);
+    const float256 a = atan_seed(y / x);
+    if (x.signbit()) return y.signbit() ? a - float256::pi() : a + float256::pi();
+    return a;
+}
+
+// sin and cos of a float256 |a| <= 4 as dd.
+inline void sincos_small(float256 a, detail_dd::dd& s, detail_dd::dd& c) {
+    int q = 0;
+    detail_dd::dd sd, cd;
+    const detail_dd::dd r = detail_dd::reduce_pio2(abs(a), q);
+    detail_dd::sincos_reduced(r, sd, cd);
+    s = (q & 1) ? cd : sd;
+    c = (q & 1) ? -sd : cd;
+    if (q >= 2) { s = -s; c = -c; }
+    if (a.signbit()) s = -s;
+}
+
+// atan2 of dd (Y, X), finite, not both zero: θ0 from the seed, then
+// θ = θ0 + atan(t), t = (Y cos θ0 − X sin θ0)/(X cos θ0 + Y sin θ0), |t| ~ 2^-230.
+[[nodiscard]] inline detail_dd::dd atan2_dd(detail_dd::dd Y, detail_dd::dd X) {
+    using detail_dd::dd;
+    // Bring both to a moderate exponent so the products neither overflow nor go subnormal.
+    const int ey = Y.hi.iszero() ? -1000000 : ilogb(Y.hi);
+    const int ex = X.hi.iszero() ? -1000000 : ilogb(X.hi);
+    const int e = ey > ex ? ey : ex;
+    Y = detail_dd::ldexp(Y, -e);
+    X = detail_dd::ldexp(X, -e);
+    const float256 t0 = atan2_seed(Y.round(), X.round());
+    dd s, c;
+    sincos_small(t0, s, c);
+    const dd num = Y * c - X * s;
+    const dd den = X * c + Y * s;
+    const dd t = num / den;
+    return dd(t0) + (t - t * t * t / dd(float256::from_int(3)));
+}
+} // namespace detail_math
+
+[[nodiscard]] inline float256 atan(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    if (x.isnan()) return x;
+    if (x.isinf()) return copysign(float256::pi() * float256::half(), x);
+    if (x.iszero()) return x;
+    if (abs(x) < ldexp(float256::one(), -120)) {
+        // x - x^3/3; next term is below 2^-480 relative.
+        return (detail_dd::dd(x) - detail_dd::dd(x * x * x / float256::from_int(3))).round();
+    }
+    return detail_math::atan2_dd(detail_dd::dd(x), detail_dd::dd(float256::one())).round();
+}
+
 [[nodiscard]] inline float256 atan2(float256 y, float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan() || y.isnan()) return float256::qnan();
@@ -457,21 +511,29 @@ inline bool trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) 
         return y; // ±0
     }
     if (x.signbit() && y.iszero()) return copysign(float256::pi(), y);
-    const float256 a = atan(y / x);
-    if (x.signbit()) {
-        return y.signbit() ? a - float256::pi() : a + float256::pi();
-    }
-    return a;
+    if (y.iszero()) return y;
+    return detail_math::atan2_dd(detail_dd::dd(y), detail_dd::dd(x)).round();
 }
+
+namespace detail_math {
+// sqrt((1 - x)(1 + x)) in dd; 1 ± x are exact as dd.
+[[nodiscard]] inline detail_dd::dd sqrt_one_minus_sq(float256 x) {
+    const detail_dd::dd a = detail_dd::two_sum(float256::one(), -x);
+    const detail_dd::dd b = detail_dd::two_sum(float256::one(), x);
+    return detail_dd::sqrt(a * b);
+}
+} // namespace detail_math
 
 [[nodiscard]] inline float256 asin(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
+    if (x.isnan() || x.iszero()) return x;
     const float256 a = abs(x);
     if (a > float256::one()) return float256::qnan();
-    if (a == float256::one()) return copysign(float256::pi() * float256::half(), x);
-    // asin(x) = atan(x / sqrt(1-x^2))
-    return atan(x / sqrt(float256::one() - x * x));
+    if (a < ldexp(float256::one(), -120)) {
+        // x + x^3/6
+        return (detail_dd::dd(x) + detail_dd::dd(x * x * x / float256::from_int(6))).round();
+    }
+    return detail_math::atan2_dd(detail_dd::dd(x), detail_math::sqrt_one_minus_sq(x)).round();
 }
 
 [[nodiscard]] inline float256 acos(float256 x) {
@@ -479,7 +541,8 @@ inline bool trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) 
     if (x.isnan()) return x;
     const float256 a = abs(x);
     if (a > float256::one()) return float256::qnan();
-    return float256::pi() * float256::half() - asin(x);
+    if (x == float256::one()) return float256::zero();
+    return detail_math::atan2_dd(detail_math::sqrt_one_minus_sq(x), detail_dd::dd(x)).round();
 }
 
 [[nodiscard]] inline float256 sinh(float256 x) {

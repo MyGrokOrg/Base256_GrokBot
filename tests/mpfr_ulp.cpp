@@ -87,7 +87,7 @@ struct Fn {
     double lo, hi; bool logscale; bool neg_too;
     double bound;
     double maxabs;
-    int gen = 0;  // 1: near multiples of pi/2
+    int gen = 0;  // 1: near multiples of pi/2, 2: 1 - 2^[lo,hi)
 };
 } // namespace
 
@@ -112,6 +112,8 @@ int main(int argc, char** argv) {
         {"sin_kpi",[](float256 x){return sin(x);},  mpfr_sin,   0, 99, false, true, 1, 0, 1},
         {"cos_kpi",[](float256 x){return cos(x);},  mpfr_cos,   0, 99, false, true, 1, 0, 1},
         {"tan_kpi",[](float256 x){return tan(x);},  mpfr_tan,   0, 99, false, true, 1, 0, 1},
+        {"asin1", [](float256 x){return asin(x);},  mpfr_asin,  -236, -1, true, true, 1, 0, 2},
+        {"acos1", [](float256 x){return acos(x);},  mpfr_acos,  -236, -1, true, true, 1, 0, 2},
         {"atan",  [](float256 x){return atan(x);},  mpfr_atan,  -120, 300, true, true, 1, 0},
         {"asin",  [](float256 x){return asin(x);},  mpfr_asin,  -120, 0, true, true, 1, 1},
         {"acos",  [](float256 x){return acos(x);},  mpfr_acos,  -120, 0, true, true, 1, 1},
@@ -135,6 +137,7 @@ int main(int argc, char** argv) {
         double worst = 0; float256 wx;
         for (long i = 0; i < n; ++i) {
             float256 x = rnd_in(f.lo, f.hi, f.logscale);
+            if (f.gen == 2) x = copysign(float256::one() - rnd_in(f.lo, f.hi, true), x);
             if (f.gen == 1) {
                 // the float256 nearest to k*pi/2 for k up to 2^(lo..hi)
                 const int bits = static_cast<int>(f.lo + (f.hi - f.lo) * std::uniform_real_distribution<double>(0, 1)(rng));
@@ -178,6 +181,24 @@ int main(int argc, char** argv) {
         const bool over = worst > 1.0;
         bad += over;
         std::printf("%-7s max %.3g ulp at %s, %s%s\n", "pow", worst, wx.to_string(20).c_str(), wy.to_string(20).c_str(), over ? "  OVER BOUND" : "");
+        mpfr_clear(ym);
+    }
+    if (argc <= 4 || std::string(argv[4]).find("atan2") != std::string::npos) {
+        mpfr_t ym;
+        mpfr_init2(ym, 1100);
+        double worst = 0; float256 wx, wy;
+        for (long i = 0; i < n; ++i) {
+            float256 y = rnd_in(-300, 300, true), x = rnd_in(-300, 300, true);
+            if (rng() & 1) y = -y;
+            if (rng() & 1) x = -x;
+            to_mpfr(xm, x); to_mpfr(ym, y);
+            mpfr_atan2(r, ym, xm, MPFR_RNDN);
+            const double e = ulp_err(atan2(y, x), r);
+            if (e > worst) { worst = e; wx = x; wy = y; }
+        }
+        const bool over = worst > 1.0;
+        bad += over;
+        std::printf("%-7s max %.3g ulp at %s, %s%s\n", "atan2", worst, wy.to_string(20).c_str(), wx.to_string(20).c_str(), over ? "  OVER BOUND" : "");
         mpfr_clear(ym);
     }
     mpfr_clears(xm, r, (mpfr_ptr)0);
