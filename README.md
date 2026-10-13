@@ -30,7 +30,8 @@ Header-only. Real 256-bit software arithmetic — not a `double` wrapper.
 - Elementary functions: `exp`, `log`, `pow`, `sin`/`cos`/`tan`, `atan`/`asin`/`acos`, hyperbolics and inverse hyperbolics, `cbrt`, `erf`/`erfc`, `tgamma`/`lgamma`
 - `sincos` and IEEE `remquo`
 - `ldexp`, `frexp`, `ilogb` / `logb`, `nextafter` / `nextup` / `nextdown`, `floor`/`ceil`/`trunc`/`round` (ties away), `rint` / `nearbyint` (ties to even), `modf`, `hypot`, `fmod`, `remainder`, `fdim`
-- User-defined literals `3.1415_f256` and `"0.1"_f256`
+- User-defined literals `3.1415_f256` and `"0.1"_f256`, both parsed exactly (correctly rounded)
+- Exact `float256(long double)` (x87 80-bit / binary128) and correctly rounded `to_long_double()`
 
 ## Install
 
@@ -89,6 +90,25 @@ Words are little-endian `std::array<std::uint64_t,4>` (`[0]` is the least-signif
 - Word 0: fraction bits 63:0
 
 `raw_bits()` / `from_bits()` expose this packing. Hex-float I/O uses C99 `0x1.ffffp+e` with a 236-bit fraction.
+
+## NaN rules
+
+- The quiet bit is the most significant fraction bit (bit 235). `issignaling()` tests it; `quieted()` sets it.
+- Arithmetic (`+ − × ÷`, `fma`, `sqrt`, conversions) on NaN operands returns the **first NaN operand** (in argument order) with its payload kept and the quiet bit set.
+- Invalid operations (`∞ − ∞`, `0 × ∞`, `0/0`, `sqrt(−x)`, …) return the default NaN `float256::qnan()`: positive, quiet, payload `1`.
+- `-x`, `abs`, `copysign` only touch the sign bit and never quiet a signaling NaN.
+- `fmin`/`fmax` (C23 / IEEE 754-2008 minNum/maxNum) ignore a quiet NaN but return a quiet NaN for a signaling NaN. `minimum`/`maximum` (IEEE 754-2019) propagate any NaN; `minimum_number`/`maximum_number` ignore NaNs.
+- Converting a NaN to or from `double`/`long double` does not keep the payload.
+
+## Testing
+
+Unit tests run with `ctest`. A differential test against GNU MPFR (237-bit precision, binary256 exponent range, `mpfr_subnormalize`) with randomized operands is available:
+
+```bash
+cmake -B build -DBASE256_MPFR_TESTS=ON -DBASE256_MPFR_CASES=1000000
+cmake --build build && ctest --test-dir build --output-on-failure
+./build/mpfr_diff 5000000 42   # cases per op, seed
+```
 
 ## Rounding and compliance
 
