@@ -80,6 +80,8 @@ float256 rnd_in(double lo, double hi, bool logscale) {
     return base256::ldexp(float256::one() + t, ex);
 }
 
+int mpfr_lngamma_abs(mpfr_ptr r, mpfr_srcptr x, mpfr_rnd_t rnd) { int sg; return mpfr_lgamma(r, &sg, x, rnd); }
+
 struct Fn {
     const char* name;
     std::function<float256(float256)> f;
@@ -87,7 +89,7 @@ struct Fn {
     double lo, hi; bool logscale; bool neg_too;
     double bound;
     double maxabs;
-    int gen = 0;  // 1: near multiples of pi/2, 2: 1 - 2^[lo,hi), 3: 1 + 2^[lo,hi), 4: negated
+    int gen = 0;  // 1: near multiples of pi/2, 2: 1 - 2^[lo,hi), 3: 1 + 2^[lo,hi), 4: negated, 5: 2 ± 2^[lo,hi)
 };
 } // namespace
 
@@ -130,6 +132,10 @@ int main(int argc, char** argv) {
         {"erfc",  [](float256 x){return erfc(x);},  mpfr_erfc,  -120, 9, true, false, 1, 500},
         {"erfcn", [](float256 x){return erfc(x);},  mpfr_erfc,  -120, 5, true, false, 1, 0, 4},
         {"tgamma",[](float256 x){return tgamma(x);},mpfr_gamma, -10, 10, true, false, 1, 1000},
+        {"tgamman",[](float256 x){return tgamma(x);},mpfr_gamma, -10, 10, true, false, 1, 1000, 4},
+        {"lgamman",[](float256 x){return lgamma(x);},mpfr_lngamma_abs, -10, 20, true, false, 1, 0, 4},
+        {"lgamma1",[](float256 x){return lgamma(x);},mpfr_lngamma, -236, -1, true, false, 1, 0, 3},
+        {"lgamma2",[](float256 x){return lgamma(x);},mpfr_lngamma_abs, -236, -1, true, true, 1, 0, 5},
         {"lgamma",[](float256 x){return lgamma(x);},mpfr_lngamma,-10, 20, true, false, 1, 0},
     };    if (argc > 4) { std::string only = argv[4]; std::erase_if(fns, [&](const Fn& f){ return only.find(f.name) == std::string::npos; }); }
     mpfr_t xm, r;
@@ -141,6 +147,7 @@ int main(int argc, char** argv) {
         for (long i = 0; i < n; ++i) {
             float256 x = rnd_in(f.lo, f.hi, f.logscale);
             if (f.gen == 4) x = -x;
+            if (f.gen == 5) x = float256::two() + x;
             if (f.gen == 3) x = float256::one() + rnd_in(f.lo, f.hi, true);
             if (f.gen == 2) x = copysign(float256::one() - rnd_in(f.lo, f.hi, true), x);
             if (f.gen == 1) {
@@ -166,7 +173,7 @@ int main(int argc, char** argv) {
         }
         const bool over = worst > f.bound;
         bad += over;
-        std::printf("%-7s max %.3g ulp at %s%s\n", f.name, worst, wx.to_string(20).c_str(), over ? "  OVER BOUND" : "");
+        std::printf("%-7s max %.3g ulp at %s%s\n", f.name, worst, wx.to_string().c_str(), over ? "  OVER BOUND" : "");
     }
     if (argc <= 4 || std::string(argv[4]).find("pow") != std::string::npos) {
         // pow(x, y): x log-uniform in [2^-64, 2^64), y in [-2000, 2000] (half integers, half not).
@@ -203,7 +210,7 @@ int main(int argc, char** argv) {
         }
         const bool over = worst > 1.0;
         bad += over;
-        std::printf("%-7s max %.3g ulp at %s, %s%s\n", "atan2", worst, wy.to_string(20).c_str(), wx.to_string(20).c_str(), over ? "  OVER BOUND" : "");
+        std::printf("%-7s max %.3g ulp at %s, %s%s\n", "atan2", worst, wy.to_string(20).c_str(), wx.to_string().c_str(), over ? "  OVER BOUND" : "");
         mpfr_clear(ym);
     }
     mpfr_clears(xm, r, (mpfr_ptr)0);
