@@ -17,69 +17,85 @@ namespace base256 {
 // logb lives in float256.hpp (constexpr). A second definition here made
 // <base256/base256.hpp> ill-formed.
 
+
 namespace detail_spec {
-
-// erf series on |x| <= 2. Odd, so a signed argument is fine.
-[[nodiscard]] inline float256 erf_series(float256 x) {
-    const float256 x2 = x * x;
-    float256 term = x;
-    float256 sum  = x;
-    for (int n = 1; n <= 250; ++n) {
-        term = -term * x2 * float256::from_int(static_cast<std::int64_t>(2 * n - 1))
-               / (float256::from_int(static_cast<std::int64_t>(n)) *
-                  float256::from_int(static_cast<std::int64_t>(2 * n + 1)));
-        const float256 next = sum + term;
-        if (next == sum) break;
-        sum = next;
+// erf(a) for 0 < a < 4 in dd: 2/√π e^{-a²} Σ 2^n a^{2n+1} / (1·3·…·(2n+1)).
+// All terms are positive, so the sum has no cancellation.
+[[nodiscard]] inline detail_dd::dd erf_series_dd(float256 a) {
+    using detail_dd::dd;
+    const dd x2 = detail_dd::two_prod(a, a);
+    const dd two_x2 = detail_dd::ldexp(x2, 1);
+    dd term{a}, sum{a};
+    const float256 rel = ldexp(float256::one(), -490);
+    for (int n = 1; n <= 2000; ++n) {
+        term = term * two_x2 / dd(float256::from_int(2 * n + 1));
+        sum = sum + term;
+        if (term.hi < abs(sum.hi) * rel) break;
     }
-    return sum * (float256::two() / sqrt(float256::pi()));
+    const auto& c = detail_dd::consts();
+    const dd two_over_sqrtpi = dd(float256::two()) / dd(c.sqrtpi[0], c.sqrtpi[1]);
+    return sum * detail_dd::exp(-x2) * two_over_sqrtpi;
 }
 
-// erfc(x) for x > 2 via the continued fraction
-//   exp(x^2) sqrt(pi) erfc(x) = 1 / (x + (1/2)/(x + (2/2)/(x + (3/2)/(x + ...))))
-[[nodiscard]] inline float256 erfc_cf(float256 x) {
-    const float256 x2 = x * x;
-    if (x2.isinf() || x > float256::from_int(600)) return float256::zero();
-    const float256 tiny = ldexp(float256::one(), -100);
-    const float256 tol  = ldexp(float256::one(), -200);
-    float256 f = x;
-    float256 C = f;
-    float256 D = float256::zero();
-    for (int j = 1; j <= 500; ++j) {
-        const float256 a = float256::from_int(static_cast<std::int64_t>(j)) * float256::half();
-        D = x + a * D;
-        if (D.iszero()) D = tiny;
-        C = x + a / C;
-        if (C.iszero()) C = tiny;
-        D = float256::one() / D;
-        const float256 delta = C * D;
-        f = f * delta;
-        if (abs(delta - float256::one()) <= tol) break;
-    }
-    const float256 num = exp(-x2);
-    if (num.iszero()) return float256::zero();
-    return num / (sqrt(float256::pi()) * f);
+// erfc(a) for a >= 4 as m·2^k: e^{-a²} / (√π · K(a)), with the Laplace
+// continued fraction K = a + (1/2)/(a + 1/(a + (3/2)/(a + …))) evaluated
+// backward from a fixed depth (chosen so the truncation error is < 2^-260).
+[[nodiscard]] inline detail_dd::Scaled erfc_cf_dd(float256 a) {
+    using detail_dd::dd;
+    const int depth = a < float256(6) ? 400 : a < float256(8) ? 250 : a < float256(10) ? 200
+                    : a < float256(20) ? 120 : 80;
+    dd f{a};
+    for (int n = depth; n >= 1; --n) f = dd(a) + dd(float256::from_int(n) * float256::half()) / f;
+    const auto& c = detail_dd::consts();
+    detail_dd::Scaled e = detail_dd::exp_scaled(-detail_dd::two_prod(a, a));
+    e.m = e.m / (f * dd(c.sqrtpi[0], c.sqrtpi[1]));
+    return e;
 }
-
 } // namespace detail_spec
 
 [[nodiscard]] inline float256 erf(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    using detail_dd::dd;
     if (x.isnan()) return x;
     if (x.isinf()) return copysign(float256::one(), x);
     if (x.iszero()) return x;
-    if (abs(x) <= float256::two()) return detail_spec::erf_series(x);
-    const float256 y = float256::one() - detail_spec::erfc_cf(abs(x));
-    return copysign(y, x);
+    const float256 a = abs(x);
+    float256 y;
+    if (a < ldexp(float256::one(), -120)) {
+        // 2a/√π (1 - a²/3): the a³ term is below 2^-240 relative.
+        const auto& c = detail_dd::consts();
+        y = (dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1])).round();
+    } else if (a < float256(4)) {
+        y = detail_spec::erf_series_dd(a).round();
+    } else if (a > float256(16)) {
+        y = float256::one();  // erfc(16) < 2^-370
+    } else {
+        const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
+        y = (dd(float256::one()) - detail_dd::ldexp(e.m, e.k)).round();
+    }
+    return x.signbit() ? -y : y;
 }
 
 [[nodiscard]] inline float256 erfc(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    using detail_dd::dd;
     if (x.isnan()) return x;
     if (x.isinf()) return x.signbit() ? float256::two() : float256::zero();
-    if (abs(x) <= float256::two()) return float256::one() - detail_spec::erf_series(x);
-    if (x.signbit()) return float256::two() - detail_spec::erfc_cf(abs(x));
-    return detail_spec::erfc_cf(x);
+    if (x.iszero()) return float256::one();
+    const float256 a = abs(x);
+    if (x.signbit()) {
+        // 1 + erf(a)
+        if (a > float256(16)) return float256::two();
+        if (a < ldexp(float256::one(), -120)) return float256::one();
+        if (a < float256(4)) return (dd(float256::one()) + detail_spec::erf_series_dd(a)).round();
+        const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
+        return (dd(float256::two()) - detail_dd::ldexp(e.m, e.k)).round();
+    }
+    if (a < ldexp(float256::one(), -120)) return float256::one();
+    if (a < float256(4)) return (dd(float256::one()) - detail_spec::erf_series_dd(a)).round();
+    if (a > float256(520)) return float256::zero();  // erfc(520) < 2^-390000
+    const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
+    return detail_dd::round_scaled(e.m, e.k);
 }
 
 [[nodiscard]] inline float256 asinh(float256 x) {

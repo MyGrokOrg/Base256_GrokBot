@@ -87,7 +87,7 @@ struct Fn {
     double lo, hi; bool logscale; bool neg_too;
     double bound;
     double maxabs;
-    int gen = 0;  // 1: near multiples of pi/2, 2: 1 - 2^[lo,hi), 3: 1 + 2^[lo,hi)
+    int gen = 0;  // 1: near multiples of pi/2, 2: 1 - 2^[lo,hi), 3: 1 + 2^[lo,hi), 4: negated
 };
 } // namespace
 
@@ -128,6 +128,7 @@ int main(int argc, char** argv) {
         {"cbrt",  [](float256 x){return cbrt(x);},  mpfr_cbrt,  -262000, 262000, true, true, 1, 0},
         {"erf",   [](float256 x){return erf(x);},   mpfr_erf,   -120, 5, true, true, 1, 0},
         {"erfc",  [](float256 x){return erfc(x);},  mpfr_erfc,  -120, 9, true, false, 1, 500},
+        {"erfcn", [](float256 x){return erfc(x);},  mpfr_erfc,  -120, 5, true, false, 1, 0, 4},
         {"tgamma",[](float256 x){return tgamma(x);},mpfr_gamma, -10, 10, true, false, 1, 1000},
         {"lgamma",[](float256 x){return lgamma(x);},mpfr_lngamma,-10, 20, true, false, 1, 0},
     };    if (argc > 4) { std::string only = argv[4]; std::erase_if(fns, [&](const Fn& f){ return only.find(f.name) == std::string::npos; }); }
@@ -139,6 +140,7 @@ int main(int argc, char** argv) {
         double worst = 0; float256 wx;
         for (long i = 0; i < n; ++i) {
             float256 x = rnd_in(f.lo, f.hi, f.logscale);
+            if (f.gen == 4) x = -x;
             if (f.gen == 3) x = float256::one() + rnd_in(f.lo, f.hi, true);
             if (f.gen == 2) x = copysign(float256::one() - rnd_in(f.lo, f.hi, true), x);
             if (f.gen == 1) {
