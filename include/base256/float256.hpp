@@ -34,6 +34,83 @@ namespace base256 {
 
 class float256;
 
+/// IEEE 754 rounding-direction attributes.
+enum class round_mode : unsigned char {
+    to_nearest_even,   ///< roundTiesToEven (default)
+    to_nearest_away,   ///< roundTiesToAway
+    toward_zero,       ///< roundTowardZero
+    upward,            ///< roundTowardPositive
+    downward,          ///< roundTowardNegative
+};
+
+/// IEEE 754 exception flags (bit mask).
+enum fe_flag : unsigned {
+    fe_invalid   = 1u << 0,
+    fe_divbyzero = 1u << 1,
+    fe_overflow  = 1u << 2,
+    fe_underflow = 1u << 3,
+    fe_inexact   = 1u << 4,
+    fe_all       = 0x1Fu,
+};
+
+namespace detail {
+struct Env {
+    round_mode mode = round_mode::to_nearest_even;
+    unsigned flags = 0;
+};
+inline thread_local Env tls_env{};
+
+// During constant evaluation the environment is fixed: round-to-nearest-even,
+// flags are not recorded.
+[[nodiscard]] constexpr round_mode current_mode() noexcept {
+    if consteval {
+        return round_mode::to_nearest_even;
+    } else {
+        return tls_env.mode;
+    }
+}
+constexpr void raise_flag(unsigned f) noexcept {
+    if !consteval {
+        tls_env.flags |= f;
+    }
+}
+} // namespace detail
+
+/// Per-thread floating-point environment for float256 (like <cfenv>).
+namespace fenv {
+[[nodiscard]] inline round_mode get_round() noexcept { return detail::tls_env.mode; }
+inline void set_round(round_mode m) noexcept { detail::tls_env.mode = m; }
+/// Flags among `mask` that are currently raised.
+[[nodiscard]] inline unsigned test_flags(unsigned mask = fe_all) noexcept { return detail::tls_env.flags & mask; }
+inline void clear_flags(unsigned mask = fe_all) noexcept { detail::tls_env.flags &= ~mask; }
+inline void raise_flags(unsigned mask) noexcept { detail::tls_env.flags |= (mask & fe_all); }
+[[nodiscard]] inline unsigned get_flags() noexcept { return detail::tls_env.flags; }
+inline void set_flags(unsigned f) noexcept { detail::tls_env.flags = f & fe_all; }
+
+/// RAII: switch the rounding mode for a scope, restore it afterwards.
+class scoped_round {
+public:
+    explicit scoped_round(round_mode m) noexcept : saved_(get_round()) { set_round(m); }
+    ~scoped_round() { set_round(saved_); }
+    scoped_round(const scoped_round&) = delete;
+    scoped_round& operator=(const scoped_round&) = delete;
+private:
+    round_mode saved_;
+};
+
+/// RAII: run a computation in round-to-nearest-even with the caller's flags
+/// saved and restored afterwards (used by the elementary functions).
+class scoped_default_env {
+public:
+    scoped_default_env() noexcept : saved_(detail::tls_env) { detail::tls_env = detail::Env{}; }
+    ~scoped_default_env() { detail::tls_env = saved_; }
+    scoped_default_env(const scoped_default_env&) = delete;
+    scoped_default_env& operator=(const scoped_default_env&) = delete;
+private:
+    detail::Env saved_;
+};
+} // namespace fenv
+
 namespace detail {
 
 inline constexpr int kExpBits      = 19;
@@ -150,21 +227,34 @@ private:
         return u;
     }
 
-    static constexpr bool round_ne(detail::u256& sig, int lsb_pos, bool sticky) noexcept {
-        if (lsb_pos <= 0) return false;
+    /// Round `sig` to a multiple of 2^lsb_pos (bits below are discarded,
+    /// `sticky` stands for nonzero bits below bit 0). Returns true if the
+    /// increment carried out of bit 255. Sets `inexact` when anything was
+    /// discarded.
+    static constexpr bool round_bits(detail::u256& sig, int lsb_pos, bool sticky, bool sign,
+                                     round_mode mode, bool& inexact) noexcept {
+        if (lsb_pos <= 0) { inexact = sticky; return false; }
         const bool g = sig.bit(lsb_pos - 1);
         bool rs = sticky;
         if (!rs && lsb_pos > 1) {
             if (lsb_pos - 1 < 64) {  // (1ULL << 64) would be UB
                 rs = (sig.d[0] & ((1ULL << (lsb_pos - 1)) - 1ULL)) != 0;
             } else {
-                for (int i = 0; i <= lsb_pos - 2; ++i) {
+                for (int i = 0; i <= lsb_pos - 2 && i < 256; ++i) {
                     if (sig.bit(i)) { rs = true; break; }
                 }
             }
         }
+        inexact = g || rs;
         const bool lsb = sig.bit(lsb_pos);
-        const bool inc = g && (rs || lsb);
+        bool inc = false;
+        switch (mode) {
+            case round_mode::to_nearest_even: inc = g && (rs || lsb); break;
+            case round_mode::to_nearest_away: inc = g; break;
+            case round_mode::toward_zero:     inc = false; break;
+            case round_mode::upward:          inc = inexact && !sign; break;
+            case round_mode::downward:        inc = inexact && sign; break;
+        }
         if (lsb_pos >= 256) {
             sig = {};
             return inc;
@@ -178,7 +268,39 @@ private:
         return carry != 0;
     }
 
+    static constexpr bool round_ne(detail::u256& sig, int lsb_pos, bool sticky) noexcept {
+        bool inexact = false;
+        return round_bits(sig, lsb_pos, sticky, false, round_mode::to_nearest_even, inexact);
+    }
+
+    /// Overflow result for `mode`: infinity, or the largest finite value when
+    /// the rounding direction points toward zero.
+    static constexpr float256 overflow_result(bool sign, round_mode mode) noexcept {
+        detail::raise_flag(fe_overflow | fe_inexact);
+        const bool to_max = mode == round_mode::toward_zero ||
+                            (mode == round_mode::upward && sign) ||
+                            (mode == round_mode::downward && !sign);
+        if (to_max) {
+            float256 m = max();
+            m.set_sign_bit(sign);
+            return m;
+        }
+        return inf(sign);
+    }
+
+    /// Exact zero from cancelling operands: +0, or -0 when rounding downward.
+    static constexpr float256 exact_zero_sum() noexcept {
+        return zero(detail::current_mode() == round_mode::downward);
+    }
+
+    /// Round and encode. Tininess is detected after rounding (as if the
+    /// exponent range were unbounded); underflow is raised only when the
+    /// result is tiny and inexact.
     static constexpr float256 pack(detail::Unpacked u) noexcept {
+        return pack(u, detail::current_mode());
+    }
+
+    static constexpr float256 pack(detail::Unpacked u, round_mode mode) noexcept {
         using namespace detail;
         if (u.kind == Kind::nan) {
             std::uint64_t w3 = (1ULL << 63) * (u.sign ? 1ULL : 0ULL);
@@ -191,17 +313,34 @@ private:
         if (u.kind == Kind::zero || (u.sig.is_zero() && !u.sticky)) return zero(u.sign);
 
         const std::int64_t biased = static_cast<std::int64_t>(u.wexp) + kBias;
-        if (biased >= kExpAllOnes) return inf(u.sign);
+        if (biased >= kExpAllOnes) return overflow_result(u.sign, mode);
 
         u256 sig = u.sig;
         bool sticky = u.sticky;
         int wexp = u.wexp;
+        bool inexact = false;
 
         if (biased <= 0) {
-            const int rshift = kLsbPos - wexp + kEmin;
-            if (rshift >= 256 + 2) return zero(u.sign);
+            // Tininess after rounding: round to full precision with an
+            // unbounded exponent and see whether it is still below 2^Emin.
+            bool tiny = true;
+            {
+                u256 t = sig;
+                bool ix = false;
+                const bool c = round_bits(t, kLsbPos, sticky, u.sign, mode, ix);
+                tiny = !(c && wexp + 1 >= kEmin);
+            }
+            const std::int64_t rshift64 = static_cast<std::int64_t>(kLsbPos) - wexp + kEmin;
+            if (rshift64 > 256) {
+                // |x| < 2^-1 subnormal units: rounds to 0 or the smallest subnormal.
+                const bool inc = (mode == round_mode::upward && !u.sign) ||
+                                 (mode == round_mode::downward && u.sign);
+                detail::raise_flag(fe_underflow | fe_inexact);
+                return inc ? from_encoding(1, 0, 0, u.sign ? (1ULL << 63) : 0ULL) : zero(u.sign);
+            }
+            const int rshift = static_cast<int>(rshift64);
             if (rshift > 0) {
-                const bool ovf = round_ne(sig, rshift, sticky);
+                const bool ovf = round_bits(sig, rshift, sticky, u.sign, mode, inexact);
                 if (ovf) {
                     // Rounding carried out of bit 255: the result is exactly
                     // 2^(256 - rshift) subnormal units (min normal when that is
@@ -211,7 +350,10 @@ private:
                 } else {
                     sig = sig >> rshift;
                 }
+            } else {
+                inexact = sticky;
             }
+            if (inexact) detail::raise_flag(fe_inexact | (tiny ? fe_underflow : 0u));
             if (sig.bit(kFracBits)) {
                 return pack_normal(u.sign, kEmin, sig << kLsbPos);
             }
@@ -219,21 +361,14 @@ private:
                                  (sig.d[3] & kFracHiMask) | (u.sign ? (1ULL << 63) : 0ULL));
         }
 
-        const bool ovf = round_ne(sig, kLsbPos, sticky);
+        const bool ovf = round_bits(sig, kLsbPos, sticky, u.sign, mode, inexact);
         if (ovf) {
             ++wexp;
             sig = {};
             sig.set_bit(255);
         }
-        if (wexp > kEmax) return inf(u.sign);
-        if (wexp < kEmin) {
-            Unpacked v;
-            v.sign = u.sign;
-            v.kind = Kind::subnormal;
-            v.wexp = wexp;
-            v.sig = sig;
-            return pack(v);
-        }
+        if (wexp > kEmax) return overflow_result(u.sign, mode);
+        if (inexact) detail::raise_flag(fe_inexact);
         return pack_normal(u.sign, wexp, sig);
     }
 
@@ -259,6 +394,41 @@ private:
         if (signaling) u.sig.clear_bit(235);
         u.sig.set_bit(0);
         return u;
+    }
+
+public:
+    static constexpr float256 round_integral(float256 x, round_mode mode, bool signal) noexcept {
+        using namespace detail;
+        Unpacked u = x.unpack();
+        if (u.kind == Kind::nan) {
+            if (u.signaling) raise_flag(fe_invalid);
+            return pack(u);
+        }
+        if (u.kind != Kind::normal && u.kind != Kind::subnormal) return x;
+        if (u.wexp >= kPrecision - 1) return x;
+        const int unit = 255 - u.wexp;            // bit position of 2^0
+        u256 sig = u.sig;
+        bool inexact = false;
+        const bool carry = round_bits(sig, unit > 300 ? 300 : unit, false, u.sign, mode, inexact);
+        if (inexact && signal) raise_flag(fe_inexact);
+        if (unit >= 256) {
+            if (!carry) return zero(u.sign);
+            return u.sign ? -one() : one();
+        }
+        if (carry) {
+            sig = {};
+            sig.set_bit(255);
+            ++u.wexp;
+        }
+        u.sig = sig;
+        u.sticky = false;
+        u.kind = Kind::normal;
+        return pack(u, round_mode::to_nearest_even); // exact
+    }
+private:
+    static constexpr float256 invalid_nan() noexcept {
+        detail::raise_flag(fe_invalid);
+        return pack(make_nan());
     }
 
 public:
@@ -405,35 +575,6 @@ public:
         u.wexp = e - 1;
         return pack(u);
     }
-    [[nodiscard]] long double to_long_double() const noexcept {
-        // Round once to long double precision via its significand width.
-        using namespace detail;
-        const Unpacked u = unpack();
-        if (u.kind == Kind::nan) return std::numeric_limits<long double>::quiet_NaN();
-        if (u.kind == Kind::inf)
-            return u.sign ? -std::numeric_limits<long double>::infinity()
-                          :  std::numeric_limits<long double>::infinity();
-        if (u.kind == Kind::zero) return u.sign ? -0.0L : 0.0L;
-        constexpr int P = std::numeric_limits<long double>::digits;
-        constexpr int emin = std::numeric_limits<long double>::min_exponent - 1; // min normal exp
-        constexpr int emax = std::numeric_limits<long double>::max_exponent - 1;
-        int keep = P;
-        if (u.wexp < emin) keep = P - (emin - u.wexp);
-        if (keep < -1) return u.sign ? -0.0L : 0.0L;
-        u256 sig = u.sig;
-        int wexp = u.wexp;
-        const int lsb = 256 - (keep < 0 ? 0 : keep);
-        const bool ovf = round_ne(sig, lsb, u.sticky);
-        if (ovf) { sig = {}; sig.set_bit(255); ++wexp; }
-        if (wexp > emax)
-            return u.sign ? -std::numeric_limits<long double>::infinity()
-                          :  std::numeric_limits<long double>::infinity();
-        long double r = 0.0L;
-        for (int w = 0; w < 4; ++w)
-            r += std::ldexp(static_cast<long double>(sig.d[w]), 64 * w - 255 + wexp);
-        return u.sign ? -r : r;
-    }
-
     [[nodiscard]] static constexpr float256 from_uint(std::uint64_t v) noexcept {
         using namespace detail;
         if (v == 0) return zero(false);
@@ -456,56 +597,133 @@ public:
         return from_uint(static_cast<std::uint64_t>(v));
     }
 
-    [[nodiscard]] constexpr double to_double() const noexcept {
+    struct Narrowed {
+        int cls = 0;          // 0 zero, 1 finite nonzero, 2 infinity, 3 nan, 4 largest finite
+        bool sign = false;
+        detail::u256 sig{};   // rounded, leading 1 at bit 255
+        int wexp = 0;
+    };
+    /// Round a finite/special value to a binary format with precision P and
+    /// normal exponent range [emin, emax], honouring the rounding mode and
+    /// raising inexact/underflow/overflow.
+    [[nodiscard]] constexpr Narrowed narrow_to(int P, int emin, int emax) const noexcept {
         using namespace detail;
         const Unpacked u = unpack();
-        if (u.kind == Kind::nan) return std::numeric_limits<double>::quiet_NaN();
-        if (u.kind == Kind::inf) {
-            return u.sign ? -std::numeric_limits<double>::infinity()
-                          :  std::numeric_limits<double>::infinity();
+        Narrowed r;
+        r.sign = u.sign;
+        if (u.kind == Kind::nan) {
+            if (u.signaling) raise_flag(fe_invalid);
+            r.cls = 3;
+            return r;
         }
-        if (u.kind == Kind::zero) return u.sign ? -0.0 : 0.0;
-
+        if (u.kind == Kind::inf) { r.cls = 2; return r; }
+        if (u.kind == Kind::zero) { r.cls = 0; return r; }
+        round_mode mode = current_mode(); // not const: a const integral/enum local would be
+        // manifestly constant-evaluated, making `if consteval` take the compile-time branch
+        int keep = P;
+        if (u.wexp < emin) keep = P - (emin - u.wexp);
+        if (keep < 0) {
+            raise_flag(fe_underflow | fe_inexact);
+            const bool inc = (mode == round_mode::upward && !u.sign) ||
+                             (mode == round_mode::downward && u.sign);
+            if (!inc) { r.cls = 0; return r; }
+            r.cls = 1;
+            r.sig.set_bit(255);
+            r.wexp = emin - P + 1;
+            return r;
+        }
+        bool tiny = false;
+        if (u.wexp < emin) {
+            u256 t = u.sig;
+            bool ix = false;
+            const bool c = round_bits(t, 256 - P, u.sticky, u.sign, mode, ix);
+            tiny = !(c && u.wexp + 1 >= emin);
+        }
         u256 sig = u.sig;
         int wexp = u.wexp;
-        const int dbl_lsb = 255 - 52;
-        if (wexp < -1022) {
-            // Binary64 subnormal: round once, directly from the full significand
-            // (rounding to 53 bits first would double-round).
-            const int rshift = (-1022 - wexp) + dbl_lsb;
-            if (rshift >= 256 + 2) return u.sign ? -0.0 : 0.0;
-            u256 s = sig;
-            const bool ov = round_ne(s, rshift, u.sticky);
-            std::uint64_t mant = 0;
-            if (ov) {
-                mant = 1ULL << (256 - rshift); // rshift >= 204 here
-            } else {
-                s = s >> rshift;
-                mant = s.d[0];
-            }
-            const std::uint64_t bits = (u.sign ? (1ULL << 63) : 0ULL) | mant; // bit 52 => min normal
-            return std::bit_cast<double>(bits);
-        }
-        const bool ovf = round_ne(sig, dbl_lsb, u.sticky);
-        if (ovf) {
-            ++wexp;
+        bool inexact = false;
+        if (round_bits(sig, 256 - keep, u.sticky, u.sign, mode, inexact)) {
             sig = {};
             sig.set_bit(255);
+            ++wexp;
         }
-        if (wexp > 1023) {
-            return u.sign ? -std::numeric_limits<double>::infinity()
-                          :  std::numeric_limits<double>::infinity();
+        if (wexp > emax) {
+            raise_flag(fe_overflow | fe_inexact);
+            const bool to_max = mode == round_mode::toward_zero ||
+                                (mode == round_mode::upward && u.sign) ||
+                                (mode == round_mode::downward && !u.sign);
+            r.cls = to_max ? 4 : 2;
+            return r;
         }
-        const std::uint64_t mant = (sig.d[3] >> 11) & 0x000FFFFFFFFFFFFFULL;
-        const std::uint64_t be = static_cast<std::uint64_t>(wexp + 1023);
-        const std::uint64_t bits = (u.sign ? (1ULL << 63) : 0ULL) | (be << 52) | mant;
-        return std::bit_cast<double>(bits);
+        if (inexact) raise_flag(fe_inexact | (tiny ? fe_underflow : 0u));
+        if (sig.is_zero()) { r.cls = 0; return r; }
+        r.cls = 1;
+        r.sig = sig;
+        r.wexp = wexp;
+        return r;
     }
 
+    /// Correctly rounded conversion (current rounding mode, flags raised).
+    [[nodiscard]] long double to_long_double() const noexcept {
+        using L = std::numeric_limits<long double>;
+        const Narrowed n = narrow_to(L::digits, L::min_exponent - 1, L::max_exponent - 1);
+        switch (n.cls) {
+            case 0: return n.sign ? -0.0L : 0.0L;
+            case 2: return n.sign ? -L::infinity() : L::infinity();
+            case 3: return L::quiet_NaN();
+            case 4: return n.sign ? -L::max() : L::max();
+            default: break;
+        }
+        // At most L::digits significant bits remain, so every partial sum is exact.
+        long double r = 0.0L;
+        for (int w = 0; w < 4; ++w)
+            r += std::ldexp(static_cast<long double>(n.sig.d[w]), 64 * w - 255 + n.wexp);
+        return n.sign ? -r : r;
+    }
+
+    /// Correctly rounded conversion (current rounding mode, flags raised).
+    [[nodiscard]] constexpr double to_double() const noexcept {
+        const Narrowed n = narrow_to(53, -1022, 1023);
+        const std::uint64_t sb = n.sign ? (1ULL << 63) : 0ULL;
+        switch (n.cls) {
+            case 0: return std::bit_cast<double>(sb);
+            case 2: return std::bit_cast<double>(sb | 0x7FF0000000000000ULL);
+            case 3: return std::numeric_limits<double>::quiet_NaN();
+            case 4: return std::bit_cast<double>(sb | 0x7FEFFFFFFFFFFFFFULL);
+            default: break;
+        }
+        if (n.wexp >= -1022) {
+            const std::uint64_t mant = (n.sig.d[3] >> 11) & 0x000FFFFFFFFFFFFFULL;
+            const auto be = static_cast<std::uint64_t>(n.wexp + 1023);
+            return std::bit_cast<double>(sb | (be << 52) | mant);
+        }
+        const int sh = 11 + (-1022 - n.wexp); // <= 63, exact after narrowing
+        return std::bit_cast<double>(sb | (n.sig.d[3] >> sh));
+    }
+
+    /// Correctly rounded (single rounding, current mode).
     [[nodiscard]] constexpr float to_float() const noexcept {
-        return static_cast<float>(to_double());
+        const Narrowed n = narrow_to(24, -126, 127);
+        const std::uint32_t sb = n.sign ? (1U << 31) : 0U;
+        switch (n.cls) {
+            case 0: return std::bit_cast<float>(sb);
+            case 2: return std::bit_cast<float>(sb | 0x7F800000U);
+            case 3: return std::numeric_limits<float>::quiet_NaN();
+            case 4: return std::bit_cast<float>(sb | 0x7F7FFFFFU);
+            default: break;
+        }
+        const auto top = static_cast<std::uint32_t>(n.sig.d[3] >> 32);
+        if (n.wexp >= -126) {
+            const auto be = static_cast<std::uint32_t>(n.wexp + 127);
+            return std::bit_cast<float>(sb | (be << 23) | ((top >> 8) & 0x7FFFFFU));
+        }
+        const int sh = 8 + (-126 - n.wexp);
+        return std::bit_cast<float>(sb | (top >> sh));
     }
 
+    constexpr void signal_unordered(const float256& o) const noexcept {
+        if (isnan() || o.isnan()) detail::raise_flag(fe_invalid);
+    }
     [[nodiscard]] constexpr std::partial_ordering operator<=>(const float256& o) const noexcept {
         if (isnan() || o.isnan()) return std::partial_ordering::unordered;
         if (iszero() && o.iszero()) return std::partial_ordering::equivalent;
@@ -519,19 +737,24 @@ public:
         return std::partial_ordering::equivalent;
     }
 
+    // == and != are quiet predicates (invalid only for a signaling NaN);
+    // <, <=, >, >= signal invalid for any NaN operand (IEEE 754 5.11).
     [[nodiscard]] constexpr bool operator==(const float256& o) const noexcept {
+        if (issignaling() || o.issignaling()) detail::raise_flag(fe_invalid);
         if (isnan() || o.isnan()) return false;
         if (iszero() && o.iszero()) return true;
         return bits_ == o.bits_;
     }
     [[nodiscard]] constexpr bool operator!=(const float256& o) const noexcept { return !(*this == o); }
-    [[nodiscard]] constexpr bool operator<(const float256& o)  const noexcept { return (*this <=> o) == std::partial_ordering::less; }
-    [[nodiscard]] constexpr bool operator>(const float256& o)  const noexcept { return (*this <=> o) == std::partial_ordering::greater; }
+    [[nodiscard]] constexpr bool operator<(const float256& o)  const noexcept { signal_unordered(o); return (*this <=> o) == std::partial_ordering::less; }
+    [[nodiscard]] constexpr bool operator>(const float256& o)  const noexcept { signal_unordered(o); return (*this <=> o) == std::partial_ordering::greater; }
     [[nodiscard]] constexpr bool operator<=(const float256& o) const noexcept {
+        signal_unordered(o);
         auto c = *this <=> o;
         return c == std::partial_ordering::less || c == std::partial_ordering::equivalent;
     }
     [[nodiscard]] constexpr bool operator>=(const float256& o) const noexcept {
+        signal_unordered(o);
         auto c = *this <=> o;
         return c == std::partial_ordering::greater || c == std::partial_ordering::equivalent;
     }
@@ -631,17 +854,18 @@ constexpr float256 float256::add_sub(float256 a, float256 b, bool subtract) noex
     Unpacked ua = a.unpack();
     Unpacked ub = b.unpack();
 
+    if (ua.signaling || ub.signaling) detail::raise_flag(fe_invalid);
     if (ua.kind == Kind::nan) return pack(ua);
     if (ub.kind == Kind::nan) return pack(ub);
     if (ua.kind == Kind::inf && ub.kind == Kind::inf) {
-        if (ua.sign != ub.sign) return pack(make_nan());
+        if (ua.sign != ub.sign) return invalid_nan();
         return pack(ua);
     }
     if (ua.kind == Kind::inf) return pack(ua);
     if (ub.kind == Kind::inf) return pack(ub);
     if (ua.kind == Kind::zero && ub.kind == Kind::zero) {
         if (ua.sign == ub.sign) return zero(ua.sign);
-        return zero(false);
+        return exact_zero_sum();
     }
     if (ua.kind == Kind::zero) return pack(ub);
     if (ub.kind == Kind::zero) return pack(ua);
@@ -684,7 +908,7 @@ constexpr float256 float256::add_sub(float256 a, float256 b, bool subtract) noex
         r.wexp = ua.wexp;
         r.sticky = sticky;
         r.kind = Kind::normal;
-        if (r.sig.is_zero() && !sticky) return zero(false);
+        if (r.sig.is_zero() && !sticky) return exact_zero_sum();
         const int lz = r.sig.clz();
         r.sig = r.sig << lz;
         r.wexp -= lz;
@@ -698,11 +922,12 @@ constexpr float256 float256::mul(float256 a, float256 b) noexcept {
     Unpacked ub = b.unpack();
     const bool sign = ua.sign ^ ub.sign;
 
+    if (ua.signaling || ub.signaling) detail::raise_flag(fe_invalid);
     if (ua.kind == Kind::nan) return pack(ua);
     if (ub.kind == Kind::nan) return pack(ub);
     const bool a_inf = ua.kind == Kind::inf, b_inf = ub.kind == Kind::inf;
     const bool a_z   = ua.kind == Kind::zero, b_z   = ub.kind == Kind::zero;
-    if ((a_inf && b_z) || (b_inf && a_z)) return pack(make_nan());
+    if ((a_inf && b_z) || (b_inf && a_z)) return invalid_nan();
     if (a_inf || b_inf) return inf(sign);
     if (a_z || b_z) return zero(sign);
 
@@ -729,11 +954,13 @@ constexpr float256 float256::div(float256 a, float256 b) noexcept {
     Unpacked ub = b.unpack();
     const bool sign = ua.sign ^ ub.sign;
 
+    if (ua.signaling || ub.signaling) detail::raise_flag(fe_invalid);
     if (ua.kind == Kind::nan) return pack(ua);
     if (ub.kind == Kind::nan) return pack(ub);
-    if (ua.kind == Kind::inf && ub.kind == Kind::inf) return pack(make_nan());
+    if (ua.kind == Kind::inf && ub.kind == Kind::inf) return invalid_nan();
     if (ub.kind == Kind::zero) {
-        if (ua.kind == Kind::zero) return pack(make_nan());
+        if (ua.kind == Kind::zero) return invalid_nan();
+        if (ua.kind != Kind::inf) detail::raise_flag(fe_divbyzero);
         return inf(sign);
     }
     if (ua.kind == Kind::inf) return inf(sign);
@@ -774,21 +1001,22 @@ constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
     Unpacked uc = c.unpack();
     const bool psign = ua.sign ^ ub.sign;
 
+    if (ua.signaling || ub.signaling || uc.signaling) detail::raise_flag(fe_invalid);
     if (ua.kind == Kind::nan) return pack(ua);
     if (ub.kind == Kind::nan) return pack(ub);
     if (uc.kind == Kind::nan) return pack(uc);
 
     const bool a_inf = ua.kind == Kind::inf, b_inf = ub.kind == Kind::inf;
     const bool a_z = ua.kind == Kind::zero, b_z = ub.kind == Kind::zero;
-    if ((a_inf && b_z) || (b_inf && a_z)) return pack(make_nan());
+    if ((a_inf && b_z) || (b_inf && a_z)) return invalid_nan();
 
     if (a_inf || b_inf) {
-        if (uc.kind == Kind::inf && uc.sign != psign) return pack(make_nan());
+        if (uc.kind == Kind::inf && uc.sign != psign) return invalid_nan();
         return inf(psign);
     }
     if (a_z || b_z) {
         // (±0) + c: exact. Two zeros of opposite sign sum to +0.
-        if (uc.kind == Kind::zero) return zero(psign && uc.sign);
+        if (uc.kind == Kind::zero) return psign == uc.sign ? zero(psign) : exact_zero_sum();
         return pack(uc);
     }
 
@@ -878,7 +1106,7 @@ constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
         one.d[0] = 1;
         s = sub_u512(s, one);
     }
-    if (s.is_zero() && !r.sticky) return zero(false);
+    if (s.is_zero() && !r.sticky) return exact_zero_sum();
     const int lz = s.clz();
     s = s << lz;
     r.wexp -= lz;
@@ -890,9 +1118,10 @@ constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
 constexpr float256 float256::sqrt(float256 x) noexcept {
     using namespace detail;
     Unpacked u = x.unpack();
+    if (u.signaling) detail::raise_flag(fe_invalid);
     if (u.kind == Kind::nan) return pack(u);
     if (u.kind == Kind::zero) return x;
-    if (u.sign) return pack(make_nan());
+    if (u.sign) return invalid_nan();
     if (u.kind == Kind::inf) return x;
 
     int exp = u.wexp;
@@ -1426,41 +1655,18 @@ inline std::string float256::to_bit_string() const {
     return t;
 }
 
-// Round to nearest integer, ties to even (the default binary256 mode).
+/// Round to an integral value in the current rounding mode; raises inexact
+/// when the value changes (C `rint`, IEEE roundToIntegralExact).
 [[nodiscard]] constexpr float256 rint(float256 x) noexcept {
-    using namespace detail;
-    Unpacked u = x.unpack();
-    if (u.kind != Kind::normal && u.kind != Kind::subnormal) return x;
-    if (u.wexp >= kPrecision - 1) return x;
-    if (u.wexp < -1) return float256::zero(u.sign);
-    if (u.wexp < 0) {
-        // |x| ∈ [0.5, 1). Exact ±0.5 ties to even, which is 0.
-        const bool tie = u.wexp == -1 && (u.sig << 1).is_zero();
-        if (tie) return float256::zero(u.sign);
-        return u.sign ? -float256::one() : float256::one();
-    }
-    const int unit = 255 - u.wexp;
-    const bool guard = u.sig.bit(unit - 1);
-    bool sticky = false;
-    for (int i = 0; i < unit - 1; ++i) {
-        if (u.sig.bit(i)) { sticky = true; break; }
-    }
-    const bool odd = u.sig.bit(unit);
-    u.sig = (u.sig >> unit) << unit;
-    u.sticky = false;
-    u.kind = Kind::normal;
-    if (guard && (sticky || odd)) {
-        u256 one{};
-        one.set_bit(unit);
-        std::uint64_t carry = 0;
-        u.sig = add_u256(u.sig, one, carry);
-        if (carry) {
-            u.sig = {};
-            u.sig.set_bit(255);
-            ++u.wexp;
-        }
-    }
-    return float256::from_unpacked(u);
+    return float256::round_integral(x, detail::current_mode(), true);
+}
+/// As rint, but never raises inexact (C `nearbyint`).
+[[nodiscard]] constexpr float256 nearbyint(float256 x) noexcept {
+    return float256::round_integral(x, detail::current_mode(), false);
+}
+/// IEEE roundToIntegral with an explicit direction (no flags).
+[[nodiscard]] constexpr float256 round_to_integral(float256 x, round_mode m) noexcept {
+    return float256::round_integral(x, m, false);
 }
 
 // Integer part in *iptr, signed fraction returned. modf(±∞) yields ±0.

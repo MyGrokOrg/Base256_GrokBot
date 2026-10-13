@@ -6,10 +6,7 @@
 
 namespace base256 {
 
-[[nodiscard]] inline float256 nearbyint(float256 x) {
-    // Default rounding mode is roundTiesToEven, same as rint.
-    return rint(x);
-}
+// nearbyint lives in float256.hpp (current rounding mode, no inexact).
 
 [[nodiscard]] inline float256 fdim(float256 x, float256 y) {
     if (x.isnan() || y.isnan()) return float256::qnan();
@@ -67,6 +64,7 @@ namespace detail_spec {
 } // namespace detail_spec
 
 [[nodiscard]] inline float256 erf(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.isinf()) return copysign(float256::one(), x);
     if (x.iszero()) return x;
@@ -76,6 +74,7 @@ namespace detail_spec {
 }
 
 [[nodiscard]] inline float256 erfc(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.isinf()) return x.signbit() ? float256::two() : float256::zero();
     if (abs(x) <= float256::two()) return float256::one() - detail_spec::erf_series(x);
@@ -84,6 +83,7 @@ namespace detail_spec {
 }
 
 [[nodiscard]] inline float256 asinh(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan() || x.isinf() || x.iszero()) return x;
     const bool s = x.signbit();
     const float256 a = abs(x);
@@ -99,6 +99,7 @@ namespace detail_spec {
 }
 
 [[nodiscard]] inline float256 acosh(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x < float256::one()) return float256::qnan();
     if (x == float256::one()) return float256::zero();
@@ -111,6 +112,7 @@ namespace detail_spec {
 }
 
 [[nodiscard]] inline float256 atanh(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.iszero()) return x;
     const float256 a = abs(x);
@@ -231,6 +233,7 @@ inline constexpr int kStirlingTerms = 40;
 
 // Natural log of |Γ(x)|. Poles (±0 and non-positive integers) return +∞.
 [[nodiscard]] inline float256 lgamma(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.isinf()) return float256::inf(false);
     if (x.iszero()) return float256::inf(false);
@@ -248,6 +251,7 @@ inline constexpr int kStirlingTerms = 40;
 
 // Γ(x). Negative integers and −∞ are NaN; tgamma(±0) is ±∞.
 [[nodiscard]] inline float256 tgamma(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.iszero()) return float256::inf(x.signbit());
     if (x.isinf()) return x.signbit() ? float256::qnan() : x;
@@ -265,6 +269,7 @@ inline constexpr int kStirlingTerms = 40;
 
 // sin and cos of the same argument, one reduction.
 inline void sincos(float256 x, float256* sin_out, float256* cos_out) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (sin_out == nullptr && cos_out == nullptr) return;
     if (x.isnan() || x.isinf()) {
         const float256 nan = x.isnan() ? x : float256::qnan();
@@ -318,6 +323,7 @@ inline void sincos(float256 x, float256* sin_out, float256* cos_out) {
 
 // IEEE remainder, plus the low 31 bits of the integer quotient (sign of x/y).
 [[nodiscard]] inline float256 remquo(float256 x, float256 y, int* quo) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (quo) *quo = 0;
     if (x.isnan() || y.isnan() || y.iszero() || x.isinf()) return float256::qnan();
     if (y.isinf()) return x;

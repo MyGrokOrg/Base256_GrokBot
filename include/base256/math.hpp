@@ -76,6 +76,7 @@ namespace detail_math {
 } // namespace detail_math
 
 [[nodiscard]] inline float256 exp(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.isinf()) return x.signbit() ? float256::zero() : x;
     if (x.iszero()) return float256::one();
@@ -96,6 +97,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 exp2(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.isinf()) return x.signbit() ? float256::zero() : x;
     if (x.iszero()) return float256::one();
@@ -110,6 +112,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 expm1(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.iszero()) return x;
     // For small x the Taylor of exp(x)-1 is more accurate
@@ -129,6 +132,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 log(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.signbit() && !x.iszero()) return float256::qnan();
     if (x.iszero()) return float256::inf(true);
@@ -161,6 +165,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 log2(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.signbit() && !x.iszero()) return float256::qnan();
     if (x.iszero()) return float256::inf(true);
@@ -173,9 +178,13 @@ namespace detail_math {
         return float256::from_int(static_cast<std::int64_t>(e) - 1);
     return log(x) * float256::log2e();
 }
-[[nodiscard]] inline float256 log10(float256 x) { return log(x) * float256::log10e(); }
+[[nodiscard]] inline float256 log10(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    return log(x) * float256::log10e();
+}
 
 [[nodiscard]] inline float256 log1p(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.iszero()) return x; // log1p(±0) = ±0
     if (x == float256::from_int(-1)) return float256::inf(true);
@@ -202,6 +211,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 pow(float256 x, float256 y) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     // C11 F.10.4.4 / IEEE 754-2019 recommended specials. These fire before
     // the NaN rule: pow(x, ±0) and pow(+1, y) are +1 for every input, NaN
     // included. pow(−1, ±∞) is +1 as well.
@@ -256,6 +266,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 cbrt(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan() || x.isinf() || x.iszero()) return x;
     const bool s = x.signbit();
     const float256 ax = abs(x);
@@ -314,6 +325,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 sin(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan() || x.iszero()) return x;
     if (x.isinf()) return float256::qnan();
     int quad = 0;
@@ -343,6 +355,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 cos(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.isinf()) return float256::qnan();
     if (x.iszero()) return float256::one();
@@ -367,6 +380,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 tan(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.isinf()) return float256::qnan();
     if (x.iszero()) return x;
@@ -382,6 +396,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 atan(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan() || x.isinf()) {
         if (x.isinf()) return copysign(float256::pi() * float256::half(), x);
         return x;
@@ -424,6 +439,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 atan2(float256 y, float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan() || y.isnan()) return float256::qnan();
     if (y.isinf() && x.isinf()) {
         // atan2(±∞, +∞) = ±π/4, atan2(±∞, −∞) = ±3π/4
@@ -449,6 +465,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 asin(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     const float256 a = abs(x);
     if (a > float256::one()) return float256::qnan();
@@ -458,6 +475,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 acos(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     const float256 a = abs(x);
     if (a > float256::one()) return float256::qnan();
@@ -465,6 +483,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 sinh(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan() || x.isinf() || x.iszero()) return x;
     const float256 a = abs(x);
     float256 y;
@@ -480,6 +499,7 @@ namespace detail_math {
     return x.signbit() ? -y : y;
 }
 [[nodiscard]] inline float256 cosh(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.isinf()) return float256::inf(false);
     const float256 a = abs(x);
@@ -492,6 +512,7 @@ namespace detail_math {
     return (e + float256::one() / e) * float256::half();
 }
 [[nodiscard]] inline float256 tanh(float256 x) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan()) return x;
     if (x.isinf()) return copysign(float256::one(), x);
     if (x.iszero()) return x;
@@ -505,6 +526,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 fmod(float256 x, float256 y) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan() || y.isnan()) return float256::qnan();
     if (y.iszero() || x.isinf()) return float256::qnan();
     if (y.isinf()) return x;
@@ -513,6 +535,7 @@ namespace detail_math {
 }
 
 [[nodiscard]] inline float256 remainder(float256 x, float256 y) {
+    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan() || y.isnan()) return float256::qnan();
     if (y.iszero() || x.isinf()) return float256::qnan();
     if (y.isinf()) return x;
