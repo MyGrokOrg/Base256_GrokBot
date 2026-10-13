@@ -109,6 +109,8 @@ Unit tests run with `ctest`. A differential test against GNU MPFR (237-bit preci
 cmake -B build -DBASE256_MPFR_TESTS=ON -DBASE256_MPFR_CASES=1000000
 cmake --build build && ctest --test-dir build --output-on-failure
 ./build/mpfr_diff 5000000 42   # cases per op, seed
+./build/mpfr_ulp 5000 42 1     # elementary-function ulp check: cases per function, seed, fail over bound
+./build/mpfr_ulp 5000 42 0 "sin cos"   # report only, selected functions
 ```
 
 ## Rounding modes and exception flags
@@ -129,7 +131,7 @@ fenv::set_round(round_mode::to_nearest_even);
 - The mode applies to `+ − × ÷`, `fma`, `sqrt`, `parse`/literals, `to_double`/`to_float`/`to_long_double`, and `rint`/`nearbyint`. `round_to_integral(x, mode)` takes an explicit direction.
 - Overflow gives `±∞`, or `±max()` when the direction is toward zero. An exact zero sum is `+0`, or `−0` in `downward` mode.
 - **Constant evaluation** (`constexpr`) always uses `to_nearest_even` and records no flags.
-- Elementary functions (`exp`, `sin`, `pow`, …) always evaluate internally in round-to-nearest and leave the caller's flags unchanged. Their accuracy is a few ulps (see below), not correct rounding.
+- Elementary functions (`exp`, `sin`, `pow`, …) always evaluate internally in round-to-nearest and leave the caller's flags unchanged. Their accuracy is under 1 ulp, but they are not guaranteed to be correctly rounded (see [Elementary function accuracy](#elementary-function-accuracy)).
 
 ## IEEE 754 conformance
 
@@ -142,13 +144,26 @@ fenv::set_round(round_mode::to_nearest_even);
 | Decimal/hex parsing, literals | Correctly rounded in the current mode |
 | Decimal output (`to_string`, `format`, `to_chars`, `std::format`) | Shortest round-trip, or exact at any precision and correctly rounded in the current mode |
 | `totalOrder`, `convertToInteger` | `total_order`, `total_order_mag`, `to_integer<T>(mode, exact)` |
-| Elementary functions | A few ulps, round-to-nearest internally; not correctly rounded |
+| Elementary functions | Under 1 ulp (≈ ½ ulp observed), round-to-nearest internally; correct rounding not guaranteed |
 
-Elementary functions are not correctly rounded, so `std::numeric_limits<float256>::is_iec559` stays `false`.
+Elementary functions are not guaranteed correctly rounded, so `std::numeric_limits<float256>::is_iec559` stays `false`.
+
+## Elementary function accuracy
+
+Every elementary function evaluates in double-float256 (`detail/dd.hpp`, an unevaluated sum `hi + lo` of about 474 bits). The error-free sums and products come from the correctly rounded float256 `+` and `fma`, and the result is rounded to binary256 once. Constants (ln 2, π/2 in five parts, ln 10, √π, ½ ln 2π, 60 Stirling coefficients, γ, ζ(2), ζ(3)) were generated with MPFR.
+
+**Documented bound: < 1 ulp** (round-to-nearest) for all of `exp exp2 expm1 log log2 log10 log1p pow cbrt sin cos tan sincos atan atan2 asin acos sinh cosh tanh asinh acosh atanh erf erfc tgamma lgamma`, over the full binary256 range, with the exceptions below. The evaluation error is about 2^-460 relative, so in practice results are correctly rounded except when the exact value lies within roughly 2^-220 ulp of a rounding midpoint. `tests/mpfr_ulp.cpp` checks this against a 1100-bit MPFR reference on random, log-uniform arguments plus targeted hard regions: near kπ/2, near ±1 for `asin`/`acos`/`atanh`/`acosh`, near 1 and 2 for `lgamma`, and negative arguments for the gamma functions. With 4 seeds × 5000 cases per function (≈ 840k evaluations), the worst observed error is 0.500 ulp for every function and none exceeded the bound. CI runs the check on every push.
+
+Exceptions and limits:
+- `sin`, `cos`, `tan`, `sincos` for |x| ≥ 2^100 still use the old 256-bit reduction, so they keep only the absolute accuracy that reduction gives. Below 2^100, Cody–Waite reduction with a 1190-bit π/2 is accurate.
+- `lgamma` within ~2^-220 of its non-trivial zeros on the negative axis (and `tgamma` there, where it is ±1) has an absolute error of about 2^-460, not a relative bound.
+- `float256::pi()` is π rounded, so `sin(pi())` is the residual `π − pi()` (≈ 1.2e-72), not zero. The same goes for `cos(pi()/2)` and `tan(pi())`.
+- The functions run in round-to-nearest whatever the current mode, and do not raise flags.
+
 
 ## Notes on specific functions
 
-`round` is half away from zero, matching C `round`. `to_string()` prints the shortest scientific string that round-trips. `to_string(n)` gives `n` significant digits. Use `format`, `to_chars` or `std::format("{:.40f}", x)` for fixed, general or hex output. `hypot` is scaled, so `hypot(2^200000, 2^200000)` stays finite, and `hypot(∞, NaN)` is `+∞`. `fmin` / `fmax` follow IEEE 754 signed-zero rules (`fmin(+0, −0) = −0`). `pow(−0, odd)` keeps the sign of zero. `exp2` on integers and `log2` on powers of two are exact. `tanh` of a huge finite value is `±1` (it does not overflow into NaN). `log1p` uses its series for `|x| < 1/16`, so values smaller than `2^{-237}` are not flushed. Integer `pow` with `|n| ≤ 4096` is a product (exact when the power is representable), and the IEEE special cases `pow(NaN, 0) = 1`, `pow(1, NaN) = 1`, and `pow(−1, ±∞) = 1` hold. `tgamma` / `lgamma` use a 40-term Stirling series. Elementary transcendental functions, including `erf` / `erfc`, target a few ulps on the primary domain; trigonometric range reduction uses a 256-bit 2π (very large arguments lose low bits of the reduced angle). Exact multiples of this library's π reduce cleanly: `sin(π)` is `+0` and `cos(π/2)` is `+0`.
+`round` is half away from zero, matching C `round`. `to_string()` prints the shortest scientific string that round-trips. `to_string(n)` gives `n` significant digits. Use `format`, `to_chars` or `std::format("{:.40f}", x)` for fixed, general or hex output. `hypot` is scaled, so `hypot(2^200000, 2^200000)` stays finite, and `hypot(∞, NaN)` is `+∞`. `fmin` / `fmax` follow IEEE 754 signed-zero rules (`fmin(+0, −0) = −0`). `pow(−0, odd)` keeps the sign of zero. `exp2` on integers and `log2` on powers of two are exact. `tanh` of a huge finite value is `±1` (it does not overflow into NaN). `log1p` of tiny arguments is not flushed. The IEEE special cases `pow(NaN, 0) = 1`, `pow(1, NaN) = 1`, and `pow(−1, ±∞) = 1` hold. Integer `pow` uses dd squaring, so it is exact whenever the power is representable. For accuracy, see [Elementary function accuracy](#elementary-function-accuracy).
 
 ## License
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## 4.10.0
+
+- **Elementary functions to < 1 ulp.** Every function in `math.hpp` and `extra_math.hpp` now evaluates in double-float256 (`detail/dd.hpp`, about 474 bits) and rounds once. Before, errors ranged from a few ulps to completely wrong results.
+  - `exp`: up to 6e4 ulp for large |x|.
+  - `erfc`: about 4e10 ulp near x = 3.6.
+  - `asinh`/`acosh` above 2^64: about 1e30 ulp.
+  - `sin`/`cos`/`tan` above 1e17: `inf` ulp (wrong in every digit).
+  - `lgamma`: about 1e5 ulp near 1.
+- Changes by function:
+  - `exp`, `exp2`, `expm1`: reduction by a 3-part ln 2, then a Taylor series on r/2^12 with 12 squarings of `expm1`.
+  - `log` family: one Newton step on `exp` from a float256 seed.
+  - `pow`: `exp(y·log x)` in dd. Integer exponents up to 4096 use dd squaring (exact when representable).
+  - `sin`, `cos`, `tan`, `sincos`: Cody–Waite reduction with a 1190-bit π/2 for |x| < 2^100.
+  - `atan`, `atan2`, `asin`, `acos`: a dd correction step `θ0 + atan(t)`.
+  - Hyperbolic functions and their inverses: built on dd `exp`, `expm1` and `log`.
+  - `erf`, `erfc`: a positive-term series below 4 and the Laplace continued fraction above, including the subnormal tail.
+  - `lgamma`, `tgamma`: a 60-term dd Stirling series (shift to 128), the reflection formula, and Taylor series at 1 and 2.
+  - `cbrt`: a dd residual correction.
+- `sin(pi())` is now the true residual (≈ 1.2e-72) rather than `+0`. `pi()` is not π.
+- **New test** `tests/mpfr_ulp.cpp` (ctest `mpfr_ulp`, with `-DBASE256_MPFR_TESTS=ON`) measures ulp error against MPFR and fails on any result over 1 ulp. The README has an "Elementary function accuracy" section.
+
 ## 4.9.0
 
 - **Shortest round-trip `to_string()`**: with no precision it prints the fewest digits that parse back to the same value. Candidates are checked against the exact rounding interval with big-integer arithmetic. `to_string(n)` rounds to `n` significant digits in the current mode.

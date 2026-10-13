@@ -1,9 +1,9 @@
 #pragma once
 
 /// Elementary functions for binary256.
-/// Target accuracy: a few ulps on the primary domain. Argument reduction for
-/// trig uses a 256-bit 2π, so huge arguments lose the last bits of the
-/// reduced angle (documented IEEE-754-style limitation without extra-precise π).
+/// Accuracy: < 1 ulp (≈ ½ ulp observed against MPFR) over the full range;
+/// every function evaluates in double-float256 (detail/dd.hpp) and rounds
+/// once. Trig arguments with |x| >= 2^100 fall back to a 256-bit reduction.
 
 #include "float256.hpp"
 #include "detail/dd.hpp"

@@ -13,7 +13,7 @@ jobs:
       matrix:
         cxx: [g++, clang++]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure
         run: cmake -B build -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_BUILD_TYPE=Release
       - name: Build
@@ -28,11 +28,11 @@ jobs:
       matrix:
         cxx: [g++, clang++]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install MPFR
         run: sudo apt-get update && sudo apt-get install -y libmpfr-dev
       - name: Configure
-        run: cmake -B build -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_BUILD_TYPE=Release -DBASE256_MPFR_TESTS=ON -DBASE256_MPFR_CASES=20000
+        run: cmake -B build -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_BUILD_TYPE=Release -DBASE256_MPFR_TESTS=ON -DBASE256_MPFR_CASES=20000 -DBASE256_ULP_CASES=2000
       - name: Build
         run: cmake --build build --config Release
       - name: Test
@@ -41,11 +41,11 @@ jobs:
   sanitizers:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install MPFR
         run: sudo apt-get update && sudo apt-get install -y libmpfr-dev
       - name: Configure
-        run: cmake -B build -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBASE256_MPFR_TESTS=ON -DBASE256_MPFR_CASES=1500 "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-sanitize-recover=undefined"
+        run: cmake -B build -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBASE256_MPFR_TESTS=ON -DBASE256_MPFR_CASES=1500 -DBASE256_ULP_CASES=100 "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-sanitize-recover=undefined"
       - name: Build
         run: cmake --build build
       - name: Test
