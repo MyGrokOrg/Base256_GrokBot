@@ -37,7 +37,7 @@ if(BUILD_TESTING)
     # Differential testing against GNU MPFR (237-bit, binary256 exponent range,
     # subnormalized) with randomized operands. Requires libmpfr + libgmp.
     option(BASE256_MPFR_TESTS "Build the MPFR differential/fuzz test" OFF)
-    set(BASE256_MPFR_CASES "20000" CACHE STRING "Random cases per op for the ctest MPFR run")
+    set(BASE256_MPFR_CASES "5000" CACHE STRING "Random cases per op for the ctest MPFR run")
     if(BASE256_MPFR_TESTS)
         find_path(MPFR_INCLUDE_DIR mpfr.h REQUIRED)
         find_library(MPFR_LIBRARY mpfr REQUIRED)

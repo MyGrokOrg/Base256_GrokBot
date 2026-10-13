@@ -525,22 +525,14 @@ namespace detail_math {
     return e / (e + float256::two());
 }
 
-[[nodiscard]] inline float256 fmod(float256 x, float256 y) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan() || y.isnan()) return float256::qnan();
-    if (y.iszero() || x.isinf()) return float256::qnan();
-    if (y.isinf()) return x;
-    const float256 q = trunc(x / y);
-    return x - q * y;
+/// Exact: x - trunc(x/y)*y, sign of x. invalid for y == 0 or x infinite.
+[[nodiscard]] constexpr float256 fmod(float256 x, float256 y) noexcept {
+    return float256::remainder_impl(x, y, false, nullptr);
 }
 
-[[nodiscard]] inline float256 remainder(float256 x, float256 y) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan() || y.isnan()) return float256::qnan();
-    if (y.iszero() || x.isinf()) return float256::qnan();
-    if (y.isinf()) return x;
-    const float256 q = rint(x / y); // remainder: ties to even
-    return x - q * y;
+/// Exact IEEE remainder: x - n*y with n = x/y rounded to nearest, ties to even.
+[[nodiscard]] constexpr float256 remainder(float256 x, float256 y) noexcept {
+    return float256::remainder_impl(x, y, true, nullptr);
 }
 
 } // namespace base256

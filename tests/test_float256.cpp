@@ -535,6 +535,34 @@ int main() {
         CHECK(base256::abs(payload).issignaling());
     }
 
+    // --- exact fmod / remainder / remquo -----------------------------------
+    {
+        const float256 one = float256::one();
+        const float256 big = base256::ldexp(one, 200000) + one * float256(0.0); // 2^200000
+        // fmod(2^200000, 3) = 2^200000 mod 3 = 1 (2^even = 1 mod 3)
+        CHECK(base256::fmod(big, float256(3.0)) == one);
+        CHECK(base256::remainder(big, float256(3.0)) == one);
+        CHECK(base256::fmod(float256(7.0), float256(2.0)) == one);
+        CHECK(base256::remainder(float256(7.0), float256(2.0)) == -one);   // 7/2 = 3.5 -> 4
+        CHECK(base256::remainder(float256(5.0), float256(2.0)) == one);    // 2.5 -> 2
+        CHECK(base256::fmod(-float256(7.0), float256(2.0)) == -one);
+        CHECK(base256::fmod(float256(6.0), float256(3.0)).iszero());
+        CHECK(base256::fmod(-float256(6.0), float256(3.0)).signbit());
+        CHECK(base256::fmod(one, float256::zero()).isnan());
+        CHECK(base256::fmod(float256::inf(), one).isnan());
+        CHECK(base256::fmod(one, float256::inf()) == one);
+        int q = 0;
+        const float256 r = base256::remquo(float256(29.0), float256(3.0), &q);  // 29/3 = 9.67 -> 10
+        CHECK(r == -one && q == 10);
+        (void)base256::remquo(-float256(29.0), float256(3.0), &q);
+        CHECK(q == -10);
+        // subnormal operands
+        const float256 dm = float256::denorm_min();
+        CHECK(base256::fmod(dm * float256(7.0), dm * float256(2.0)) == dm);
+        CHECK(base256::fmod(float256::min(), dm * float256(3.0)) ==
+              dm * float256(1.0));  // 2^236 mod 3 = 1
+    }
+
     std::cout << "passed=" << g_pass << " failed=" << g_fails << "\n";
     return g_fails ? 1 : 0;
 }

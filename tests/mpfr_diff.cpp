@@ -185,7 +185,7 @@ long g_fail = 0;
 long g_total = 0;
 
 const char* kModeName[5] = {"RNE", "RNA", "RTZ", "RUP", "RDN"};
-const char* kOpName[6] = {"add", "sub", "mul", "div", "fma", "sqrt"};
+const char* kOpName[8] = {"add", "sub", "mul", "div", "fma", "sqrt", "fmod", "remainder"};
 
 int mp_op(int op, mpfr_ptr r, Ctx& k, mpfr_rnd_t rnd) {
     switch (op) {
@@ -194,7 +194,9 @@ int mp_op(int op, mpfr_ptr r, Ctx& k, mpfr_rnd_t rnd) {
         case 2: return mpfr_mul(r, k.a, k.b, rnd);
         case 3: return mpfr_div(r, k.a, k.b, rnd);
         case 4: return mpfr_fma(r, k.a, k.b, k.c, rnd);
-        default: return mpfr_sqrt(r, k.a, rnd);
+        case 5: return mpfr_sqrt(r, k.a, rnd);
+        case 6: return mpfr_fmod(r, k.a, k.b, rnd);
+        default: return mpfr_remainder(r, k.a, k.b, rnd);
     }
 }
 
@@ -205,7 +207,9 @@ float256 f_op(int op, float256 a, float256 b, float256 c) {
         case 2: return a * b;
         case 3: return a / b;
         case 4: return base256::fma(a, b, c);
-        default: return base256::sqrt(a);
+        case 5: return base256::sqrt(a);
+        case 6: return base256::fmod(a, b);
+        default: return base256::remainder(a, b);
     }
 }
 
@@ -348,7 +352,7 @@ int main(int argc, char** argv) {
         const bool any_snan = a.issignaling() || b.issignaling() || c.issignaling();
         for (char mc : modes) {
             const int m = mc - '0';
-            for (int op = 0; op < 6; ++op) {
+            for (int op = 0; op < 8; ++op) {
                 const bool in_nan = op == 5 ? a.isnan()
                                   : op == 4 ? (a.isnan() || b.isnan() || c.isnan())
                                             : (a.isnan() || b.isnan());

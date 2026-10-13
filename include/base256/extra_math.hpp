@@ -322,22 +322,9 @@ inline void sincos(float256 x, float256* sin_out, float256* cos_out) {
 }
 
 // IEEE remainder, plus the low 31 bits of the integer quotient (sign of x/y).
-[[nodiscard]] inline float256 remquo(float256 x, float256 y, int* quo) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (quo) *quo = 0;
-    if (x.isnan() || y.isnan() || y.iszero() || x.isinf()) return float256::qnan();
-    if (y.isinf()) return x;
-    const float256 q = rint(x / y);
-    const float256 r = x - q * y;
-    if (quo && q.isfinite() && !q.iszero()) {
-        const float256 aq = abs(q);
-        const float256 high = trunc(ldexp(aq, -31));
-        const float256 low = aq - ldexp(high, 31);
-        int bits = static_cast<int>(low.to_double());
-        if (q.signbit()) bits = -bits;
-        *quo = bits;
-    }
-    return r;
+/// IEEE remainder plus the sign and low 31 bits of the rounded quotient.
+[[nodiscard]] constexpr float256 remquo(float256 x, float256 y, int* quo) noexcept {
+    return float256::remainder_impl(x, y, true, quo);
 }
 
 } // namespace base256

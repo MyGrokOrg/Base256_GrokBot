@@ -426,6 +426,92 @@ public:
         return pack(u, round_mode::to_nearest_even); // exact
     }
 private:
+public:
+    /// Exact fmod (ieee == false, quotient truncated) or IEEE remainder
+    /// (ieee == true, quotient rounded to nearest, ties to even). The result is
+    /// always exact. If quo is non-null it receives the sign of x/y and the low
+    /// 31 bits of the integral quotient (C remquo).
+    static constexpr float256 remainder_impl(float256 x, float256 y, bool ieee, int* quo) noexcept {
+        using namespace detail;
+        if (quo) *quo = 0;
+        Unpacked ux = x.unpack();
+        Unpacked uy = y.unpack();
+        if (ux.signaling || uy.signaling) raise_flag(fe_invalid);
+        if (ux.kind == Kind::nan) return pack(ux);
+        if (uy.kind == Kind::nan) return pack(uy);
+        if (ux.kind == Kind::inf || uy.kind == Kind::zero) return invalid_nan();
+        if (uy.kind == Kind::inf || ux.kind == Kind::zero) return x;
+        const bool qneg = ux.sign != uy.sign;
+        // Integer significands: value = m * 2^(wexp - 236), m < 2^237.
+        u256 mx = ux.sig >> kLsbPos;
+        const u256 my = uy.sig >> kLsbPos;
+        const int ex = ux.wexp;
+        const int ey = uy.wexp;
+        u256 r{};
+        std::uint64_t qlow = 0;
+        if (ex < ey) {
+            r = mx; // |x| < |y|: quotient 0
+        } else {
+            r = mx;
+            std::uint64_t br = 0;
+            if (!(r < my)) { r = sub_u256(r, my, br); qlow = 1; }
+            for (int i = ex - ey; i > 0; --i) {
+                r = r << 1;
+                qlow <<= 1;
+                if (!(r < my)) { r = sub_u256(r, my, br); qlow |= 1; }
+            }
+        }
+        // Now |x| = q*|y| + r*2^(ey-236), 0 <= r < my.
+        bool flip = false;
+        if (ieee) {
+            const int c = ex < ey - 1 ? -1 : 0; // |x| < |y|/2 when ex < ey - 1
+            bool round_up = false;
+            if (c == 0) {
+                // compare 2r with my (r may be scaled by 2^(ex-ey) if ex < ey)
+                if (ex >= ey) {
+                    const u256 r2 = r << 1;
+                    round_up = my < r2 || (r2 == my && (qlow & 1));
+                } else { // ex == ey - 1: |x| = mx * 2^(ex-236), |y|/2 = my * 2^(ey-237)
+                    round_up = my < mx; // ties (equal) go to even quotient 0
+                }
+            }
+            if (round_up) {
+                ++qlow;
+                flip = true;
+            }
+        }
+        if (quo) {
+            const int q31 = static_cast<int>(qlow & 0x7FFFFFFFULL);
+            *quo = qneg ? -q31 : q31;
+        }
+        Unpacked u;
+        u.kind = Kind::normal;
+        if (!flip) {
+            if (r.is_zero()) return zero(ux.sign);
+            u.sign = ux.sign;
+            u.sig = r;
+            u.wexp = (ex < ey ? ex : ey) + (255 - 236) - 19;
+        } else {
+            // remainder = r - |y| (negative relative to x's sign)
+            std::uint64_t br = 0;
+            if (ex >= ey) {
+                u.sig = sub_u256(my, r, br);
+                u.wexp = ey;
+            } else {
+                // |x| - |y| with ex == ey - 1: my*2 - mx in units of 2^(ex-236)
+                u.sig = sub_u256(my << 1, mx, br);
+                u.wexp = ex;
+            }
+            u.sign = !ux.sign;
+            if (u.sig.is_zero()) return zero(ux.sign);
+        }
+        // u.sig is an integer in units of 2^(wexp - 236); normalize to bit 255.
+        const int lz = u.sig.clz();
+        u.wexp = u.wexp + (255 - lz) - 236;
+        u.sig = u.sig << lz;
+        return pack(u, round_mode::to_nearest_even); // exact
+    }
+private:
     static constexpr float256 invalid_nan() noexcept {
         detail::raise_flag(fe_invalid);
         return pack(make_nan());
