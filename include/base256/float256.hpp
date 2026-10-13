@@ -26,28 +26,9 @@
 #include <string_view>
 #include <utility>
 
-// glibc/libstdc++ define isnan/isinf/issubnormal as function-like macros.
-#ifdef isnan
-#undef isnan
-#endif
-#ifdef isinf
-#undef isinf
-#endif
-#ifdef isfinite
-#undef isfinite
-#endif
-#ifdef isnormal
-#undef isnormal
-#endif
-#ifdef issubnormal
-#undef issubnormal
-#endif
-#ifdef signbit
-#undef signbit
-#endif
-#ifdef fpclassify
-#undef fpclassify
-#endif
+// <cmath> (included above) guarantees isnan/isinf/signbit/... are functions,
+// not macros, so the member and free functions below need no #undef tricks
+// and user code keeps working whether it includes <math.h> or <cmath>.
 
 namespace base256 {
 
