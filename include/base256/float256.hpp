@@ -12,6 +12,9 @@
 
 #include <array>
 #include <bit>
+#include <format>
+#include <system_error>
+#include <charconv>
 #include <cctype>
 #include <climits>
 #include <cmath>
@@ -24,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 // <cmath> (included above) guarantees isnan/isinf/signbit/... are functions,
@@ -122,6 +126,25 @@ inline constexpr int kEmax         =  262143;
 inline constexpr int kExpAllOnes   = 0x7FFFF;
 inline constexpr int kLsbPos       = 19;            // 255 - 236
 inline constexpr std::uint64_t kFracHiMask = 0xFFFFFFFFFFFULL; // 44 bits
+
+#if defined(__SIZEOF_INT128__)
+__extension__ typedef unsigned __int128 u128_t;
+__extension__ typedef __int128 i128_t;
+template <class T> inline constexpr bool is_signed128_v = std::is_same_v<std::remove_cv_t<T>, i128_t>;
+template <class T> inline constexpr bool is_int_like_v =
+    (std::is_integral_v<T> && !std::is_same_v<std::remove_cv_t<T>, bool>) ||
+    std::is_same_v<std::remove_cv_t<T>, i128_t> || std::is_same_v<std::remove_cv_t<T>, u128_t>;
+#else
+// No 128-bit integer type (e.g. MSVC): integer conversions top out at 64 bits.
+typedef std::uint64_t u128_t;
+typedef std::int64_t i128_t;
+template <class T> inline constexpr bool is_signed128_v = false;
+template <class T> inline constexpr bool is_int_like_v =
+    std::is_integral_v<T> && !std::is_same_v<std::remove_cv_t<T>, bool>;
+#endif
+inline constexpr int kU128Bits = static_cast<int>(sizeof(u128_t) * 8);
+
+struct DecFloor;
 
 enum class Kind : unsigned char { zero, subnormal, normal, inf, nan };
 
@@ -528,10 +551,83 @@ public:
     constexpr explicit float256(float v) noexcept { *this = from_double(static_cast<double>(v)); }
     explicit float256(long double v) noexcept { *this = from_long_double(v); }
 
-    constexpr explicit float256(std::int64_t v) noexcept { *this = from_int(v); }
-    constexpr explicit float256(std::int32_t v) noexcept { *this = from_int(static_cast<std::int64_t>(v)); }
-    constexpr explicit float256(std::uint64_t v) noexcept { *this = from_uint(v); }
-    constexpr explicit float256(std::uint32_t v) noexcept { *this = from_uint(static_cast<std::uint64_t>(v)); }
+    /// Any integer type (including __int128 where available). Exact up to
+    /// 237 bits; wider values are rounded in the current mode.
+    template <class T>
+        requires(detail::is_int_like_v<T>)
+    constexpr explicit float256(T v) noexcept {
+        if constexpr (std::is_signed_v<T> || detail::is_signed128_v<T>) {
+            const bool neg = v < 0;
+            detail::u128_t mag = neg ? detail::u128_t(0) - static_cast<detail::u128_t>(v)
+                                     : static_cast<detail::u128_t>(v);
+            *this = from_u128(mag, neg);
+        } else {
+            *this = from_u128(static_cast<detail::u128_t>(v), false);
+        }
+    }
+
+    [[nodiscard]] static constexpr float256 from_u128(detail::u128_t v, bool negative) noexcept {
+        using namespace detail;
+        if (v == 0) return zero(negative);
+        Unpacked u;
+        u.sign = negative;
+        u.kind = Kind::normal;
+        if constexpr (kU128Bits > 64) {
+            u.sig = u256::from_words(static_cast<std::uint64_t>(v), static_cast<std::uint64_t>(v >> (kU128Bits / 2)), 0, 0);
+        } else {
+            u.sig = u256::from_words(static_cast<std::uint64_t>(v), 0, 0, 0);
+        }
+        const int lz = u.sig.clz();
+        u.sig = u.sig << lz;
+        u.wexp = 255 - lz;
+        return pack(u);  // exact: at most 128 significant bits
+    }
+
+    /// IEEE convertToInteger: round in `mode` (default toward zero, like a C
+    /// cast). NaN or out-of-range results raise invalid and saturate (NaN -> 0).
+    /// With exact = true, a value change also raises inexact.
+    template <class T>
+        requires(detail::is_int_like_v<T>)
+    [[nodiscard]] constexpr T to_integer(round_mode mode = round_mode::toward_zero,
+                                         bool exact = false) const noexcept {
+        using namespace detail;
+        constexpr bool is_signed = std::is_signed_v<T> || is_signed128_v<T>;
+        constexpr int bits = static_cast<int>(sizeof(T) * 8) - (is_signed ? 1 : 0);
+        constexpr u128_t maxmag = (bits >= kU128Bits) ? ~u128_t(0) : ((u128_t(1) << bits) - 1);
+        const T tmax = static_cast<T>(maxmag);
+        const T tmin = is_signed ? static_cast<T>(-static_cast<T>(maxmag) - 1) : T(0);
+        if (isnan()) {
+            raise_flag(fe_invalid);
+            return T(0);
+        }
+        if (isinf()) {
+            raise_flag(fe_invalid);
+            return signbit() ? tmin : tmax;
+        }
+        const float256 r = round_integral(*this, mode, exact);
+        if (r.iszero()) return T(0);
+        const Unpacked u = r.unpack();
+        const bool neg = u.sign;
+        // |r| = sig / 2^255 * 2^wexp, an integer
+        if (u.wexp >= kU128Bits) {
+            raise_flag(fe_invalid);
+            return neg ? tmin : tmax;
+        }
+        const u256 iv = u.sig >> (255 - u.wexp);
+        u128_t mag = static_cast<u128_t>(iv.d[0]);
+        if constexpr (kU128Bits > 64) mag |= static_cast<u128_t>(iv.d[1]) << (kU128Bits / 2);
+        if (!neg) {
+            if (mag > maxmag) { raise_flag(fe_invalid); return tmax; }
+            return static_cast<T>(mag);
+        }
+        if constexpr (!is_signed) {
+            raise_flag(fe_invalid);
+            return T(0);
+        } else {
+            if (mag > maxmag + 1) { raise_flag(fe_invalid); return tmin; }
+            return static_cast<T>(u128_t(0) - mag);
+        }
+    }
 
     explicit float256(std::string_view s) {
         auto r = parse(s);
@@ -873,8 +969,33 @@ public:
     [[nodiscard]] static constexpr float256 fma(float256 a, float256 b, float256 c) noexcept;
     [[nodiscard]] static constexpr float256 sqrt(float256 x) noexcept;
 
+    /// Scientific notation. precision > 0: that many significant digits,
+    /// rounded in the current mode. precision == 0: the shortest string that
+    /// parses back to the same value (round-to-nearest-even parsing).
     [[nodiscard]] std::string to_string(int precision = 0) const;
+    /// C99 hex-float, full 236-bit fraction (0x1.<59 hex digits>p<exp>).
     [[nodiscard]] std::string to_hex_string() const;
+    /// std::to_chars-style formatting. precision < 0 means shortest round-trip.
+    ///  scientific: d.ddde+XX, `precision` digits after the point
+    ///  fixed:      ddd.ddd, `precision` digits after the point
+    ///  general:    like %g with `precision` significant digits (0 -> 1); for
+    ///              shortest, whichever of fixed/scientific is shorter
+    ///  hex:        h.hhhp+X (no 0x prefix), `precision` hex digits
+    [[nodiscard]] std::string format(std::chars_format fmt, int precision = -1) const;
+
+    // Decimal digit generation (exact, big-integer based).
+    struct DecimalDigits {
+        std::string digits;   // significant digits, no leading zeros
+        int exp10 = 0;        // value = d1.d2d3... * 10^exp10
+    };
+    /// Exactly `ndig` significant digits rounded in `mode` (flags: inexact).
+    [[nodiscard]] DecimalDigits decimal_significant(int ndig, round_mode mode) const;
+    /// floor(|x|) to exactly `ndig` significant digits, plus a sticky flag.
+    [[nodiscard]] detail::DecFloor decimal_floor(int ndig) const;
+    /// The shortest digit string that round-trips under ties-to-even parsing.
+    [[nodiscard]] DecimalDigits decimal_shortest() const;
+    /// Digits of round(|x| * 10^frac) in `mode` (no leading zeros; "0" if zero).
+    [[nodiscard]] std::string decimal_fixed(int frac, round_mode mode) const;
     [[nodiscard]] std::string to_bit_string() const;
     [[nodiscard]] static std::optional<float256> parse(std::string_view s);
 
@@ -1352,6 +1473,29 @@ inline std::optional<float256> float256::parse(std::string_view s) {
     if (z == digits.size()) return zero(sign);
     digits = digits.substr(z);
 
+    // Far outside the binary256 range: avoid huge big-integer powers of ten.
+    // |x| >= 10^(exp10 + nd - 1) and < 10^(exp10 + nd).
+    {
+        const long long mag = static_cast<long long>(exp10) + static_cast<long long>(digits.size());
+        if (mag > 78915) {           // > 10^78914 > max()
+            Unpacked big;
+            big.sign = sign;
+            big.kind = Kind::normal;
+            big.sig.set_bit(255);
+            big.wexp = kEmax + 8;
+            return pack(big);
+        }
+        if (mag < -78985) {          // < 10^-78985 < denorm_min()/2
+            Unpacked tiny;
+            tiny.sign = sign;
+            tiny.kind = Kind::normal;
+            tiny.sig.set_bit(255);
+            tiny.wexp = kEmin - 1000;
+            tiny.sticky = true;
+            return pack(tiny);
+        }
+    }
+
     BigInt m = BigInt::from_dec(digits);
     constexpr int extra = 80;
 
@@ -1396,109 +1540,369 @@ inline std::optional<float256> float256::parse(std::string_view s) {
     return pack(u);
 }
 
+namespace detail {
+
+// floor(|v| / 10^k) for v = sig * 2^(wexp - 255), plus whether it was inexact.
+inline std::pair<BigInt, bool> dec_floor_scaled(const u256& sig, int wexp, int k) {
+    BigInt num = BigInt::from_u256(sig);
+    bool sticky = false;
+    if (k >= 0) {
+        BigInt den{1};
+        den.mul_pow5(static_cast<unsigned>(k));
+        const int two_exp = wexp - 255 - k;
+        if (two_exp >= 0) num.shl(two_exp);
+        else den.shl(-two_exp);
+        const BigInt rem = num.divmod(den);
+        sticky = !rem.is_zero();
+    } else {
+        const int pk = -k;
+        num.mul_pow5(static_cast<unsigned>(pk));
+        const int te2 = wexp - 255 + pk;
+        if (te2 >= 0) num.shl(te2);
+        else sticky = num.shr_sticky(-te2);
+    }
+    return {std::move(num), sticky};
+}
+
+// Increment decision for decimal rounding given the first discarded digit.
+inline bool dec_round_up(int last, bool sticky, bool odd, bool sign, round_mode mode) {
+    const bool inexact = last != 0 || sticky;
+    switch (mode) {
+        case round_mode::to_nearest_even: return last > 5 || (last == 5 && (sticky || odd));
+        case round_mode::to_nearest_away: return last >= 5;
+        case round_mode::toward_zero:     return false;
+        case round_mode::upward:          return inexact && !sign;
+        case round_mode::downward:        return inexact && sign;
+    }
+    return false;
+}
+
+// Add one to a decimal digit string; returns true if it grew a digit.
+inline bool dec_increment(std::string& d) {
+    int i = static_cast<int>(d.size()) - 1;
+    while (i >= 0 && d[static_cast<std::size_t>(i)] == '9') {
+        d[static_cast<std::size_t>(i)] = '0';
+        --i;
+    }
+    if (i < 0) {
+        d.insert(d.begin(), '1');
+        return true;
+    }
+    ++d[static_cast<std::size_t>(i)];
+    return false;
+}
+
+// Compare c * 10^q with b * 2^e exactly (all integers nonnegative).
+inline int cmp_dec_bin(const BigInt& c, int q, const BigInt& b, int e) {
+    BigInt l = c, r = b;
+    const int a = q < 0 ? -q : 0;  // multiply both sides by 10^a
+    const int z = e < 0 ? -e : 0;  // and by 2^z
+    const int ql = q + a;
+    l.mul_pow5(static_cast<unsigned>(ql));
+    l.shl(ql + z);
+    r.mul_pow5(static_cast<unsigned>(a));
+    r.shl(e + z + a);
+    if (l < r) return -1;
+    if (r < l) return 1;
+    return 0;
+}
+
+} // namespace detail
+
+namespace detail {
+struct DecFloor {
+    std::string digits;  // exactly the requested count, floor of |x|
+    int exp10 = 0;       // first digit at 10^exp10
+    bool sticky = false; // nonzero digits below
+};
+// Round a floor digit string to k <= digits.size() significant digits.
+inline std::pair<std::string, int> round_floor_digits(const DecFloor& f, int k, bool sign,
+                                                      round_mode mode, bool& inexact) {
+    std::string d = f.digits.substr(0, static_cast<std::size_t>(k));
+    int n = f.exp10;
+    const int last = static_cast<std::size_t>(k) < f.digits.size() ? f.digits[static_cast<std::size_t>(k)] - '0' : 0;
+    bool sticky = f.sticky;
+    for (std::size_t i = static_cast<std::size_t>(k) + 1; !sticky && i < f.digits.size(); ++i)
+        sticky = f.digits[i] != '0';
+    inexact = last != 0 || sticky;
+    const bool odd = ((d.back() - '0') & 1) != 0;
+    if (dec_round_up(last, sticky, odd, sign, mode)) {
+        if (dec_increment(d)) {
+            d.pop_back();
+            ++n;
+        }
+    }
+    return {std::move(d), n};
+}
+} // namespace detail
+
+inline detail::DecFloor float256::decimal_floor(int ndig) const {
+    using namespace detail;
+    DecFloor out;
+    const Unpacked u = unpack();
+    // Estimate the decimal exponent from the top 53 bits, then correct it.
+    const std::uint64_t frac53 = (u.sig.d[3] >> 11) & 0x000FFFFFFFFFFFFFULL;
+    const double mant = std::bit_cast<double>((1023ULL << 52) | frac53);
+    int n = static_cast<int>(std::floor(static_cast<double>(u.wexp) * 0.30102999566398119521373889472449 +
+                                        std::log10(mant)));
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        auto [q, sticky] = dec_floor_scaled(u.sig, u.wexp, n - ndig + 1);
+        std::string digs = q.to_dec();
+        const int got = digs == "0" ? 0 : static_cast<int>(digs.size());
+        if (got != ndig) {
+            n += got - ndig;
+            continue;
+        }
+        out.digits = std::move(digs);
+        out.exp10 = n;
+        out.sticky = sticky;
+        return out;
+    }
+    out.digits.assign(static_cast<std::size_t>(ndig), '0');  // not reached
+    out.exp10 = n;
+    return out;
+}
+
+inline float256::DecimalDigits float256::decimal_significant(int ndig, round_mode mode) const {
+    using namespace detail;
+    if (ndig < 1) ndig = 1;
+    const DecFloor f = decimal_floor(ndig + 1);
+    bool inexact = false;
+    auto [d, n] = round_floor_digits(f, ndig, signbit(), mode, inexact);
+    if (inexact) raise_flag(fe_inexact);
+    return DecimalDigits{std::move(d), n};
+}
+
+inline float256::DecimalDigits float256::decimal_shortest() const {
+    using namespace detail;
+    const Unpacked u = unpack();
+    // Exact integer significand on the format's grid: |x| = M * 2^qe.
+    const int qe = (u.wexp > kEmin ? u.wexp : kEmin) - 236;
+    const int shift = (qe + 236) - u.wexp;  // >= 0
+    const u256 M = (u.sig >> kLsbPos) >> shift;
+    const bool even = !M.bit(0);
+    const bool pow2_boundary = u.wexp > kEmin && M == (u256{1} << 236);
+    // Rounding interval [lo, hi] (inclusive iff M even), as B * 2^E.
+    BigInt hiB = BigInt::from_u256(M);
+    hiB.shl(1);
+    hiB.add_u32(1);
+    const int hiE = qe - 1;
+    BigInt loB = BigInt::from_u256(M);
+    int loE;
+    if (pow2_boundary) {
+        loB.shl(2);
+        loB.sub(BigInt{1});
+        loE = qe - 2;
+    } else {
+        loB.shl(1);
+        loB.sub(BigInt{1});
+        loE = qe - 1;
+    }
+    // Candidates are roundings of the exact value to k significant digits:
+    // c * 10^q with q = n - k + 1 >= q0 := n - (max_digits10 - 1). Scale the
+    // bounds once by 10^-q0 so each check is a small-by-big multiply:
+    //   c * 10^(q - q0) * Bd  vs  Bn,  where bound = Bn / Bd = B * 2^E / 10^q0.
+    const unsigned saved = fenv::get_flags();
+    const DecFloor fl = decimal_floor(max_digits10 + 1);
+    auto cand = [&](int k) {
+        bool ix = false;
+        auto [d, n] = round_floor_digits(fl, k, false, round_mode::to_nearest_even, ix);
+        return DecimalDigits{std::move(d), n};
+    };
+    DecimalDigits best = cand(max_digits10);
+    const int q0 = best.exp10 - (max_digits10 - 1);
+    auto scaled = [&](const BigInt& B, int E, BigInt& num, BigInt& den) {
+        num = B;
+        den = BigInt{1};
+        if (E >= 0) num.shl(E); else den.shl(-E);
+        if (q0 >= 0) { den.mul_pow5(static_cast<unsigned>(q0)); den.shl(q0); }
+        else { num.mul_pow5(static_cast<unsigned>(-q0)); num.shl(-q0); }
+    };
+    BigInt loN, loD, hiN, hiD;
+    scaled(loB, loE, loN, loD);
+    scaled(hiB, hiE, hiN, hiD);
+    auto ok = [&](const DecimalDigits& d) {
+        const int q = d.exp10 - static_cast<int>(d.digits.size()) + 1;
+        if (q < q0) return false;
+        const BigInt c = BigInt::from_dec(d.digits + std::string(static_cast<std::size_t>(q - q0), '0'));
+        BigInt l = c, h = c;
+        l.mul(loD);
+        h.mul(hiD);
+        const bool above_lo = even ? !(l < loN) : (loN < l);
+        const bool below_hi = even ? !(hiN < h) : (h < hiN);
+        return above_lo && below_hi;
+    };
+    int lo = 1, hi = max_digits10;
+    while (lo < hi) {
+        const int mid = (lo + hi) / 2;
+        DecimalDigits d = cand(mid);
+        if (ok(d)) {
+            best = std::move(d);
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    if (static_cast<int>(best.digits.size()) != lo) best = cand(lo);
+    // Trim trailing zeros (possible after a rounding carry).
+    while (best.digits.size() > 1 && best.digits.back() == '0') best.digits.pop_back();
+    fenv::set_flags(saved);  // shortest output is a representation, not a rounding
+    return best;
+}
+
+inline std::string float256::decimal_fixed(int frac, round_mode mode) const {
+    using namespace detail;
+    const Unpacked u = unpack();
+    auto [q, sticky] = dec_floor_scaled(u.sig, u.wexp, -frac - 1);
+    std::string digs = q.to_dec();
+    const int last = digs.back() - '0';
+    digs.pop_back();
+    if (digs.empty()) digs = "0";
+    const bool odd = ((digs.back() - '0') & 1) != 0;
+    if (last != 0 || sticky) raise_flag(fe_inexact);
+    if (dec_round_up(last, sticky, odd, u.sign, mode)) dec_increment(digs);
+    return digs;
+}
+
+namespace detail {
+inline std::string exp_suffix(char e, int n, int min_digits) {
+    std::string out(1, e);
+    out.push_back(n < 0 ? '-' : '+');
+    std::string num = std::to_string(n < 0 ? -n : n);
+    while (static_cast<int>(num.size()) < min_digits) num.insert(num.begin(), '0');
+    return out + num;
+}
+// Render digits d1d2... * 10^(exp10) (d1 at 10^exp10) in fixed notation.
+inline std::string render_fixed(const std::string& digits, int exp10, int min_frac) {
+    std::string out;
+    const int nd = static_cast<int>(digits.size());
+    if (exp10 >= 0) {
+        if (exp10 + 1 >= nd) {
+            out = digits + std::string(static_cast<std::size_t>(exp10 + 1 - nd), '0');
+        } else {
+            out = digits.substr(0, static_cast<std::size_t>(exp10 + 1)) + "." +
+                  digits.substr(static_cast<std::size_t>(exp10 + 1));
+        }
+    } else {
+        out = "0." + std::string(static_cast<std::size_t>(-exp10 - 1), '0') + digits;
+    }
+    if (min_frac > 0) {
+        std::size_t dot = out.find('.');
+        if (dot == std::string::npos) { out.push_back('.'); dot = out.size() - 1; }
+        const int have = static_cast<int>(out.size() - dot - 1);
+        if (have < min_frac) out.append(static_cast<std::size_t>(min_frac - have), '0');
+    }
+    return out;
+}
+inline std::string render_sci(const std::string& digits, int exp10, int min_frac) {
+    std::string out(1, digits[0]);
+    std::string rest = digits.substr(1);
+    while (static_cast<int>(rest.size()) < min_frac) rest.push_back('0');
+    if (!rest.empty()) out += "." + rest;
+    return out + exp_suffix('e', exp10, 2);
+}
+} // namespace detail
+
 inline std::string float256::to_string(int precision) const {
     using namespace detail;
-    if (isnan()) return "nan";
+    if (isnan()) return signbit() ? "-nan" : "nan";
     if (isinf()) return signbit() ? "-inf" : "inf";
     if (iszero()) return signbit() ? "-0" : "0";
-    if (precision <= 0) precision = max_digits10;
-    if (precision > 80) precision = 80;
-
-    const Unpacked u = unpack();
-    const std::uint64_t top = u.sig.d[3];
-    const std::uint64_t frac53 = (top >> 11) & 0x000FFFFFFFFFFFFFULL;
-    const std::uint64_t dbits = (1023ULL << 52) | frac53;
-    const double mant = std::bit_cast<double>(dbits);
-    const double log10v =
-        static_cast<double>(u.wexp) * 0.30102999566398119521373889472449 +
-        std::log10(mant);
-    int n = static_cast<int>(std::floor(log10v));
-
-    auto digits_at = [&](int k) -> std::pair<std::string, bool> {
-        BigInt num = BigInt::from_u256(u.sig);
-        const int two_exp = u.wexp - 255 - k;
-        bool sticky = false;
-        if (k >= 0) {
-            BigInt den{1};
-            den.mul_pow5(static_cast<unsigned>(k));
-            if (two_exp >= 0) {
-                num.shl(two_exp);
-            } else {
-                den.shl(-two_exp);
-            }
-            const BigInt rem = num.divmod(den);
-            sticky = !rem.is_zero();
-        } else {
-            const int pk = -k;
-            num.mul_pow5(static_cast<unsigned>(pk));
-            const int te2 = u.wexp - 255 + pk;
-            if (te2 >= 0) {
-                num.shl(te2);
-            } else {
-                sticky = num.shr_sticky(-te2);
-            }
-        }
-        return {num.to_dec(), sticky};
-    };
-
-    // The double log10 estimate is off by one near powers of ten (the top 53
-    // significand bits can sit on the wrong side of an integer boundary).
-    // Regenerate until floor(|v| / 10^(n-precision)) has exactly precision+1
-    // digits, then round ties-to-even using the extra digit and any sticky bit.
-    std::string core;
-    for (int attempt = 0; attempt < 8; ++attempt) {
-        auto [digs, sticky1] = digits_at(n - precision);
-        if (digs == "0") {
-            n -= precision > 4 ? precision : 4;
-            continue;
-        }
-        const int want = precision + 1;
-        const int got = static_cast<int>(digs.size());
-        if (got != want) {
-            n += got - want;
-            continue;
-        }
-        const int last = digs.back() - '0';
-        digs.pop_back();
-        const bool odd = !digs.empty() && ((digs.back() - '0') & 1);
-        const bool inc = last > 5 || (last == 5 && (sticky1 || odd));
-        if (inc) {
-            int i = static_cast<int>(digs.size()) - 1;
-            while (i >= 0 && digs[static_cast<std::size_t>(i)] == '9') {
-                digs[static_cast<std::size_t>(i)] = '0';
-                --i;
-            }
-            if (i < 0) {
-                digs.assign(static_cast<std::size_t>(precision), '0');
-                digs[0] = '1';
-                ++n;
-            } else {
-                ++digs[static_cast<std::size_t>(i)];
-            }
-        }
-        core = std::move(digs);
-        break;
-    }
-    if (core.empty()) core.assign(static_cast<std::size_t>(precision), '0');
-    if (static_cast<int>(core.size()) > precision)
-        core.resize(static_cast<std::size_t>(precision));
-    while (static_cast<int>(core.size()) < precision) core.push_back('0');
-
+    const DecimalDigits d = precision > 0 ? decimal_significant(precision, current_mode())
+                                          : decimal_shortest();
     std::string out;
     if (signbit()) out.push_back('-');
-    out.push_back(core[0]);
-    if (precision > 1) {
+    out.push_back(d.digits[0]);
+    if (d.digits.size() > 1) {
         out.push_back('.');
-        out.append(core, 1, std::string::npos);
-    }
-    if (precision == max_digits10 && out.find('.') != std::string::npos) {
-        while (out.size() > 2 && out.back() == '0') out.pop_back();
-        if (out.back() == '.') out.pop_back();
+        out.append(d.digits, 1, std::string::npos);
     }
     out.push_back('e');
-    if (n >= 0) out.push_back('+');
-    out += std::to_string(n);
+    if (d.exp10 >= 0) out.push_back('+');
+    out += std::to_string(d.exp10);
     return out;
+}
+
+inline std::string float256::format(std::chars_format fmt, int precision) const {
+    using namespace detail;
+    std::string sign = signbit() ? "-" : "";
+    if (isnan()) return sign + "nan";
+    if (isinf()) return sign + "inf";
+    round_mode mode = current_mode();  // not const (see narrow_to)
+    if (fmt == std::chars_format::hex) {
+        if (iszero()) {
+            std::string z = sign + "0";
+            if (precision > 0) z += "." + std::string(static_cast<std::size_t>(precision), '0');
+            return z + "p+0";
+        }
+        Unpacked u = unpack();
+        u256 sig = u.sig;
+        int e = u.wexp;
+        int nhex = 59;  // 236 fraction bits
+        if (precision >= 0 && precision < 59) {
+            bool ix = false;
+            if (round_bits(sig, 255 - 4 * precision, false, u.sign, mode, ix)) {
+                sig = {};
+                sig.set_bit(255);
+                ++e;
+            }
+            if (ix) raise_flag(fe_inexact);
+            nhex = precision;
+        }
+        std::string h;
+        const u256 f = sig << 1;
+        for (int i = 0; i < nhex; ++i) {
+            int v = 0;
+            for (int b2 = 0; b2 < 4; ++b2)
+                if (f.bit(255 - (i * 4 + b2))) v |= 1 << (3 - b2);
+            h.push_back("0123456789abcdef"[v]);
+        }
+        if (precision < 0)
+            while (!h.empty() && h.back() == '0') h.pop_back();
+        else
+            while (static_cast<int>(h.size()) < precision) h.push_back('0');
+        std::string out = sign + "1";
+        if (!h.empty()) out += "." + h;
+        return out + "p" + (e >= 0 ? "+" : "-") + std::to_string(e < 0 ? -e : e);
+    }
+    if (iszero()) {
+        if (fmt == std::chars_format::scientific) {
+            std::string z = sign + "0";
+            if (precision > 0) z += "." + std::string(static_cast<std::size_t>(precision), '0');
+            return z + "e+00";
+        }
+        if (fmt == std::chars_format::fixed && precision > 0)
+            return sign + "0." + std::string(static_cast<std::size_t>(precision), '0');
+        return sign + "0";
+    }
+    if (fmt == std::chars_format::fixed) {
+        if (precision < 0) {
+            const DecimalDigits d = decimal_shortest();
+            return sign + render_fixed(d.digits, d.exp10, 0);
+        }
+        std::string digs = decimal_fixed(precision, mode);
+        if (precision == 0) return sign + digs;
+        while (static_cast<int>(digs.size()) <= precision) digs.insert(digs.begin(), '0');
+        const std::size_t ip = digs.size() - static_cast<std::size_t>(precision);
+        return sign + digs.substr(0, ip) + "." + digs.substr(ip);
+    }
+    if (fmt == std::chars_format::scientific) {
+        const DecimalDigits d = precision < 0 ? decimal_shortest() : decimal_significant(precision + 1, mode);
+        return sign + render_sci(d.digits, d.exp10, precision < 0 ? 0 : precision);
+    }
+    // general
+    if (precision < 0) {
+        const DecimalDigits d = decimal_shortest();
+        const std::string f = render_fixed(d.digits, d.exp10, 0);
+        const std::string e = render_sci(d.digits, d.exp10, 0);
+        return sign + (f.size() <= e.size() ? f : e);
+    }
+    const int P = precision == 0 ? 1 : precision;
+    DecimalDigits d = decimal_significant(P, mode);
+    std::string digs = d.digits;
+    while (digs.size() > 1 && digs.back() == '0') digs.pop_back();  // %g trims zeros
+    if (d.exp10 < -4 || d.exp10 >= P) return sign + render_sci(digs, d.exp10, 0);
+    return sign + render_fixed(digs, d.exp10, 0);
 }
 
 inline std::string float256::to_hex_string() const {
@@ -1798,6 +2202,113 @@ inline std::string float256::to_bit_string() const {
     return ldexp(sqrt(xm * xm + ym * ym), ex);
 }
 
+
+/// IEEE 754 totalOrder: -NaN < -inf < ... < -0 < +0 < ... < +inf < +NaN,
+/// NaNs ordered by payload (signaling before quiet for positive NaNs).
+[[nodiscard]] constexpr bool total_order(float256 a, float256 b) noexcept {
+    auto key = [](float256 x) {
+        auto w = x.raw_bits();
+        if (w[3] >> 63) {
+            for (auto& v : w) v = ~v;
+        } else {
+            w[3] |= 1ULL << 63;
+        }
+        return w;
+    };
+    const auto ka = key(a), kb = key(b);
+    for (int i = 3; i >= 0; --i) {
+        if (ka[static_cast<std::size_t>(i)] != kb[static_cast<std::size_t>(i)])
+            return ka[static_cast<std::size_t>(i)] < kb[static_cast<std::size_t>(i)];
+    }
+    return true;
+}
+/// totalOrder on absolute values.
+[[nodiscard]] constexpr bool total_order_mag(float256 a, float256 b) noexcept {
+    return total_order(abs(a), abs(b));
+}
+
+/// std::to_chars-style output. precision < 0 (the default) gives the
+/// shortest round-trip representation.
+inline std::to_chars_result to_chars(char* first, char* last, float256 v,
+                                     std::chars_format fmt = std::chars_format::general,
+                                     int precision = -1) {
+    const std::string s = v.format(fmt, precision);
+    if (static_cast<std::size_t>(last - first) < s.size()) return {last, std::errc::value_too_large};
+    std::memcpy(first, s.data(), s.size());
+    return {first + s.size(), std::errc{}};
+}
+
+/// std::from_chars-style parsing (no leading '+' or whitespace; hex input
+/// has no "0x" prefix). The value is rounded in the current mode. Overflow
+/// to infinity or underflow of a nonzero input to zero reports
+/// result_out_of_range and leaves `value` unchanged.
+inline std::from_chars_result from_chars(const char* first, const char* last, float256& value,
+                                         std::chars_format fmt = std::chars_format::general) {
+    const char* p = first;
+    bool neg = false;
+    if (p < last && *p == '-') { neg = true; ++p; }
+    auto ieq = [&](const char* q, const char* word) {
+        for (; *word; ++word, ++q) {
+            if (q >= last || (static_cast<unsigned char>(*q) | 0x20) != static_cast<unsigned char>(*word)) return false;
+        }
+        return true;
+    };
+    if (ieq(p, "inf")) {
+        const char* e = p + 3;
+        if (ieq(p, "infinity")) e = p + 8;
+        value = float256::inf(neg);
+        return {e, std::errc{}};
+    }
+    if (ieq(p, "nan")) {
+        const char* e = p + 3;
+        if (e < last && *e == '(') {
+            const char* q = e + 1;
+            while (q < last && (std::isalnum(static_cast<unsigned char>(*q)) || *q == '_')) ++q;
+            if (q < last && *q == ')') e = q + 1;
+        }
+        value = neg ? -float256::qnan() : float256::qnan();
+        return {e, std::errc{}};
+    }
+    const bool hex = fmt == std::chars_format::hex;
+    auto is_dig = [&](char c) {
+        return hex ? std::isxdigit(static_cast<unsigned char>(c)) != 0 : (c >= '0' && c <= '9');
+    };
+    const char* q = p;
+    bool any = false;
+    while (q < last && is_dig(*q)) { ++q; any = true; }
+    if (q < last && *q == '.') {
+        ++q;
+        while (q < last && is_dig(*q)) { ++q; any = true; }
+    }
+    if (!any) return {first, std::errc::invalid_argument};
+    const char* mant_end = q;
+    const char ech = hex ? 'p' : 'e';
+    bool has_exp = false;
+    if (q < last && (*q | 0x20) == ech && fmt != std::chars_format::fixed) {
+        const char* r = q + 1;
+        if (r < last && (*r == '+' || *r == '-')) ++r;
+        const char* ds = r;
+        while (r < last && *r >= '0' && *r <= '9') ++r;
+        if (r > ds) { q = r; has_exp = true; }
+    }
+    if (fmt == std::chars_format::scientific && !has_exp) return {first, std::errc::invalid_argument};
+    std::string buf;
+    if (neg) buf.push_back('-');
+    if (hex) buf += "0x";
+    buf.append(p, static_cast<std::size_t>(q - p));
+    if (hex && !has_exp) buf += "p0";
+    (void)mant_end;
+    const auto r = float256::parse(buf);
+    if (!r) return {first, std::errc::invalid_argument};
+    bool nonzero_input = false;
+    for (const char* c = p; c < mant_end; ++c) {
+        if (is_dig(*c) && *c != '0') { nonzero_input = true; break; }
+    }
+    if (r->isinf() || (r->iszero() && nonzero_input)) return {q, std::errc::result_out_of_range};
+    value = *r;
+    return {q, std::errc{}};
+}
+
 } // namespace base256
 
 template <>
@@ -1865,3 +2376,88 @@ namespace base256::literals {
     return *r;
 }
 } // namespace base256::literals
+
+/// std::format support. Spec: [[fill]align][sign][#][0][width][.precision][type]
+/// with type one of a A e E f F g G (none = shortest round-trip, general).
+template <>
+struct std::formatter<base256::float256, char> {
+    char fill = ' ';
+    char align = 0;      // '<', '>', '^' or 0
+    char sign = '-';     // '+', '-', ' '
+    bool alt = false;
+    bool zero_pad = false;
+    int width = 0;
+    int precision = -1;
+    char type = 0;
+
+    constexpr auto parse(std::format_parse_context& ctx) {
+        auto it = ctx.begin();
+        const auto end = ctx.end();
+        auto is_align = [](char c) { return c == '<' || c == '>' || c == '^'; };
+        if (it != end && it + 1 != end && is_align(*(it + 1)) && *it != '}') {
+            fill = *it;
+            align = *(it + 1);
+            it += 2;
+        } else if (it != end && is_align(*it)) {
+            align = *it++;
+        }
+        if (it != end && (*it == '+' || *it == '-' || *it == ' ')) sign = *it++;
+        if (it != end && *it == '#') { alt = true; ++it; }
+        if (it != end && *it == '0') { zero_pad = true; ++it; }
+        while (it != end && *it >= '0' && *it <= '9') width = width * 10 + (*it++ - '0');
+        if (it != end && *it == '.') {
+            ++it;
+            precision = 0;
+            while (it != end && *it >= '0' && *it <= '9') precision = precision * 10 + (*it++ - '0');
+        }
+        if (it != end && *it != '}') {
+            switch (*it) {
+                case 'a': case 'A': case 'e': case 'E': case 'f': case 'F': case 'g': case 'G':
+                    type = *it++;
+                    break;
+                default:
+                    throw std::format_error("invalid float256 format type");
+            }
+        }
+        if (it != end && *it != '}') throw std::format_error("invalid float256 format spec");
+        return it;
+    }
+
+    template <class Ctx>
+    auto format(const base256::float256& v, Ctx& ctx) const {
+        std::chars_format fmt = std::chars_format::general;
+        int prec = precision;
+        switch (type) {
+            case 'a': case 'A': fmt = std::chars_format::hex; break;
+            case 'e': case 'E': fmt = std::chars_format::scientific; if (prec < 0) prec = 6; break;
+            case 'f': case 'F': fmt = std::chars_format::fixed; if (prec < 0) prec = 6; break;
+            case 'g': case 'G': fmt = std::chars_format::general; if (prec < 0) prec = 6; break;
+            default: break;
+        }
+        std::string body = base256::float256(v).format(fmt, prec);
+        bool neg = !body.empty() && body[0] == '-';
+        if (neg) body.erase(0, 1);
+        if (type == 'A' || type == 'E' || type == 'F' || type == 'G')
+            for (char& c : body) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        if (type == 'a' || type == 'A') body.insert(0, type == 'A' ? "0X" : "0x");
+        if (alt && body.find('.') == std::string::npos && v.isfinite()) {
+            const auto epos = body.find_first_of("eEpP");
+            body.insert(epos == std::string::npos ? body.size() : epos, ".");
+        }
+        std::string sgn = neg ? "-" : (sign == '+' ? "+" : (sign == ' ' ? " " : ""));
+        std::string out;
+        const int len = static_cast<int>(sgn.size() + body.size());
+        if (width > len && zero_pad && align == 0 && v.isfinite()) {
+            out = sgn + std::string(static_cast<std::size_t>(width - len), '0') + body;
+        } else if (width > len) {
+            const int padn = width - len;
+            const char a = align ? align : '>';
+            const int left = a == '<' ? 0 : (a == '^' ? padn / 2 : padn);
+            out = std::string(static_cast<std::size_t>(left), fill) + sgn + body +
+                  std::string(static_cast<std::size_t>(padn - left), fill);
+        } else {
+            out = sgn + body;
+        }
+        return std::copy(out.begin(), out.end(), ctx.out());
+    }
+};
