@@ -289,7 +289,7 @@ public:
 
     constexpr explicit float256(double v) noexcept { *this = from_double(v); }
     constexpr explicit float256(float v) noexcept { *this = from_double(static_cast<double>(v)); }
-    explicit float256(long double v) noexcept { *this = from_double(static_cast<double>(v)); }
+    explicit float256(long double v) noexcept { *this = from_long_double(v); }
 
     constexpr explicit float256(std::int64_t v) noexcept { *this = from_int(v); }
     constexpr explicit float256(std::int32_t v) noexcept { *this = from_int(static_cast<std::int64_t>(v)); }
@@ -382,6 +382,65 @@ public:
         const std::uint64_t s53 = (1ULL << 52) | dm;
         uo.sig = u256{s53} << (255 - 52);
         return pack(uo);
+    }
+
+    /// Exact conversion from long double (x87 80-bit, binary128, or binary64,
+    /// whatever the platform uses): every finite long double is representable.
+    /// NaN payloads are not carried over; the result is the default quiet NaN
+    /// with the input's sign.
+    [[nodiscard]] static float256 from_long_double(long double v) noexcept {
+        using namespace detail;
+        const bool sign = std::signbit(v);
+        if (std::isnan(v)) {
+            float256 r = qnan();
+            r.set_sign_bit(sign);
+            return r;
+        }
+        if (std::isinf(v)) return inf(sign);
+        if (v == 0.0L) return zero(sign);
+        int e = 0;
+        long double m = std::frexp(std::fabs(v), &e); // m in [0.5, 1), exact
+        Unpacked u;
+        u.sign = sign;
+        u.kind = Kind::normal;
+        // Peel off 64 significand bits at a time; ldexp and the subtraction
+        // are exact, and long double has at most 113 significand bits.
+        for (int w = 3; w >= 0 && m != 0.0L; --w) {
+            m = std::ldexp(m, 64);
+            const auto chunk = static_cast<std::uint64_t>(m);
+            m -= static_cast<long double>(chunk);
+            u.sig.d[w] = chunk;
+        }
+        u.wexp = e - 1;
+        return pack(u);
+    }
+    [[nodiscard]] long double to_long_double() const noexcept {
+        // Round once to long double precision via its significand width.
+        using namespace detail;
+        const Unpacked u = unpack();
+        if (u.kind == Kind::nan) return std::numeric_limits<long double>::quiet_NaN();
+        if (u.kind == Kind::inf)
+            return u.sign ? -std::numeric_limits<long double>::infinity()
+                          :  std::numeric_limits<long double>::infinity();
+        if (u.kind == Kind::zero) return u.sign ? -0.0L : 0.0L;
+        constexpr int P = std::numeric_limits<long double>::digits;
+        constexpr int emin = std::numeric_limits<long double>::min_exponent - 1; // min normal exp
+        constexpr int emax = std::numeric_limits<long double>::max_exponent - 1;
+        int keep = P;
+        if (u.wexp < emin) keep = P - (emin - u.wexp);
+        if (keep < -1) return u.sign ? -0.0L : 0.0L;
+        u256 sig = u.sig;
+        int wexp = u.wexp;
+        const int lsb = 256 - (keep < 0 ? 0 : keep);
+        const bool ovf = round_ne(sig, lsb, u.sticky);
+        if (ovf) { sig = {}; sig.set_bit(255); ++wexp; }
+        if (wexp > emax)
+            return u.sign ? -std::numeric_limits<long double>::infinity()
+                          :  std::numeric_limits<long double>::infinity();
+        long double r = 0.0L;
+        for (int w = 0; w < 4; ++w)
+            r += std::ldexp(static_cast<long double>(sig.d[w]), 64 * w - 255 + wexp);
+        return u.sign ? -r : r;
     }
 
     [[nodiscard]] static constexpr float256 from_uint(std::uint64_t v) noexcept {

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <random>
 #include <string>
@@ -94,6 +95,11 @@ float256 from_mpfr(mpfr_t x) {
     if (s) w[3] |= 1ULL << 63;
     mpz_clear(m);
     return float256::from_bits(w);
+}
+
+float256 from_mpfr_ld(mpfr_t tmp, long double v) {
+    mpfr_set_ld(tmp, v, MPFR_RNDN); // exact at 237 bits
+    return from_mpfr(tmp);
 }
 
 // Random operand generator with emphasis on hard cases.
@@ -239,6 +245,22 @@ int main(int argc, char** argv) {
             if (std::memcmp(&got, &want, sizeof got) != 0) {
                 if (++g_fail <= 20) std::printf("MISMATCH to_double a=%s got=%a want=%a\n", hex(a).c_str(), got, want);
             }
+        }
+    }
+    // to_long_double vs mpfr_get_ld, and the exact from_long_double round-trip.
+    for (long i = 0; i < n / 4; ++i) {
+        const float256 a = rand_f256();
+        if (a.isnan()) continue;
+        to_mpfr(k.a, a);
+        ++g_total;
+        const long double got = a.to_long_double();
+        const long double want = mpfr_get_ld(k.a, rnd);
+        if (!(got == want || (got != got && want != want)) || std::signbit(got) != std::signbit(want)) {
+            if (++g_fail <= 20) std::printf("MISMATCH to_long_double a=%s got=%La want=%La\n", hex(a).c_str(), got, want);
+        }
+        ++g_total;
+        if (!same(float256(want), from_mpfr_ld(k.c, want))) {
+            if (++g_fail <= 20) std::printf("MISMATCH from_long_double %La\n", want);
         }
     }
     std::printf("mpfr_diff seed=%llu cases/op=%ld total=%ld failures=%ld\n", seed, n, g_total, g_fail);

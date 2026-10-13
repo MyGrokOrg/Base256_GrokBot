@@ -485,6 +485,28 @@ int main() {
         CHECK(1'000.5_f256 == float256(1000.5));
     }
 
+    // --- regression: exact long double construction ----------------------
+    {
+        const long double tenth = 0.1L;
+        const float256 f(tenth);
+        CHECK(f.to_long_double() == tenth);
+        if constexpr (std::numeric_limits<long double>::digits > 53) {
+            CHECK(f != float256(0.1));
+            CHECK(f == float256::parse(std::numeric_limits<long double>::digits == 64
+                                           ? "0x1.999999999999999ap-4"
+                                           : "0x1.999999999999999999999999999ap-4").value());
+        }
+        const long double lmin = std::numeric_limits<long double>::denorm_min();
+        CHECK(float256(lmin).to_long_double() == lmin);
+        CHECK(float256(-lmin).signbit());
+        const long double lmax = std::numeric_limits<long double>::max();
+        CHECK(float256(lmax).to_long_double() == lmax);
+        CHECK(float256(std::numeric_limits<long double>::infinity()).isinf());
+        CHECK(float256(std::numeric_limits<long double>::quiet_NaN()).isnan());
+        CHECK(float256(-0.0L).signbit());
+        CHECK(float256(1.0L / 3.0L).to_long_double() == 1.0L / 3.0L);
+    }
+
     std::cout << "passed=" << g_pass << " failed=" << g_fails << "\n";
     return g_fails ? 1 : 0;
 }
