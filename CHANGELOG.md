@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.8.0
+
+- **Rounding modes**: all five IEEE 754 directions (`base256::round_mode`), per thread, via `base256::fenv::{get_round, set_round, scoped_round}`. They apply to arithmetic, `fma`, `sqrt`, parsing, the narrowing conversions and `rint`/`nearbyint`. New `round_to_integral(x, mode)`.
+- **Exception flags**: invalid, divide-by-zero, overflow, underflow (tininess after rounding) and inexact, through `fenv::{test_flags, clear_flags, raise_flags, get_flags, set_flags}`. Ordered comparisons signal invalid on NaN, while `==` signals only for a signaling NaN.
+- An exact zero sum is `−0` when rounding downward. Overflow honours the direction (`max()` toward zero).
+- **`to_float`** rounds once instead of going through `double`. `to_double`, `to_float` and `to_long_double` share one mode-aware narrowing routine.
+- **`fmod`, `remainder`, `remquo`** are exact (shift-and-subtract on the significands) and `constexpr`. They were wrong once the quotient exceeded 237 bits.
+- Elementary functions evaluate in round-to-nearest and leave the caller's flags unchanged.
+- `numeric_limits<float256>::is_iec559` is now `false`, with a conformance table in the README. The previous `true` overstated conformance.
+- The MPFR differential test covers all modes and flags, plus `fmod` and `remainder`.
+
 ## 4.7.0 (Base256_GrokBot)
 
 Correctness fixes found with the new MPFR differential test.

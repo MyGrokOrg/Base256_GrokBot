@@ -53,7 +53,7 @@ int main() {
     CHECK(L::has_infinity);
     CHECK(L::digits == 237);
     CHECK(L::digits10 == 71);
-    CHECK(L::is_iec559);
+    CHECK(!L::is_iec559);  // not claimed until conformance is complete
 
     // --- integer / double round-trip ---------------------------------------
     CHECK_EQ(float256(0).to_double(), 0.0);

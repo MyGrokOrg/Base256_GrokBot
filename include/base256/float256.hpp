@@ -1812,7 +1812,11 @@ public:
     static constexpr bool has_signaling_NaN = true;
     static constexpr std::float_denorm_style has_denorm = std::denorm_present;
     static constexpr bool has_denorm_loss = false;
-    static constexpr bool is_iec559 = true;
+    // Not claimed (yet): the core operations, flags and all five rounding
+    // modes are verified against MPFR, but decimal output is not
+    // mode-aware, and totalOrder / convertToInteger are incomplete. See the
+    // README "IEEE 754 conformance" table.
+    static constexpr bool is_iec559 = false;
     static constexpr bool is_bounded = true;
     static constexpr bool is_modulo = false;
     static constexpr bool traps = false;
@@ -1825,6 +1829,7 @@ public:
     static constexpr int min_exponent10 = -78913;
     static constexpr int max_exponent = 262144;
     static constexpr int max_exponent10 = 78912;
+    // Default mode; the dynamic mode is base256::fenv::get_round().
     static constexpr std::float_round_style round_style = std::round_to_nearest;
 
     static constexpr base256::float256 min() noexcept { return base256::float256::min(); }

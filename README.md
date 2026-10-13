@@ -22,11 +22,12 @@ Header-only. Real 256-bit software arithmetic — not a `double` wrapper.
 
 ## Features
 
-- Correctly-rounded **`+ − × ÷`**, **FMA**, and **`sqrt`** (round-to-nearest, ties to even)
+- Correctly rounded **`+ − × ÷`**, **FMA**, **`sqrt`**, exact **`fmod`/`remainder`**, all checked bit-for-bit against MPFR
+- All five IEEE 754 rounding modes and the five exception flags (`base256::fenv`)
 - IEEE 754 specials: `±0`, `±∞`, quiet/signaling NaN, subnormals
 - Unordered NaN comparisons (`std::partial_ordering`) and `+0 == −0`
 - Conversions to/from `float`, `double`, integers, decimal, and C99 hex-float
-- `std::numeric_limits<float256>` (`is_iec559 == true`)
+- `std::numeric_limits<float256>` (`is_iec559` is `false` for now; see [IEEE 754 conformance](#ieee-754-conformance))
 - Elementary functions: `exp`, `log`, `pow`, `sin`/`cos`/`tan`, `atan`/`asin`/`acos`, hyperbolics and inverse hyperbolics, `cbrt`, `erf`/`erfc`, `tgamma`/`lgamma`
 - `sincos` and IEEE `remquo`
 - `ldexp`, `frexp`, `ilogb` / `logb`, `nextafter` / `nextup` / `nextdown`, `floor`/`ceil`/`trunc`/`round` (ties away), `rint` / `nearbyint` (ties to even), `modf`, `hypot`, `fmod`, `remainder`, `fdim`
@@ -110,14 +111,49 @@ cmake --build build && ctest --test-dir build --output-on-failure
 ./build/mpfr_diff 5000000 42   # cases per op, seed
 ```
 
-## Rounding and compliance
+## Rounding modes and exception flags
 
-Default rounding is IEEE 754 **roundTiesToEven**. Add, subtract, multiply, divide, fused multiply-add, square root, and conversions from integers/decimal apply that mode. `rint` follows that mode; `round` is half away from zero, matching C `round`. `to_string` prints a correctly scaled scientific form (the exponent is corrected when a value sits just below a power of ten). `hypot` is scaled, so `hypot(2^200000, 2^200000)` stays finite, and `hypot(∞, NaN)` is `+∞`. `fmin` / `fmax` follow IEEE 754 signed-zero rules (`fmin(+0, −0) = −0`). `pow(−0, odd)` keeps the sign of zero. `exp2` on integers and `log2` on powers of two are exact. `tanh` of a huge finite value is `±1` (it does not overflow into NaN). `log1p` uses its series for `|x| < 1/16`, so values smaller than `2^{-237}` are not flushed. Integer `pow` with `|n| ≤ 4096` is a product (exact when the power is representable), and the IEEE special cases `pow(NaN, 0) = 1`, `pow(1, NaN) = 1`, and `pow(−1, ±∞) = 1` hold. `tgamma` / `lgamma` use a 40-term Stirling series. Elementary transcendental functions, including `erf` / `erfc`, target a few ulps on the primary domain; trigonometric range reduction uses a 256-bit 2π (very large arguments lose low bits of the reduced angle). Exact multiples of this library's π reduce cleanly: `sin(π)` is `+0` and `cos(π/2)` is `+0`.
+```cpp
+#include <base256/float256.hpp>
+using namespace base256;
+
+fenv::set_round(round_mode::upward);          // or scoped: fenv::scoped_round g(round_mode::downward);
+fenv::clear_flags();
+float256 q = float256::one() / float256(3.0);
+if (fenv::test_flags(fe_inexact)) { /* ... */ }
+fenv::set_round(round_mode::to_nearest_even);
+```
+
+- Modes: `to_nearest_even` (default), `to_nearest_away`, `toward_zero`, `upward`, `downward`. The environment is per thread.
+- Flags: `fe_invalid`, `fe_divbyzero`, `fe_overflow`, `fe_underflow`, `fe_inexact` (`fe_all`). Underflow uses tininess **after** rounding and is raised only when the result is also inexact.
+- The mode applies to `+ − × ÷`, `fma`, `sqrt`, `parse`/literals, `to_double`/`to_float`/`to_long_double`, and `rint`/`nearbyint`. `round_to_integral(x, mode)` takes an explicit direction.
+- Overflow gives `±∞`, or `±max()` when the direction is toward zero. An exact zero sum is `+0`, or `−0` in `downward` mode.
+- **Constant evaluation** (`constexpr`) always uses `to_nearest_even` and records no flags.
+- Elementary functions (`exp`, `sin`, `pow`, …) always evaluate internally in round-to-nearest and leave the caller's flags unchanged. Their accuracy is a few ulps (see below), not correct rounding.
+
+## IEEE 754 conformance
+
+| Area | Status |
+|---|---|
+| `+ − × ÷`, `fma`, `sqrt`, `fmod`, `remainder` | Correctly rounded or exact in all 5 modes, flags included. Verified bit-for-bit against MPFR (237-bit, subnormalized) on randomized and edge-case operands |
+| Subnormals, signed zeros, ±∞, NaN payloads | Supported (see NaN rules) |
+| Comparisons | `==`/`!=` quiet, `<`/`<=`/`>`/`>=` signal invalid on NaN; `std::partial_ordering` |
+| Conversions from/to `double`, `float`, `long double`, integers | Exact or correctly rounded in the current mode |
+| Decimal/hex parsing, literals | Correctly rounded in the current mode |
+| Decimal output (`to_string`) | Correctly rounded, ties to even only (not mode-aware yet) |
+| `totalOrder`, mode-aware `convertToInteger` | Not yet |
+| Elementary functions | A few ulps, round-to-nearest internally; not correctly rounded |
+
+Because of the gaps above, `std::numeric_limits<float256>::is_iec559` is `false`.
+
+## Notes on specific functions
+
+`round` is half away from zero, matching C `round`. `to_string` prints a correctly scaled scientific form (the exponent is corrected when a value sits just below a power of ten). `hypot` is scaled, so `hypot(2^200000, 2^200000)` stays finite, and `hypot(∞, NaN)` is `+∞`. `fmin` / `fmax` follow IEEE 754 signed-zero rules (`fmin(+0, −0) = −0`). `pow(−0, odd)` keeps the sign of zero. `exp2` on integers and `log2` on powers of two are exact. `tanh` of a huge finite value is `±1` (it does not overflow into NaN). `log1p` uses its series for `|x| < 1/16`, so values smaller than `2^{-237}` are not flushed. Integer `pow` with `|n| ≤ 4096` is a product (exact when the power is representable), and the IEEE special cases `pow(NaN, 0) = 1`, `pow(1, NaN) = 1`, and `pow(−1, ±∞) = 1` hold. `tgamma` / `lgamma` use a 40-term Stirling series. Elementary transcendental functions, including `erf` / `erfc`, target a few ulps on the primary domain; trigonometric range reduction uses a 256-bit 2π (very large arguments lose low bits of the reduced angle). Exact multiples of this library's π reduce cleanly: `sin(π)` is `+0` and `cos(π/2)` is `+0`.
 
 ## License
 
 Dual-licensed: you may use this software under either the **MIT License** ([LICENSE](LICENSE)) or **THE BEER-WARE LICENSE** (Revision 42, [LICENSE-BEERWARE](LICENSE-BEERWARE)), at your option.
 
-**4.6.5** — `tgamma`/`lgamma`, `sincos`, `remquo`, exact integer `pow`, and a `log1p` fix for tiny arguments. See [CHANGELOG](CHANGELOG.md).
+**4.8.0**: rounding modes and exception flags, exact `fmod`/`remainder`. **4.7.0**: correctness fixes found by MPFR differential testing. See [CHANGELOG](CHANGELOG.md).
 
 Created by Craig D. Mansfield, PhD, EI (MyGrokOrg).
