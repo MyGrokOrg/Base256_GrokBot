@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <algorithm>
 #include <cstring>
 #include <random>
 #include <string>
@@ -180,22 +181,135 @@ struct Ctx {
     ~Ctx() { mpfr_clears(a, b, c, r, (mpfr_ptr)0); }
 };
 
-using MpfrRnd = mpfr_rnd_t;
-
-float256 finish(Ctx& k, int t, MpfrRnd rnd) {
-    t = mpfr_check_range(k.r, t, rnd);
-    mpfr_subnormalize(k.r, t, rnd);
-    return from_mpfr(k.r);
-}
-
 long g_fail = 0;
 long g_total = 0;
 
-void report(const char* op, float256 a, float256 b, float256 c, float256 got, float256 want) {
+const char* kModeName[5] = {"RNE", "RNA", "RTZ", "RUP", "RDN"};
+const char* kOpName[6] = {"add", "sub", "mul", "div", "fma", "sqrt"};
+
+int mp_op(int op, mpfr_ptr r, Ctx& k, mpfr_rnd_t rnd) {
+    switch (op) {
+        case 0: return mpfr_add(r, k.a, k.b, rnd);
+        case 1: return mpfr_sub(r, k.a, k.b, rnd);
+        case 2: return mpfr_mul(r, k.a, k.b, rnd);
+        case 3: return mpfr_div(r, k.a, k.b, rnd);
+        case 4: return mpfr_fma(r, k.a, k.b, k.c, rnd);
+        default: return mpfr_sqrt(r, k.a, rnd);
+    }
+}
+
+float256 f_op(int op, float256 a, float256 b, float256 c) {
+    switch (op) {
+        case 0: return a + b;
+        case 1: return a - b;
+        case 2: return a * b;
+        case 3: return a / b;
+        case 4: return base256::fma(a, b, c);
+        default: return base256::sqrt(a);
+    }
+}
+
+void full_range() { mpfr_set_emin(mpfr_get_emin_min()); mpfr_set_emax(mpfr_get_emax_max()); }
+void b256_range() { mpfr_set_emin(kMpfrEmin); mpfr_set_emax(kMpfrEmax); }
+
+struct Ref { float256 v; unsigned flags; };
+
+// Is a nonzero value, rounded to 237 bits with unbounded exponent, below 2^Emin?
+bool tiny_237(int op, Ctx& k, mpfr_rnd_t rnd) {
+    full_range();
+    mpfr_t t;
+    mpfr_init2(t, kP);
+    mp_op(op, t, k, rnd);
+    const bool tiny = mpfr_regular_p(t) && mpfr_get_exp(t) <= kEminN;
+    mpfr_clear(t);
+    b256_range();
+    return tiny;
+}
+
+// Round-to-nearest-away reference: MPFR has no subnormal-aware RNDNA, so take
+// a 4000-bit truncated result and round it to the binary256 grid by hand.
+Ref ref_rna(int op, Ctx& k, bool& handled_nan) {
+    full_range();
+    mpfr_t big, sc;
+    mpfr_inits2(4000, big, sc, (mpfr_ptr)0);
+    mpfr_clear_flags();
+    const int t = mp_op(op, big, k, MPFR_RNDZ);
+    Ref r{float256::zero(), 0};
+    handled_nan = false;
+    if (mpfr_nan_p(big) || mpfr_inf_p(big) || mpfr_zero_p(big)) {
+        handled_nan = mpfr_nan_p(big);
+        r.v = from_mpfr(big);
+        if (mpfr_divby0_p()) r.flags |= base256::fe_divbyzero;
+        mpfr_clears(big, sc, (mpfr_ptr)0);
+        b256_range();
+        return r;
+    }
+    const bool neg = mpfr_signbit(big) != 0;
+    mpfr_abs(big, big, MPFR_RNDN);
+    const long E = mpfr_get_exp(big) - 1;
+    auto round_at = [&](long q, mpz_t n) -> bool {  // returns inexact
+        mpfr_mul_2si(sc, big, -q, MPFR_RNDN);         // exact
+        mpfr_get_z(n, sc, MPFR_RNDZ);
+        mpfr_sub_z(sc, sc, n, MPFR_RNDN);             // fraction, exact
+        const bool ix = !mpfr_zero_p(sc) || t != 0;
+        if (mpfr_cmp_d(sc, 0.5) >= 0) mpz_add_ui(n, n, 1);
+        return ix;
+    };
+    mpz_t n;
+    mpz_init(n);
+    // tininess after rounding (unbounded exponent)
+    const bool ix_unb = round_at(E - 236, n);
+    mpfr_t v;
+    mpfr_init2(v, 400);
+    mpfr_set_z_2exp(v, n, E - 236, MPFR_RNDN);
+    const bool tiny = mpfr_get_exp(v) <= kEminN;
+    const long q = std::max(E - 236, kEminN - 236);
+    const bool ix = round_at(q, n);
+    (void)ix_unb;
+    mpfr_set_z_2exp(v, n, q, MPFR_RNDN);
+    if (ix) r.flags |= base256::fe_inexact;
+    if (ix && tiny) r.flags |= base256::fe_underflow;
+    // max finite = (2^237 - 1) * 2^(262143 - 236)
+    if (mpfr_get_exp(v) > kMpfrEmax) {
+        r.flags |= base256::fe_overflow | base256::fe_inexact;
+        r.v = float256::inf(neg);
+    } else {
+        mpfr_t w;
+        mpfr_init2(w, kP);
+        mpfr_set(w, v, MPFR_RNDN);  // exact (<= 237 significant bits)
+        if (neg) mpfr_neg(w, w, MPFR_RNDN);
+        r.v = from_mpfr(w);
+        mpfr_clear(w);
+    }
+    mpfr_clear(v);
+    mpz_clear(n);
+    mpfr_clears(big, sc, (mpfr_ptr)0);
+    b256_range();
+    return r;
+}
+
+Ref ref_mpfr(int op, Ctx& k, mpfr_rnd_t rnd, bool& is_nan) {
+    b256_range();
+    mpfr_clear_flags();
+    int t = mp_op(op, k.r, k, rnd);
+    t = mpfr_check_range(k.r, t, rnd);
+    t = mpfr_subnormalize(k.r, t, rnd);
+    Ref r{from_mpfr(k.r), 0};
+    is_nan = mpfr_nan_p(k.r);
+    const bool inexact = t != 0 || mpfr_overflow_p();
+    if (inexact) r.flags |= base256::fe_inexact;
+    if (mpfr_overflow_p()) r.flags |= base256::fe_overflow;
+    if (mpfr_divby0_p()) r.flags |= base256::fe_divbyzero;
+    if (inexact && !mpfr_overflow_p() && tiny_237(op, k, rnd)) r.flags |= base256::fe_underflow;
+    return r;
+}
+
+void report(const char* op, const char* mode, float256 a, float256 b, float256 c, float256 got,
+            float256 want, unsigned gf, unsigned wf) {
     if (++g_fail <= 20) {
-        std::printf("MISMATCH %s\n  a=%s\n  b=%s\n  c=%s\n  got =%s\n  want=%s\n", op,
-                    hex(a).c_str(), hex(b).c_str(), hex(c).c_str(), hex(got).c_str(),
-                    hex(want).c_str());
+        std::printf("MISMATCH %s %s\n  a=%s\n  b=%s\n  c=%s\n  got =%s flags=%02x\n  want=%s flags=%02x\n", op,
+                    mode, hex(a).c_str(), hex(b).c_str(), hex(c).c_str(), hex(got).c_str(), gf,
+                    hex(want).c_str(), wf);
     }
 }
 
@@ -204,13 +318,12 @@ void report(const char* op, float256 a, float256 b, float256 c, float256 got, fl
 int main(int argc, char** argv) {
     const long n = argc > 1 ? std::atol(argv[1]) : 200000;
     const unsigned long long seed = argc > 2 ? std::strtoull(argv[2], nullptr, 0) : 12345;
+    // optional third argument: comma-free list of modes, e.g. "0" or "01234"
+    const std::string modes = argc > 3 ? argv[3] : "01234";
     rng.seed(seed);
-    mpfr_set_emin(kMpfrEmin);
-    mpfr_set_emax(kMpfrEmax);
+    b256_range();
     Ctx k;
-    const MpfrRnd rnd = MPFR_RNDN;
 
-    // Self-check of the codec.
     for (long i = 0; i < 1000; ++i) {
         float256 a = rand_f256();
         if (a.isnan()) continue;
@@ -218,7 +331,13 @@ int main(int argc, char** argv) {
         if (!same(from_mpfr(k.a), a)) { std::printf("codec failure %s\n", hex(a).c_str()); return 2; }
     }
 
-    long per[7] = {};
+    const base256::round_mode bm[5] = {base256::round_mode::to_nearest_even,
+                                       base256::round_mode::to_nearest_away,
+                                       base256::round_mode::toward_zero,
+                                       base256::round_mode::upward,
+                                       base256::round_mode::downward};
+    const mpfr_rnd_t mm[5] = {MPFR_RNDN, MPFR_RNDNA, MPFR_RNDZ, MPFR_RNDU, MPFR_RNDD};
+
     for (long i = 0; i < n; ++i) {
         const float256 a = rand_f256();
         const float256 b = rand_near(a);
@@ -226,43 +345,56 @@ int main(int argc, char** argv) {
         to_mpfr(k.a, a);
         to_mpfr(k.b, b);
         to_mpfr(k.c, c);
-        const auto chk = [&](const char* op, int idx, float256 got, float256 want) {
-            ++g_total;
-            ++per[idx];
-            if (!same(got, want)) report(op, a, b, c, got, want);
-        };
-        chk("add", 0, a + b, finish(k, mpfr_add(k.r, k.a, k.b, rnd), rnd));
-        chk("sub", 1, a - b, finish(k, mpfr_sub(k.r, k.a, k.b, rnd), rnd));
-        chk("mul", 2, a * b, finish(k, mpfr_mul(k.r, k.a, k.b, rnd), rnd));
-        chk("div", 3, a / b, finish(k, mpfr_div(k.r, k.a, k.b, rnd), rnd));
-        chk("fma", 4, base256::fma(a, b, c), finish(k, mpfr_fma(k.r, k.a, k.b, k.c, rnd), rnd));
-        chk("sqrt", 5, base256::sqrt(a), finish(k, mpfr_sqrt(k.r, k.a, rnd), rnd));
-        // to_double vs mpfr_get_d (binary64 rounding incl. subnormals)
-        if (!a.isnan()) {
-            ++g_total; ++per[6];
-            const double got = a.to_double();
-            const double want = mpfr_get_d(k.a, rnd);
-            if (std::memcmp(&got, &want, sizeof got) != 0) {
-                if (++g_fail <= 20) std::printf("MISMATCH to_double a=%s got=%a want=%a\n", hex(a).c_str(), got, want);
+        const bool any_snan = a.issignaling() || b.issignaling() || c.issignaling();
+        for (char mc : modes) {
+            const int m = mc - '0';
+            for (int op = 0; op < 6; ++op) {
+                const bool in_nan = op == 5 ? a.isnan()
+                                  : op == 4 ? (a.isnan() || b.isnan() || c.isnan())
+                                            : (a.isnan() || b.isnan());
+                const bool in_snan = op == 5 ? a.issignaling()
+                                   : op == 4 ? any_snan
+                                             : (a.issignaling() || b.issignaling());
+                bool rnan = false;
+                Ref want = m == 1 ? ref_rna(op, k, rnan) : ref_mpfr(op, k, mm[m], rnan);
+                if (in_nan) want.flags = 0;  // NaN in, NaN out: no other flags
+                if (in_snan || (rnan && !in_nan)) want.flags |= base256::fe_invalid;
+                base256::fenv::set_round(bm[m]);
+                base256::fenv::clear_flags();
+                const float256 got = f_op(op, a, b, c);
+                const unsigned gf = base256::fenv::test_flags();
+                base256::fenv::set_round(base256::round_mode::to_nearest_even);
+                ++g_total;
+                if (!same(got, want.v) || gf != want.flags)
+                    report(kOpName[op], kModeName[m], a, b, c, got, want.v, gf, want.flags);
+            }
+            // to_double / to_long_double in the same mode (MPFR has no RNDNA here)
+            if (m != 1 && !a.isnan()) {
+                base256::fenv::set_round(bm[m]);
+                const double gd = a.to_double();
+                const long double gl = a.to_long_double();
+                base256::fenv::set_round(base256::round_mode::to_nearest_even);
+                const double wd = mpfr_get_d(k.a, mm[m]);
+                const long double wl = mpfr_get_ld(k.a, mm[m]);
+                g_total += 2;
+                if (std::memcmp(&gd, &wd, sizeof gd) != 0 && ++g_fail <= 20)
+                    std::printf("MISMATCH to_double %s a=%s got=%a want=%a\n", kModeName[m], hex(a).c_str(), gd, wd);
+                if (!(gl == wl && std::signbit(gl) == std::signbit(wl)) && ++g_fail <= 20)
+                    std::printf("MISMATCH to_long_double %s a=%s got=%La want=%La\n", kModeName[m], hex(a).c_str(), gl, wl);
             }
         }
     }
-    // to_long_double vs mpfr_get_ld, and the exact from_long_double round-trip.
+    // exact from_long_double round trip
     for (long i = 0; i < n / 4; ++i) {
         const float256 a = rand_f256();
         if (a.isnan()) continue;
         to_mpfr(k.a, a);
+        const long double ld = mpfr_get_ld(k.a, MPFR_RNDN);
         ++g_total;
-        const long double got = a.to_long_double();
-        const long double want = mpfr_get_ld(k.a, rnd);
-        if (!(got == want || (got != got && want != want)) || std::signbit(got) != std::signbit(want)) {
-            if (++g_fail <= 20) std::printf("MISMATCH to_long_double a=%s got=%La want=%La\n", hex(a).c_str(), got, want);
-        }
-        ++g_total;
-        if (!same(float256(want), from_mpfr_ld(k.c, want))) {
-            if (++g_fail <= 20) std::printf("MISMATCH from_long_double %La\n", want);
-        }
+        if (!same(float256(ld), from_mpfr_ld(k.c, ld)) && ++g_fail <= 20)
+            std::printf("MISMATCH from_long_double %La\n", ld);
     }
-    std::printf("mpfr_diff seed=%llu cases/op=%ld total=%ld failures=%ld\n", seed, n, g_total, g_fail);
+    std::printf("mpfr_diff seed=%llu cases=%ld modes=%s checks=%ld failures=%ld\n", seed, n,
+                modes.c_str(), g_total, g_fail);
     return g_fail ? 1 : 0;
 }
