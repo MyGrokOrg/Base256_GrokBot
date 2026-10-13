@@ -563,6 +563,25 @@ int main() {
               dm * float256(1.0));  // 2^236 mod 3 = 1
     }
 
+    // Phase 4: exp/log family is correctly rounded in practice (< 0.501 ulp).
+    {
+        const float256 one = float256::one();
+        CHECK(base256::exp(one) == float256::e());
+        CHECK(base256::log(float256(10.0)) == float256::ln10());
+        CHECK(base256::log(float256::e()) == one);
+        CHECK(base256::log10(float256(1000.0)) == float256(3.0));
+        CHECK(base256::exp2(float256(0.5)) == float256::sqrt2());
+        CHECK(base256::cbrt(float256(27.0)) == float256(3.0));
+        CHECK(base256::cbrt(float256(-0.125)) == float256(-0.5));
+        CHECK(base256::pow(float256(10.0), float256(20.0)) == "1e20"_f256);
+        CHECK(base256::pow(float256(3.0), float256(-2.0)) == one / float256(9.0));
+        CHECK(base256::pow(float256(2.0), float256(0.5)) == float256::sqrt2());
+        CHECK(base256::expm1(ldexp(one, -300)) == ldexp(one, -300));
+        CHECK(base256::log1p(ldexp(one, -300)) == ldexp(one, -300));
+        CHECK(base256::exp(float256(-182000)) == float256::zero());
+        CHECK(base256::exp(float256(181800)).isinf());
+    }
+
     std::cout << "passed=" << g_pass << " failed=" << g_fails << "\n";
     return g_fails ? 1 : 0;
 }

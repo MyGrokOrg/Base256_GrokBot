@@ -6,6 +6,7 @@
 /// reduced angle (documented IEEE-754-style limitation without extra-precise π).
 
 #include "float256.hpp"
+#include "detail/dd.hpp"
 
 namespace base256 {
 namespace detail_math {
@@ -80,20 +81,10 @@ namespace detail_math {
     if (x.isnan()) return x;
     if (x.isinf()) return x.signbit() ? float256::zero() : x;
     if (x.iszero()) return float256::one();
-
-    // exp(x) = 2^{x/ln2} = 2^{n+f} = 2^n * exp(f ln2), |f|<=0.5
-    const float256 y = x / float256::ln2();
-    const float256 nf = round(y);
-    // n fits in int for any finite binary256 exp input that doesn't overflow
-    int n = 0;
-    if (nf.isfinite() && !nf.isnan()) {
-        const double nd = nf.to_double();
-        if (nd > 300000.0) return float256::inf(false);
-        if (nd < -300000.0) return float256::zero(false);
-        n = static_cast<int>(nd);
-    }
-    const float256 r = x - nf * float256::ln2();
-    return ldexp(detail_math::taylor_exp(r), n);
+    if (x > float256(181800)) return float256::inf(false);
+    if (x < float256(-182000)) return float256::zero();
+    const detail_dd::Scaled e = detail_dd::exp_scaled(detail_dd::dd(x));
+    return detail_dd::round_scaled(e.m, e.k);
 }
 
 [[nodiscard]] inline float256 exp2(float256 x) {
@@ -101,34 +92,34 @@ namespace detail_math {
     if (x.isnan()) return x;
     if (x.isinf()) return x.signbit() ? float256::zero() : x;
     if (x.iszero()) return float256::one();
-    // 2^n is exact for every integer n in the binary256 exponent range.
-    if (trunc(x) == x) {
-        const double nd = x.to_double();
-        if (!(nd <= 300000.0)) return float256::inf(false);
-        if (nd < -300000.0) return float256::zero(false);
-        return ldexp(float256::one(), static_cast<int>(nd));
-    }
-    return exp(x * float256::ln2());
+    if (x > float256(262200)) return float256::inf(false);
+    if (x < float256(-262500)) return float256::zero();
+    // 2^x = 2^k * exp(f ln2) with k = round(x) and f = x - k exact.
+    const float256 kf = round(x);
+    const float256 f = x - kf;
+    const int k = static_cast<int>(kf.to_double());
+    if (f.iszero()) return ldexp(float256::one(), k);
+    const detail_dd::Scaled e = detail_dd::exp_scaled(detail_dd::ln2() * f);
+    return detail_dd::round_scaled(e.m, e.k + k);
 }
 
 [[nodiscard]] inline float256 expm1(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    using detail_dd::dd;
     if (x.isnan()) return x;
     if (x.iszero()) return x;
-    // For small x the Taylor of exp(x)-1 is more accurate
+    if (x.isinf()) return x.signbit() ? -float256::one() : x;
+    if (x > float256(181800)) return float256::inf(false);
+    if (x < float256(-200)) return -float256::one();  // e^x < 2^-288 << ulp(1)/2
     const float256 ax = abs(x);
-    if (ax < float256::half()) {
-        float256 term = x;
-        float256 sum  = x;
-        for (int i = 2; i <= 80; ++i) {
-            term = term * x / float256::from_int(i);
-            const float256 next = sum + term;
-            if (next == sum) break;
-            sum = next;
-        }
-        return sum;
+    if (ax < ldexp(float256::one(), -200)) {
+        // x + x^2/2; x^3/6 is below 2^-400 relative.
+        return (dd(x) + dd(ldexp(x * x, -1))).round();
     }
-    return exp(x) - float256::one();
+    if (ax <= float256(0.34)) return detail_dd::expm1_reduced(dd(x)).round();
+    const detail_dd::Scaled e = detail_dd::exp_scaled(dd(x));
+    if (e.k > 600) return detail_dd::round_scaled(e.m, e.k);
+    return (detail_dd::ldexp(e.m, e.k) - dd(float256::one())).round();
 }
 
 [[nodiscard]] inline float256 log(float256 x) {
@@ -137,31 +128,7 @@ namespace detail_math {
     if (x.signbit() && !x.iszero()) return float256::qnan();
     if (x.iszero()) return float256::inf(true);
     if (x.isinf()) return x;
-
-    int e = 0;
-    const float256 m = frexp(x, &e); // m in [0.5, 1)
-    // Write x = 2^{e-1} * (1+f) with 1+f in [1, 2)
-    const float256 one = float256::one();
-    float256 y = m;
-    int adj = e;
-    if (y < one) {
-        y = y + y; // [1, 2)
-        --adj;
-    }
-    const float256 f = y - one;                  // [0, 1)
-    const float256 z = f / (y + one);            // f/(2+f) = atanh argument
-    const float256 z2 = z * z;
-    float256 term = z;
-    float256 sum  = z;
-    for (int n = 1; n <= 120; ++n) {
-        term = term * z2;
-        const float256 add = term / float256::from_int(static_cast<std::int64_t>(2 * n + 1));
-        const float256 next = sum + add;
-        if (next == sum) break;
-        sum = next;
-    }
-    const float256 log_m = sum + sum; // 2 * atanh(z) = log(1+f)
-    return float256::from_int(static_cast<std::int64_t>(adj)) * float256::ln2() + log_m;
+    return detail_dd::log(detail_dd::dd(x)).round();
 }
 
 [[nodiscard]] inline float256 log2(float256 x) {
@@ -176,38 +143,31 @@ namespace detail_math {
     const float256 m = frexp(x, &e);
     if (m == float256::half())
         return float256::from_int(static_cast<std::int64_t>(e) - 1);
-    return log(x) * float256::log2e();
+    return (detail_dd::log(detail_dd::dd(x)) / detail_dd::ln2()).round();
 }
 [[nodiscard]] inline float256 log10(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    return log(x) * float256::log10e();
+    if (x.isnan()) return x;
+    if (x.signbit() && !x.iszero()) return float256::qnan();
+    if (x.iszero()) return float256::inf(true);
+    if (x.isinf()) return x;
+    return (detail_dd::log(detail_dd::dd(x)) / detail_dd::ln10()).round();
 }
 
 [[nodiscard]] inline float256 log1p(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    using detail_dd::dd;
     if (x.isnan()) return x;
     if (x.iszero()) return x; // log1p(±0) = ±0
     if (x == float256::from_int(-1)) return float256::inf(true);
     if (x < float256::from_int(-1)) return float256::qnan();
     if (x.isinf()) return x; // +∞ only; −∞ was rejected above
-    // Mercator series. |x| < 1/16 converges in well under 80 terms at
-    // 237-bit precision. Below 2^{-237}, 1+x rounds to 1, so log(1+x)
-    // would flush the whole result to zero.
-    const float256 ax = abs(x);
-    if (ax < ldexp(float256::one(), -4) || float256::one() + x == float256::one()) {
-        float256 s = x;
-        float256 sum = x;
-        for (int n = 2; n <= 80; ++n) {
-            s = s * x;
-            float256 term = s / float256::from_int(n);
-            if ((n & 1) == 0) term = -term;
-            const float256 next = sum + term;
-            if (next == sum) break;
-            sum = next;
-        }
-        return sum;
+    if (abs(x) < ldexp(float256::one(), -120)) {
+        // x - x^2/2 + x^3/3; the next term is below 2^-360 relative.
+        const dd x2 = detail_dd::two_prod(x, x);
+        return (dd(x) - detail_dd::ldexp(x2, -1) + dd(x2.hi * x / float256::from_int(3))).round();
     }
-    return log(float256::one() + x);
+    return detail_dd::log(detail_dd::two_sum(float256::one(), x)).round();
 }
 
 [[nodiscard]] inline float256 pow(float256 x, float256 y) {
@@ -248,47 +208,58 @@ namespace detail_math {
     }
     // Integer exponents in this range are a short product, and exact whenever
     // the mathematical power is a binary256 number. exp(y log x) is not.
+    if (x.signbit() && trunc(y) != y) return float256::qnan();
+    const bool neg = x.signbit() && detail_math::is_odd_integer(y);
+    const float256 ax = abs(x);
+    // Integer exponents with |y| <= 4096, when the result stays well inside
+    // the exponent range: dd repeated squaring. Exact whenever the true
+    // power is representable (every partial power then fits in 474 bits).
     if (trunc(y) == y && abs(y) <= float256(4096)) {
         const std::int64_t n = static_cast<std::int64_t>(y.to_double());
-        if (n < 0) {
-            const float256 mag = detail_math::integer_pow(x, static_cast<std::uint64_t>(-n));
-            return float256::one() / mag;
+        const double mag = static_cast<double>(ilogb(ax)) * static_cast<double>(n < 0 ? -n : n);
+        if (mag < 261000.0 && mag > -261000.0) {
+            detail_dd::dd r{float256::one()}, b{ax};
+            for (std::uint64_t u = static_cast<std::uint64_t>(n < 0 ? -n : n); u; u >>= 1) {
+                if (u & 1ULL) r = r * b;
+                if (u > 1) b = b * b;
+            }
+            if (n < 0) r = detail_dd::dd(float256::one()) / r;
+            const float256 p = r.round();
+            return neg ? -p : p;
         }
-        return detail_math::integer_pow(x, static_cast<std::uint64_t>(n));
     }
-    if (x.signbit()) {
-        if (trunc(y) != y) return float256::qnan();
-        const float256 p = exp(y * log(abs(x)));
-        if (detail_math::is_odd_integer(y)) return -p;
-        return p;
+    const detail_dd::dd L = detail_dd::log(detail_dd::dd(ax)) * y;
+    float256 p;
+    if (L.hi > float256(181800)) p = float256::inf(false);
+    else if (L.hi < float256(-182000)) p = float256::zero();
+    else {
+        const detail_dd::Scaled e = detail_dd::exp_scaled(L);
+        p = detail_dd::round_scaled(e.m, e.k);
     }
-    return exp(y * log(x));
+    return neg ? -p : p;
 }
 
 [[nodiscard]] inline float256 cbrt(float256 x) {
     const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (x.isnan() || x.isinf() || x.iszero()) return x;
     const bool s = x.signbit();
-    const float256 ax = abs(x);
-    // initial guess from double
+    // Scale by 2^(3j) to [1, 8): the cube root scales by 2^j exactly.
+    const int j = ilogb(x) >= 0 ? ilogb(x) / 3 : -((-ilogb(x) + 2) / 3);
+    const float256 ax = ldexp(abs(x), -3 * j);
     float256 y = float256(std::cbrt(ax.to_double()));
-    if (y.iszero() || y.isinf()) {
-        // scale
-        int e = 0;
-        const float256 m = frexp(ax, &e);
-        y = float256(std::cbrt(m.to_double()));
-        y = ldexp(y, e / 3);
-    }
     // Halley: y <- y * (y^3 + 2x) / (2 y^3 + x)
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 6; ++i) {
         const float256 y3 = y * y * y;
-        const float256 num = y3 + ax * float256::two();
-        const float256 den = y3 * float256::two() + ax;
-        const float256 nxt = y * (num / den);
+        const float256 nxt = y * ((y3 + ax * float256::two()) / (y3 * float256::two() + ax));
         if (nxt == y) break;
         y = nxt;
     }
-    return s ? -y : y;
+    // One Newton correction from the exact dd residual x - y^3.
+    const detail_dd::dd y3 = detail_dd::two_prod(y, y) * y;
+    const detail_dd::dd r = detail_dd::dd(ax) - y3;
+    const float256 corr = r.hi / (float256::from_int(3) * y * y);
+    const float256 res = ldexp((detail_dd::dd(y) + detail_dd::dd(corr)).round(), j);
+    return s ? -res : res;
 }
 
 [[nodiscard]] inline float256 two_pi() {
