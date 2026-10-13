@@ -614,11 +614,20 @@ constexpr float256 float256::add_sub(float256 a, float256 b, bool subtract) noex
     } else {
         std::uint64_t br = 0;
         r.sig = sub_u256(ua.sig, sb, br);
+        // The aligned subtrahend was truncated: its true value is sb + eps with
+        // 0 < eps < 1 (in units of bit 0). The true difference is therefore
+        // (r.sig - 1) + (1 - eps), so borrow one unit and keep sticky set.
+        // Rounding the un-borrowed value would treat results just below a
+        // rounding midpoint as being above it.
+        if (sticky) {
+            std::uint64_t br2 = 0;
+            r.sig = sub_u256(r.sig, u256{1}, br2);
+        }
         r.sign = ua.sign;
         r.wexp = ua.wexp;
         r.sticky = sticky;
         r.kind = Kind::normal;
-        if (r.sig.is_zero()) return zero(false);
+        if (r.sig.is_zero() && !sticky) return zero(false);
         const int lz = r.sig.clz();
         r.sig = r.sig << lz;
         r.wexp -= lz;
@@ -801,6 +810,13 @@ constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
     u512 s = prod_ge ? sub_u512(as, bs) : sub_u512(bs, as);
     r.sign = prod_ge ? psign : bsign;
     r.sticky = asticky || bsticky;
+    // Only the smaller (shifted) operand can have lost bits; its true value
+    // exceeds the truncated one, so borrow one unit (see add_sub).
+    if (r.sticky) {
+        u512 one{};
+        one.d[0] = 1;
+        s = sub_u512(s, one);
+    }
     if (s.is_zero() && !r.sticky) return zero(false);
     const int lz = s.clz();
     s = s << lz;

@@ -430,6 +430,21 @@ int main() {
         CHECK(base256::pow(-float256::two(), float256(-3)) == -float256::one() / float256(8));
     }
 
+    // --- regression: effective subtraction with lost (sticky) bits --------
+    {
+        const float256 one = float256::one();
+        // exact 1 - 2^-238 - 2^-400 lies just below the midpoint 1 - 2^-238
+        const float256 r = one - (base256::ldexp(one, -238) + base256::ldexp(one, -400));
+        CHECK(r == base256::nextdown(one));
+        const float256 r2 = one + (-(base256::ldexp(one, -238) + base256::ldexp(one, -400)));
+        CHECK(r2 == base256::nextdown(one));
+        // same through fma: 1*1 - (2^-238 + 2^-400)
+        const float256 c = -(base256::ldexp(one, -238) + base256::ldexp(one, -400));
+        CHECK(base256::fma(one, one, c) == base256::nextdown(one));
+        // exactly at the midpoint still ties to even (up to 1)
+        CHECK(one - base256::ldexp(one, -238) == one);
+    }
+
     std::cout << "passed=" << g_pass << " failed=" << g_fails << "\n";
     return g_fails ? 1 : 0;
 }
