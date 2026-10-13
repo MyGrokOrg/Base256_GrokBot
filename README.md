@@ -140,15 +140,15 @@ fenv::set_round(round_mode::to_nearest_even);
 | Comparisons | `==`/`!=` quiet, `<`/`<=`/`>`/`>=` signal invalid on NaN; `std::partial_ordering` |
 | Conversions from/to `double`, `float`, `long double`, integers | Exact or correctly rounded in the current mode |
 | Decimal/hex parsing, literals | Correctly rounded in the current mode |
-| Decimal output (`to_string`) | Correctly rounded, ties to even only (not mode-aware yet) |
-| `totalOrder`, mode-aware `convertToInteger` | Not yet |
+| Decimal output (`to_string`, `format`, `to_chars`, `std::format`) | Shortest round-trip, or exact at any precision and correctly rounded in the current mode |
+| `totalOrder`, `convertToInteger` | `total_order`, `total_order_mag`, `to_integer<T>(mode, exact)` |
 | Elementary functions | A few ulps, round-to-nearest internally; not correctly rounded |
 
-Because of the gaps above, `std::numeric_limits<float256>::is_iec559` is `false`.
+Elementary functions are not correctly rounded, so `std::numeric_limits<float256>::is_iec559` stays `false`.
 
 ## Notes on specific functions
 
-`round` is half away from zero, matching C `round`. `to_string` prints a correctly scaled scientific form (the exponent is corrected when a value sits just below a power of ten). `hypot` is scaled, so `hypot(2^200000, 2^200000)` stays finite, and `hypot(∞, NaN)` is `+∞`. `fmin` / `fmax` follow IEEE 754 signed-zero rules (`fmin(+0, −0) = −0`). `pow(−0, odd)` keeps the sign of zero. `exp2` on integers and `log2` on powers of two are exact. `tanh` of a huge finite value is `±1` (it does not overflow into NaN). `log1p` uses its series for `|x| < 1/16`, so values smaller than `2^{-237}` are not flushed. Integer `pow` with `|n| ≤ 4096` is a product (exact when the power is representable), and the IEEE special cases `pow(NaN, 0) = 1`, `pow(1, NaN) = 1`, and `pow(−1, ±∞) = 1` hold. `tgamma` / `lgamma` use a 40-term Stirling series. Elementary transcendental functions, including `erf` / `erfc`, target a few ulps on the primary domain; trigonometric range reduction uses a 256-bit 2π (very large arguments lose low bits of the reduced angle). Exact multiples of this library's π reduce cleanly: `sin(π)` is `+0` and `cos(π/2)` is `+0`.
+`round` is half away from zero, matching C `round`. `to_string()` prints the shortest scientific string that round-trips. `to_string(n)` gives `n` significant digits. Use `format`, `to_chars` or `std::format("{:.40f}", x)` for fixed, general or hex output. `hypot` is scaled, so `hypot(2^200000, 2^200000)` stays finite, and `hypot(∞, NaN)` is `+∞`. `fmin` / `fmax` follow IEEE 754 signed-zero rules (`fmin(+0, −0) = −0`). `pow(−0, odd)` keeps the sign of zero. `exp2` on integers and `log2` on powers of two are exact. `tanh` of a huge finite value is `±1` (it does not overflow into NaN). `log1p` uses its series for `|x| < 1/16`, so values smaller than `2^{-237}` are not flushed. Integer `pow` with `|n| ≤ 4096` is a product (exact when the power is representable), and the IEEE special cases `pow(NaN, 0) = 1`, `pow(1, NaN) = 1`, and `pow(−1, ±∞) = 1` hold. `tgamma` / `lgamma` use a 40-term Stirling series. Elementary transcendental functions, including `erf` / `erfc`, target a few ulps on the primary domain; trigonometric range reduction uses a 256-bit 2π (very large arguments lose low bits of the reduced angle). Exact multiples of this library's π reduce cleanly: `sin(π)` is `+0` and `cos(π/2)` is `+0`.
 
 ## License
 
