@@ -1460,17 +1460,24 @@ public:
 };
 
 namespace base256::literals {
+// Numeric literals (3.14_f256, 1e-80_f256, 0x1p-3_f256, 42_f256) use the raw
+// literal form: the compiler passes the exact source spelling, which is
+// parsed with correct rounding. (A cooked `long double` overload would take
+// precedence and round the literal to long double/double first.)
+// Digit separators (1'000.5_f256) are accepted.
 [[nodiscard]] inline float256 operator""_f256(const char* s) {
-    auto r = float256::parse(s ? std::string_view(s) : std::string_view{});
+    std::string buf;
+    for (const char* p = s; p && *p; ++p) {
+        if (*p != '\'') buf.push_back(*p);
+    }
+    auto r = float256::parse(buf);
     if (!r) throw std::invalid_argument("float256 literal");
     return *r;
 }
+// String literals: "0.1"_f256, "-inf"_f256, "0x1.8p+1"_f256.
 [[nodiscard]] inline float256 operator""_f256(const char* s, std::size_t n) {
     auto r = float256::parse(std::string_view(s, n));
     if (!r) throw std::invalid_argument("float256 literal");
     return *r;
-}
-[[nodiscard]] constexpr float256 operator""_f256(long double x) {
-    return float256(static_cast<double>(x));
 }
 } // namespace base256::literals

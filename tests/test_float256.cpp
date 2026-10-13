@@ -473,6 +473,18 @@ int main() {
         CHECK(base256::fma(z, float256::one(), float256(3.0)) == float256(3.0));
     }
 
+    // --- regression: numeric _f256 literals are parsed exactly -----------
+    {
+        CHECK(0.1_f256 == "0.1"_f256);
+        CHECK(0.1_f256 != float256(0.1));
+        CHECK(3.14159265358979323846264338327950288419716939937510582097494459_f256 ==
+              "3.14159265358979323846264338327950288419716939937510582097494459"_f256);
+        CHECK(1e-100_f256 == "1e-100"_f256);
+        CHECK(0x1.8p+1_f256 == float256(3.0));
+        CHECK(42_f256 == float256(42.0));
+        CHECK(1'000.5_f256 == float256(1000.5));
+    }
+
     std::cout << "passed=" << g_pass << " failed=" << g_fails << "\n";
     return g_fails ? 1 : 0;
 }
