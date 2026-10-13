@@ -354,6 +354,26 @@ int main() {
         CHECK(base256::cos(float256::pi()) == -float256::one());
         CHECK(base256::tan(float256::pi()) == -d_pi);
         CHECK(base256::tan(float256::pi() * float256::half()) > ldexp(float256::one(), 236));
+        // Payne–Hanek reduction for |x| >= 2^100 (expected values from MPFR).
+        auto H = [](const char* t) { return float256::parse(t).value(); };
+        const float256 mx = float256::max();
+        CHECK(base256::sin(mx) == H("0xc.61113de063160112eb561d4f28a10ca2c89553cfde1ec6c0a3eeb3a387p-4"));
+        CHECK(base256::cos(mx) == H("0xa.230a04f54be761074fd8282182944ff581fab903b3d22fe2f247f0edeap-4"));
+        CHECK(base256::tan(mx) == H("0x1.38a0b4179b10d403eb5f2a72c599f723e7d6fbd9df2397bcf1203db6387p+0"));
+        CHECK(base256::sin(-mx) == -H("0xc.61113de063160112eb561d4f28a10ca2c89553cfde1ec6c0a3eeb3a387p-4"));
+        CHECK(base256::sin(ldexp(float256::one(), 1000)) ==
+              H("-0x2.8c1715c3910dc9b23f692735c696c052c75837e834ceb9c68957b0ff838p-4"));
+        // Arguments within ~2^-238 of a multiple of π/2.
+        const float256 h1 = H("0x1.b23580d8cbb614879108972475aa70e301e49316bfd078899602246fbc5p+5236");
+        CHECK(base256::sin(h1) == H("-0x4.f33ea86c5ff8a67cbdc9a3cbb2a7dce00c3d0403064016eac733e97bf68p-240"));
+        const float256 h2 = H("0x1.dc7fe80f4aafd7b314a9f1d3d6bf514115733becfd602c0d73c75ab995cp+262143");
+        CHECK(base256::sin(h2) == H("0x6.6730a1cf5b917373b63f552a02ccc3ff3cd01420b194b43aa927a6477p-236"));
+        CHECK(base256::cos(h2) == float256::one());
+        {
+            float256 s2, c2;
+            base256::sincos(h2, &s2, &c2);
+            CHECK(s2 == base256::sin(h2) && c2 == float256::one());
+        }
         // 1e22 reduces through Cody–Waite with the 1190-bit π/2.
         CHECK(abs(base256::sin(float256(1e22)) + "0.8522008497671888017727"_f256) < "1e-22"_f256);
     }

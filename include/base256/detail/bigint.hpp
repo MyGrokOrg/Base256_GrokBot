@@ -23,6 +23,21 @@ class BigInt {
 
 public:
     BigInt() = default;
+    /// From little-endian 32-bit limbs.
+    static BigInt from_limbs(std::vector<std::uint32_t> limbs) {
+        BigInt r;
+        r.d = std::move(limbs);
+        r.normalize();
+        return r;
+    }
+    [[nodiscard]] std::uint32_t limb(int i) const noexcept {
+        return i >= 0 && static_cast<std::size_t>(i) < d.size() ? d[static_cast<std::size_t>(i)] : 0U;
+    }
+    /// Keep only the low `bits` bits (bits a multiple of 32).
+    void keep_low_limbs(int limbs) {
+        if (static_cast<std::size_t>(limbs) < d.size()) d.resize(static_cast<std::size_t>(limbs));
+        normalize();
+    }
     explicit BigInt(std::uint64_t x) {
         if (x == 0) return;
         d.push_back(static_cast<std::uint32_t>(x));

@@ -370,7 +370,8 @@ inline void sincos(float256 x, float256* sin_out, float256* cos_out) {
     const bool neg = x.signbit();
     {
         detail_dd::dd sd, cd;
-        if (detail_math::trig_dd(abs(x), sd, cd, quad)) {
+        detail_math::trig_dd(abs(x), sd, cd, quad);
+        {
             detail_dd::dd sv = (quad & 1) ? cd : sd;
             detail_dd::dd cv = (quad & 1) ? -sd : cd;
             if (quad >= 2) { sv = -sv; cv = -cv; }
@@ -380,41 +381,6 @@ inline void sincos(float256 x, float256* sin_out, float256* cos_out) {
             return;
         }
     }
-    const float256 r = reduce_trig(x, quad);
-    float256 ss;
-    float256 cc;
-    if (r.iszero()) {
-        switch (quad) {
-            case 0:
-                ss = copysign(float256::zero(), x);
-                cc = float256::one();
-                break;
-            case 1:
-                ss = neg ? -float256::one() : float256::one();
-                cc = float256::zero();
-                break;
-            case 2:
-                ss = copysign(float256::zero(), x);
-                cc = -float256::one();
-                break;
-            default:
-                ss = neg ? float256::one() : -float256::one();
-                cc = float256::zero();
-                break;
-        }
-    } else {
-        const float256 s = detail_math::taylor_sin(r);
-        const float256 c = detail_math::taylor_cos(r);
-        switch (quad) {
-            case 0: ss = s; cc = c; break;
-            case 1: ss = c; cc = -s; break;
-            case 2: ss = -s; cc = -c; break;
-            default: ss = -c; cc = s; break;
-        }
-        if (neg) ss = -ss;
-    }
-    if (sin_out) *sin_out = ss;
-    if (cos_out) *cos_out = cc;
 }
 
 // IEEE remainder, plus the low 31 bits of the integer quotient (sign of x/y).

@@ -266,8 +266,9 @@ namespace detail_math {
     return float256::pi() * float256::two();
 }
 
+/// Legacy float256 reduction to [0, π/2) with quadrant 0..3 (256-bit π; loses
+/// accuracy for large |x|). Kept for compatibility; sin/cos/tan no longer use it.
 [[nodiscard]] inline float256 reduce_trig(float256 x, int& quadrant) {
-    // Reduce to [0, π/2) and report quadrant 0..3. Uses 256-bit π.
     const float256 tp = two_pi();
     const float256 half_pi = float256::pi() * float256::half();
     float256 a = abs(x);
@@ -296,13 +297,12 @@ namespace detail_math {
 }
 
 namespace detail_math {
-// sin/cos/tan of |x| through the dd path. Returns false for |x| >= 2^100
-// (caller falls back to the float256 reduction).
-inline bool trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) {
-    if (ilogb(ax) >= detail_dd::kTrigExactExp) return false;
-    const detail_dd::dd r = detail_dd::reduce_pio2(ax, quad);
+// sin/cos/tan of a finite |x| through the dd path: Cody–Waite below 2^100,
+// Payne–Hanek above.
+inline void trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) {
+    const detail_dd::dd r = ilogb(ax) >= detail_dd::kTrigExactExp ? detail_dd::payne_hanek(ax, quad)
+                                                                   : detail_dd::reduce_pio2(ax, quad);
     detail_dd::sincos_reduced(r, s, c);
-    return true;
 }
 } // namespace detail_math
 
@@ -313,32 +313,13 @@ inline bool trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) 
     int quad = 0;
     const bool neg = x.signbit();
     detail_dd::dd sd, cd;
-    if (detail_math::trig_dd(abs(x), sd, cd, quad)) {
+    detail_math::trig_dd(abs(x), sd, cd, quad);
+    {
         detail_dd::dd y = (quad & 1) ? cd : sd;
         if (quad >= 2) y = -y;
         const float256 out = y.round();
         return neg ? -out : out;
     }
-    float256 r = reduce_trig(x, quad);
-    if (r.iszero()) {
-        switch (quad) {
-            case 0: return copysign(float256::zero(), x);
-            case 1: return neg ? -float256::one() : float256::one();
-            case 2: return copysign(float256::zero(), x);
-            default: return neg ? float256::one() : -float256::one();
-        }
-    }
-    float256 s, c;
-    s = detail_math::taylor_sin(r);
-    c = detail_math::taylor_cos(r);
-    float256 y;
-    switch (quad) {
-        case 0: y = s; break;
-        case 1: y = c; break;
-        case 2: y = -s; break;
-        default: y = -c; break;
-    }
-    return neg ? -y : y;
 }
 
 [[nodiscard]] inline float256 cos(float256 x) {
@@ -348,30 +329,14 @@ inline bool trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) 
     if (x.iszero()) return float256::one();
     int quad = 0;
     detail_dd::dd sd, cd;
-    if (detail_math::trig_dd(abs(x), sd, cd, quad)) {
+    detail_math::trig_dd(abs(x), sd, cd, quad);
+    {
         switch (quad) {
             case 0: return cd.round();
             case 1: return (-sd).round();
             case 2: return (-cd).round();
             default: return sd.round();
         }
-    }
-    float256 r = reduce_trig(x, quad);
-    if (r.iszero()) {
-        switch (quad) {
-            case 0: return float256::one();
-            case 1: return float256::zero();
-            case 2: return -float256::one();
-            default: return float256::zero();
-        }
-    }
-    const float256 s = detail_math::taylor_sin(r);
-    const float256 c = detail_math::taylor_cos(r);
-    switch (quad) {
-        case 0: return c;
-        case 1: return -s;
-        case 2: return -c;
-        default: return s;
     }
 }
 
@@ -382,17 +347,12 @@ inline bool trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) 
     if (x.iszero()) return x;
     int quad = 0;
     detail_dd::dd sd, cd;
-    if (detail_math::trig_dd(abs(x), sd, cd, quad)) {
+    detail_math::trig_dd(abs(x), sd, cd, quad);
+    {
         // tan = s/c in even quadrants, -c/s in odd ones.
         const float256 t = ((quad & 1) ? -(cd / sd) : sd / cd).round();
         return x.signbit() ? -t : t;
     }
-    const float256 r = reduce_trig(x, quad);
-    if (r.iszero()) {
-        if ((quad & 1) == 0) return copysign(float256::zero(), x);
-        return float256::inf(x.signbit());
-    }
-    return sin(x) / cos(x);
 }
 
 namespace detail_math {

@@ -8,6 +8,8 @@
 /// once, by the final hi + lo addition.
 
 #include "../float256.hpp"
+#include "bigint.hpp"
+#include "two_over_pi.hpp"
 
 namespace base256::detail_dd {
 
@@ -223,6 +225,70 @@ inline constexpr int kTrigExactExp = 100;
     if (qi < 0) qi += 4;
     quadrant = qi;
     return r;
+}
+
+/// Payne–Hanek reduction for any finite |x| >= 2^kTrigExactExp (x > 0):
+/// x = M·2^E with M a 237-bit integer. Bits b_i of 2/π with i <= E-2 add
+/// multiples of 4 to x·2/π and are skipped; bits E-1 .. E+kPhFrac are
+/// multiplied by M exactly, which leaves kPhFrac fraction bits (error below
+/// 2^(237-kPhFrac) ulps of the fraction). Returns r = (x mod π/2) with
+/// |r| <= π/4 as dd and the quadrant.
+inline constexpr int kPhFrac = 1216;  // multiple of 32
+static_assert(kPhFrac % 32 == 0);
+[[nodiscard]] inline dd payne_hanek(float256 x, int& quadrant) {
+    using base256::detail::BigInt;
+    const auto w = x.raw_bits();
+    const int be = static_cast<int>((w[3] >> 44) & 0x7FFFF);
+    const int E = be - 262143 - 236;
+    // M as little-endian 32-bit limbs.
+    const std::uint64_t top = (w[3] & 0xFFFFFFFFFFFULL) | (1ULL << 44);
+    const std::uint64_t mw[4] = {w[0], w[1], w[2], top};
+    std::vector<std::uint32_t> ml;
+    for (std::uint64_t v : mw) {
+        ml.push_back(static_cast<std::uint32_t>(v));
+        ml.push_back(static_cast<std::uint32_t>(v >> 32));
+    }
+    BigInt M = BigInt::from_limbs(std::move(ml));
+    // Window of 2/π bits i0..i1 (1-based fraction positions) as an integer.
+    const int i0 = E - 1 > 1 ? E - 1 : 1;
+    const int i1 = E + kPhFrac;
+    const int nbits = i1 - i0 + 1;
+    std::vector<std::uint32_t> wl(static_cast<std::size_t>((nbits + 31) / 32), 0);
+    for (int i = i0; i <= i1; ++i) {
+        const int k = (i - 1) >> 6, b = 63 - ((i - 1) & 63);
+        if ((kTwoOverPi[k] >> b) & 1ULL) {
+            const int pos = i1 - i;  // weight 2^pos in W
+            wl[static_cast<std::size_t>(pos >> 5)] |= 1U << (pos & 31);
+        }
+    }
+    const BigInt W = BigInt::from_limbs(std::move(wl));
+    M.mul(W);  // x·2/π mod 4 = M / 2^kPhFrac (mod 4)
+    const int q = (M.bit(kPhFrac) ? 1 : 0) | (M.bit(kPhFrac + 1) ? 2 : 0);
+    // Fraction f in [0, 1) with kPhFrac bits.
+    BigInt f = M;
+    f.keep_low_limbs(kPhFrac / 32);  // kPhFrac is a multiple of 32
+    bool neg = false;
+    int quad = q;
+    if (f.bit(kPhFrac - 1)) {  // f >= 1/2: use f - 1 and the next quadrant
+        std::vector<std::uint32_t> ol(static_cast<std::size_t>(kPhFrac / 32) + 1, 0);
+        ol.back() = 1;
+        BigInt one = BigInt::from_limbs(std::move(ol));
+        one.sub(f);
+        f = std::move(one);
+        neg = true;
+        quad = (q + 1) & 3;
+    }
+    // f to dd: sum its top 32-bit limbs (exact float256 values) in dd.
+    dd r{float256::zero()};
+    const int n = f.limb_count();
+    for (int j = n - 1; j >= 0 && j >= n - 20; --j) {
+        r = r + dd(base256::ldexp(float256::from_int(static_cast<std::int64_t>(f.limb(j))),
+                                  32 * j - kPhFrac));
+    }
+    const auto& c = consts();
+    r = r * dd(c.pio2[0], c.pio2[1]);
+    quadrant = quad;
+    return neg ? -r : r;
 }
 
 /// sin and cos of a dd |r| <= ~0.8: Taylor at r/2^8, then 8 double-angle steps.
