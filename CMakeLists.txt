@@ -27,6 +27,23 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME float256 COMMAND test_float256)
     add_test(NAME extra_math COMMAND test_extra_math)
+
+    # Differential testing against GNU MPFR (237-bit, binary256 exponent range,
+    # subnormalized) with randomized operands. Requires libmpfr + libgmp.
+    option(BASE256_MPFR_TESTS "Build the MPFR differential/fuzz test" OFF)
+    set(BASE256_MPFR_CASES "20000" CACHE STRING "Random cases per op for the ctest MPFR run")
+    if(BASE256_MPFR_TESTS)
+        find_path(MPFR_INCLUDE_DIR mpfr.h REQUIRED)
+        find_library(MPFR_LIBRARY mpfr REQUIRED)
+        find_library(GMP_LIBRARY gmp REQUIRED)
+        add_executable(mpfr_diff tests/mpfr_diff.cpp)
+        target_include_directories(mpfr_diff PRIVATE ${MPFR_INCLUDE_DIR})
+        target_link_libraries(mpfr_diff PRIVATE base256 ${MPFR_LIBRARY} ${GMP_LIBRARY})
+        if(NOT MSVC)
+            target_compile_options(mpfr_diff PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+        add_test(NAME mpfr_diff COMMAND mpfr_diff ${BASE256_MPFR_CASES} 12345)
+    endif()
 endif()
 
 add_executable(example_basic examples/basic.cpp)
