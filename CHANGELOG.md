@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.11.0
+
+- **`sin`, `cos`, `tan`, `sincos` are accurate for every finite argument.** For |x| ≥ 2^100 they now use Payne–Hanek reduction: the significand is multiplied exactly by a window of 2/π bits, leaving 1216 guard bits. The bits come from a 264,192-bit table generated with MPFR (`detail/two_over_pi.hpp`, 4128 `uint64_t` words, about 100 KB). Before this, results above 2^100 could be wrong in every digit. Now they are under 1 ulp up to `max()`. The old float256 path is gone; `reduce_trig` is kept only for compatibility.
+- `mpfr_ulp` adds tests across the whole exponent range, kπ/2 for k up to 2^262140, and continued-fraction hard cases: arguments within about 2^-238 of a multiple of π/2. Regression tests cover `sin`/`cos`/`tan` of `max()` and two hard cases near the top of the range.
+- `BigInt` gains `from_limbs`, `limb` and `keep_low_limbs`.
+
 ## 4.10.0
 
 - **Elementary functions to < 1 ulp.** Every function in `math.hpp` and `extra_math.hpp` now evaluates in double-float256 (`detail/dd.hpp`, about 474 bits) and rounds once. Before, errors ranged from a few ulps to completely wrong results.

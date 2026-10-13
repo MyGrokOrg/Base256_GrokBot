@@ -3,7 +3,8 @@
 /// Elementary functions for binary256.
 /// Accuracy: < 1 ulp (≈ ½ ulp observed against MPFR) over the full range;
 /// every function evaluates in double-float256 (detail/dd.hpp) and rounds
-/// once. Trig arguments with |x| >= 2^100 fall back to a 256-bit reduction.
+/// once. Trig reduction is Cody–Waite below 2^100 and Payne–Hanek (full
+/// 2/π table, detail/two_over_pi.hpp) above, accurate for every finite x.
 
 #include "float256.hpp"
 #include "detail/dd.hpp"
