@@ -445,6 +445,25 @@ int main() {
         CHECK(one - base256::ldexp(one, -238) == one);
     }
 
+    // --- regression: subnormal results that round up ---------------------
+    {
+        const float256 dm = float256::denorm_min();
+        CHECK(dm * float256(1.5) == dm + dm);            // tie -> even (2 ulp)
+        CHECK(dm * float256(2.5) == dm + dm);            // tie -> even (2 ulp)
+        CHECK(dm * float256(0.75) == dm);
+        CHECK((dm * float256(0.5)).iszero());            // tie -> even (0)
+        // guard bit exactly at bit 64 of the working significand (rshift 65)
+        const float256 x = base256::ldexp(float256::one() + base256::ldexp(float256::one(), -191)
+                                          + base256::ldexp(float256::one(), -200), -262188);
+        CHECK(x == base256::ldexp(float256::one() + base256::ldexp(float256::one(), -190), -262188));
+        // binary64 subnormal conversion rounds once
+        const double dmin = std::numeric_limits<double>::denorm_min();
+        CHECK(float256(dmin).to_double() == dmin);
+        CHECK((float256(dmin) * float256(1.5)).to_double() == 2 * dmin);
+        const float256 y = base256::ldexp(float256::one() - base256::ldexp(float256::one(), -200), -1022 - 43);
+        CHECK(y.to_double() == std::ldexp(1.0, -1065));
+    }
+
     std::cout << "passed=" << g_pass << " failed=" << g_fails << "\n";
     return g_fails ? 1 : 0;
 }

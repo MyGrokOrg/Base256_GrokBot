@@ -174,7 +174,7 @@ private:
         const bool g = sig.bit(lsb_pos - 1);
         bool rs = sticky;
         if (!rs && lsb_pos > 1) {
-            if (lsb_pos - 1 <= 64) {
+            if (lsb_pos - 1 < 64) {  // (1ULL << 64) would be UB
                 rs = (sig.d[0] & ((1ULL << (lsb_pos - 1)) - 1ULL)) != 0;
             } else {
                 for (int i = 0; i <= lsb_pos - 2; ++i) {
@@ -222,9 +222,14 @@ private:
             if (rshift > 0) {
                 const bool ovf = round_ne(sig, rshift, sticky);
                 if (ovf) {
-                    return pack_normal(u.sign, kEmin, u256::from_words(0, 0, 0, 1ULL << 63));
+                    // Rounding carried out of bit 255: the result is exactly
+                    // 2^(256 - rshift) subnormal units (min normal when that is
+                    // bit 236, handled below).
+                    sig = {};
+                    sig.set_bit(256 - rshift);
+                } else {
+                    sig = sig >> rshift;
                 }
-                sig = sig >> rshift;
             }
             if (sig.bit(kFracBits)) {
                 return pack_normal(u.sign, kEmin, sig << kLsbPos);
@@ -414,6 +419,23 @@ public:
         u256 sig = u.sig;
         int wexp = u.wexp;
         const int dbl_lsb = 255 - 52;
+        if (wexp < -1022) {
+            // Binary64 subnormal: round once, directly from the full significand
+            // (rounding to 53 bits first would double-round).
+            const int rshift = (-1022 - wexp) + dbl_lsb;
+            if (rshift >= 256 + 2) return u.sign ? -0.0 : 0.0;
+            u256 s = sig;
+            const bool ov = round_ne(s, rshift, u.sticky);
+            std::uint64_t mant = 0;
+            if (ov) {
+                mant = 1ULL << (256 - rshift); // rshift >= 204 here
+            } else {
+                s = s >> rshift;
+                mant = s.d[0];
+            }
+            const std::uint64_t bits = (u.sign ? (1ULL << 63) : 0ULL) | mant; // bit 52 => min normal
+            return std::bit_cast<double>(bits);
+        }
         const bool ovf = round_ne(sig, dbl_lsb, u.sticky);
         if (ovf) {
             ++wexp;
@@ -423,21 +445,6 @@ public:
         if (wexp > 1023) {
             return u.sign ? -std::numeric_limits<double>::infinity()
                           :  std::numeric_limits<double>::infinity();
-        }
-        if (wexp < -1022) {
-            const int rshift = (-1022 - wexp) + dbl_lsb;
-            bool st = false;
-            u256 s = sig;
-            const bool ov = round_ne(s, rshift, st);
-            s = s >> rshift;
-            if (ov || s.bit(52)) {
-                const std::uint64_t bits = (u.sign ? (1ULL << 63) : 0ULL) | (1ULL << 52);
-                return std::bit_cast<double>(bits);
-            }
-            const std::uint64_t mant = s.d[0] & 0x000FFFFFFFFFFFFFULL;
-            if (mant == 0) return u.sign ? -0.0 : 0.0;
-            const std::uint64_t bits = (u.sign ? (1ULL << 63) : 0ULL) | mant;
-            return std::bit_cast<double>(bits);
         }
         const std::uint64_t mant = (sig.d[3] >> 11) & 0x000FFFFFFFFFFFFFULL;
         const std::uint64_t be = static_cast<std::uint64_t>(wexp + 1023);
