@@ -295,9 +295,7 @@ struct Scaled { dd m; int k; };
     return exp(x) - dd(float256::one());
 }
 
-/// Natural log of a positive finite dd, via one Newton step on exp from a
-/// float256 starting value: y = y0 + log1p(m e^{-y0} - 1).
-// float256 log of m in [0.7, 1.42] (atanh series), a few ulps.
+// A dd stored as eight raw words (hi then lo), as in detail/tables.hpp.
 [[nodiscard]] inline dd dd_from_words(const std::uint64_t* w) {
     return {float256::from_bits(w[0], w[1], w[2], w[3]), float256::from_bits(w[4], w[5], w[6], w[7])};
 }

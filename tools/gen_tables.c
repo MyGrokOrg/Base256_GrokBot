@@ -86,6 +86,22 @@ int main(void) {
     for (int j = 0; j <= 64; ++j) { mpfr_set_ui(c, j, MPFR_RNDN); mpfr_div_ui(c, c, 64, MPFR_RNDN); mpfr_sin(v, c, MPFR_RNDN); emit_dd(v); printf(",\n"); }
     printf("};\ninline constexpr std::uint64_t kCosVal[65][8] = {\n");
     for (int j = 0; j <= 64; ++j) { mpfr_set_ui(c, j, MPFR_RNDN); mpfr_div_ui(c, c, 64, MPFR_RNDN); mpfr_cos(v, c, MPFR_RNDN); emit_dd(v); printf(",\n"); }
+    printf("};\n");
+    /* Stirling: c_k = B_2k / (2k (2k-1)), B_2k = (-1)^(k+1) 2 (2k)! zeta(2k) / (2 pi)^(2k), k = 1..140 */
+    printf("inline constexpr int kStirlingN = 140;\ninline constexpr std::uint64_t kStirling[140][8] = {\n");
+    {
+        mpfr_t f, z, tp; mpfr_inits2(PREC, f, z, tp, (mpfr_ptr)0);
+        mpfr_const_pi(tp, MPFR_RNDN); mpfr_mul_ui(tp, tp, 2, MPFR_RNDN);
+        for (int k = 1; k <= 140; ++k) {
+            mpfr_fac_ui(f, 2 * k, MPFR_RNDN); mpfr_zeta_ui(z, 2 * k, MPFR_RNDN);
+            mpfr_mul(v, f, z, MPFR_RNDN); mpfr_mul_ui(v, v, 2, MPFR_RNDN);
+            mpfr_pow_ui(c, tp, 2 * k, MPFR_RNDN); mpfr_div(v, v, c, MPFR_RNDN);
+            if (k % 2 == 0) mpfr_neg(v, v, MPFR_RNDN);
+            mpfr_div_ui(v, v, 2 * k * (2 * k - 1), MPFR_RNDN);
+            emit_dd(v); printf(",\n");
+        }
+        mpfr_clears(f, z, tp, (mpfr_ptr)0);
+    }
     printf("};\n\n} // namespace base256::detail_dd::tables\n");
     mpfr_clears(c, v, inv, (mpfr_ptr)0);
     return 0;
