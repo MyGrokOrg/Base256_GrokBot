@@ -173,6 +173,39 @@ def _airy_huge(k):
             return mp.airyai(x, k % 2) if k < 2 else mp.airybi(x, k % 2)
     return f
 AIH, AIPH, BIH, BIPH = (_airy_huge(k) for k in range(4))
+
+def _airy_asym(k):
+    """Ai, Ai', Bi, Bi' at x <= −2^90 from the DLMF 9.7.9–9.7.12 asymptotic series
+    (mpmath's own airyai is too slow past −2^12000). ζ is reduced mod 2π at
+    1.5·log2|x| + 900 bits; the series then runs at 1200 bits (ζ^-1 < 2^-135, so a
+    few terms reach 2^-1000). Agrees with mp.airyai to ~2^-897 relative at −2^95…−2^3000 (16 spot checks)."""
+    def f(x):
+        z = -x
+        e = int(mp.log(z, 2))
+        with mp.workprec(3 * e // 2 + 900):
+            zeta = 2 * z * mp.sqrt(z) / 3
+            th = zeta - mp.pi / 4
+            th = th - 2 * mp.pi * mp.floor(th / (2 * mp.pi))
+        with mp.workprec(1200):
+            zeta = mp.mpf(2) * z * mp.sqrt(z) / 3
+            st, ct = mp.sin(th), mp.cos(th)
+            ev = od = mp.mpf(0); u = mp.mpf(1); kk = 0
+            while True:
+                c = u if k % 2 == 0 else -(6 * kk + 1) * u / (6 * kk - 1)
+                term = c / zeta**kk
+                sgn = (-1) ** (kk // 2)
+                if kk % 2 == 0: ev += sgn * term
+                else: od += sgn * term
+                if kk > 2 and abs(term) < mp.mpf(2)**-1150: break
+                kk += 1
+                u = u * (6 * kk - 5) * (6 * kk - 3) * (6 * kk - 1) / ((2 * kk - 1) * 216 * kk)
+            pre = 1 / mp.sqrt(mp.pi) * (z ** (mp.mpf(1) / 4) if k % 2 else z ** (-mp.mpf(1) / 4))
+            if k == 0: return pre * (ct * ev + st * od)
+            if k == 2: return pre * (ct * od - st * ev)
+            if k == 1: return pre * (st * ev - ct * od)
+            return pre * (ct * ev + st * od)
+    return f
+AIA, AIPA, BIA, BIPA = (_airy_asym(k) for k in range(4))
 AI = W1500(lambda x: mp.airyai(x)); AIP = W1500(lambda x: mp.airyai(x, 1))
 BI = W1500(lambda x: mp.airybi(x)); BIP = W1500(lambda x: mp.airybi(x, 1))
 
@@ -294,6 +327,10 @@ RANGES = [
     ("bi_huge",  "bi", BIH, [("negexp", 94, 3000)]),
     ("bip_huge", "bip", BIPH, [("negexp", 94, 3000)]),
     ("ai_vhuge", "ai", AIH, [("negexp", 3000, 12000)]),
+    ("ai_deep",  "ai", AIA, [("negexp", 12000, 175000)]),
+    ("aip_deep", "aip", AIPA, [("negexp", 12000, 175000)]),
+    ("bi_deep",  "bi", BIA, [("negexp", 12000, 175000)]),
+    ("bip_deep", "bip", BIPA, [("negexp", 12000, 175000)]),
     ("ai_nfar",  "ai", AI, [(-10000, -60, False)]),
     ("ai_unf",   "ai", AI, [(4180, 4230, False)]),
     ("aip_unf",  "aip", AIP, [(4180, 4230, False)]),
