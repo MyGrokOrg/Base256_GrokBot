@@ -29,6 +29,9 @@ F = {
     "sj": lambda n, x: sph(mp.besselj, n, x), "sy": lambda n, x: sph(mp.bessely, n, x),
     "jn": mp.besselj, "yn": mp.bessely,
     "beta": mp.beta, "zeta": mp.zeta,
+    "K": lambda k: mp.ellipk(k * k), "E": lambda k: mp.ellipe(k * k), "Pi": lambda k, n: mp.ellippi(n, k * k),
+    "F1": lambda k, p: mp.ellipf(p, k * k), "E2": lambda k, p: mp.ellipe(p, k * k),
+    "P3": lambda k, n, p: mp.ellippi(n, p, k * k),
     "gl": lambda a, x: mp.gammainc(a, 0, x), "gu": lambda a, x: mp.gammainc(a, x, mp.inf),
     "gp": lambda a, x: mp.gammainc(a, 0, x, regularized=True),
     "gq": lambda a, x: mp.gammainc(a, x, mp.inf, regularized=True),
@@ -36,6 +39,9 @@ F = {
     "ibetac": lambda a, b, x: mp.betainc(a, b, x, 1, regularized=True),
 }
 CASES = [
+    ("K", "0.5"), ("K", "0.999999"), ("E", "0.75"), ("E", "-0.25"), ("Pi", "0.5", "0.25"), ("Pi", "0.8", "-3"),
+    ("F1", "0.7", "1.2"), ("F1", "0.3", "-25.5"), ("E2", "0.9", "0.8"), ("E2", "1", "10"),
+    ("P3", "0.6", "0.5", "1.1"), ("P3", "0.4", "-2", "7.75"),
     ("gl", "2.5", "1.25"), ("gu", "2.5", "1.25"), ("gp", "0.5", "2"), ("gq", "0.5", "2"),
     ("gq", "1e-20", "0.75"), ("gu", "1e-20", "3"), ("gp", "300", "250"), ("gq", "300", "350"),
     ("gl", "40", "1e-3"), ("gq", "3", "600"),

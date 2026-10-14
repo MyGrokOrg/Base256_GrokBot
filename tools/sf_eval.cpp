@@ -31,6 +31,12 @@ int main() {
         else if (f == "gu") r = tgamma_upper(P(a), P(b));
         else if (f == "gp") r = gamma_p(P(a), P(b));
         else if (f == "gq") r = gamma_q(P(a), P(b));
+        else if (f == "K") r = comp_ellint_1(P(a));
+        else if (f == "E") r = comp_ellint_2(P(a));
+        else if (f == "Pi") r = comp_ellint_3(P(a), P(b));
+        else if (f == "F1") r = ellint_1(P(a), P(b));
+        else if (f == "E2") r = ellint_2(P(a), P(b));
+        else if (f == "P3") r = ellint_3(P(a), P(b), P(c));
 #ifdef SF_MORE
         SF_MORE
 #endif

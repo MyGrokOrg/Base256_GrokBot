@@ -42,6 +42,12 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "yn") return yn(std::stoi(a), P(b));
     if (op == "beta") return beta(P(a), P(b));
     if (op == "zeta") return riemann_zeta(P(a));
+    if (op == "K") return comp_ellint_1(P(a));
+    if (op == "E") return comp_ellint_2(P(a));
+    if (op == "Pi") return comp_ellint_3(P(a), P(b));
+    if (op == "F1") return ellint_1(P(a), P(b));
+    if (op == "E2") return ellint_2(P(a), P(b));
+    if (op == "P3") return ellint_3(P(a), P(b), P(c));
     if (op == "gl") return tgamma_lower(P(a), P(b));
     if (op == "gu") return tgamma_upper(P(a), P(b));
     if (op == "gp") return gamma_p(P(a), P(b));
@@ -54,6 +60,18 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
 
 struct Ref { const char *op, *a, *b, *c, *want; };
 const Ref kRefs[] = {
+    {"K", "0.5", "", "", "0x1af8d55d323f78f5001ea4446dce3674ae697dc8d7c5d52cd80426770a3ap-236"},
+    {"K", "0.999999", "", "", "0x1fca382344497a73eb5a294515cd163d97df3686e5b47c56fb978da2ffc7p-234"},
+    {"E", "0.75", "", "", "0x151876358866b77be0765f50faf4fcd5b31769f46949c398ddf4842c5e44p-236"},
+    {"E", "-0.25", "", "", "0x18bc3dacffca36c89b781536fbdf77aace187519bed3b25edc3531d65354p-236"},
+    {"Pi", "0.5", "0.25", "", "0x1f4e4cdf1a3696939aa4ecedde9c6454a3083bd54a02f6b735ce542d6c4ap-236"},
+    {"Pi", "0.8", "-3", "", "0x1d66708b85fada362005d5c570a00ba05cea9904c2209c45364e91d6b8c7p-237"},
+    {"F1", "0.7", "1.2", "", "0x15645e7131092dee3de3a88619977a97ff3c6a865b1ba4e6525722836a31p-236"},
+    {"F1", "0.3", "-25.5", "", "-0x1a18c5829f57fed46b39aefe3f652bbee1f1e79cd0e703de3f3c66602f68p-232"},
+    {"E2", "0.9", "0.8", "", "0x1780d76b1e3fe956fddf954a2edf0d7f2d97cde911872771f70566e38e4ap-237"},
+    {"E2", "1", "10", "", "0x1a2d13debe69ea4b39fec8af80938800253abe147a67f723f5f7ff4293bap-234"},
+    {"P3", "0.6", "0.5", "1.1", "0x170dbbce416d0b4e495ad5892983c8e33d4022babe5e9ca5bbc4a6849021p-236"},
+    {"P3", "0.4", "-2", "7.75", "0x1290fb3a278aad792f2215a1d9fbd1687e5bdc0887ad648ed03b69c2a3c0p-234"},
     {"gl", "2.5", "1.25", "", "0x1303eafab70f6a49de5ee0e4e006453935df1cf57293775c7a17f3f942f0p-238"},
     {"gu", "2.5", "1.25", "", "0x1083ffae99efb56b3d948b9f68631d54b13311c1f6e5e7e706f2c38f9e3dp-236"},
     {"gp", "0.5", "2", "", "0x1e8b4307d3627a06631767ca639834d36677f268934ad0a9cee41ba91302p-237"},
@@ -264,6 +282,33 @@ int main() {
         CHECK(abs(gamma_p(a, x) + gamma_q(a, x) - one) <= ldexp(one, -235));
         CHECK(abs((tgamma_lower(a, x) + tgamma_upper(a, x)) / tgamma(a) - one) <= ldexp(one, -234));
     }
+
+    // Elliptic integrals: special arguments.
+    EXPECT(comp_ellint_1(one), inf, kDiv);
+    EXPECT(comp_ellint_1(float256(1.5)), nan, kInv);
+    EXPECT(comp_ellint_2(-one), one, 0);
+    EXPECT(comp_ellint_2(float256(-1.5)), nan, kInv);
+    EXPECT(comp_ellint_3(float256(0.5), one), inf, kDiv);
+    EXPECT(comp_ellint_3(float256(0.5), float256(2)), nan, kInv);
+    EXPECT(ellint_1(zero, float256(3.25)), float256(3.25), 0);
+    EXPECT(ellint_2(zero, float256(-3.25)), float256(-3.25), 0);
+    EXPECT(ellint_1(float256(0.5), zero), zero, 0);
+    EXPECT(ellint_1(float256(0.5), -zero), -zero, 0);
+    EXPECT(ellint_1(float256(0.5), inf), inf, 0);
+    EXPECT(ellint_1(float256(2), one), nan, kInv);
+    EXPECT(ellint_1(one, float256(2)), inf, kDiv);
+    EXPECT(ellint_3(float256(0.5), float256(4), one), nan, kInv);  // 1 − ν sin²φ < 0
+    EXPECT(ellint_1(nan, one), nan, 0);
+    EXPECT_M(ellint_1(float256(0.5), ldexp(one, -300)),
+             [](round_mode m) { return m == round_mode::upward ? nextafter(ldexp(float256::one(), -300), float256::inf(false))
+                                                                : ldexp(float256::one(), -300); }, kInx);
+    EXPECT_M(ellint_2(float256(0.5), ldexp(one, -300)),
+             [](round_mode m) { return down(m) ? nextafter(ldexp(float256::one(), -300), float256::zero())
+                                               : ldexp(float256::one(), -300); }, kInx);
+    // Odd in φ, F(φ + π) = F(φ) + 2K.
+    CHECK(same(ellint_1(float256(0.6), float256(-1.3)), -ellint_1(float256(0.6), float256(1.3))));
+    CHECK(abs(ellint_2(float256(0.6), float256(0.25) + float256::pi()) - ellint_2(float256(0.6), float256(0.25)) -
+              float256::two() * comp_ellint_2(float256(0.6))) <= ldexp(one, -232));
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;

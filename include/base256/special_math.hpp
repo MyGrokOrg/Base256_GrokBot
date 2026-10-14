@@ -1,6 +1,7 @@
 #pragma once
 /// Special functions (C++17 <cmath> special-math names): Bessel functions,
-/// beta and the regularized incomplete beta, Riemann zeta, incomplete gamma.
+/// beta and the regularized incomplete beta, Riemann zeta, incomplete gamma,
+/// complete and incomplete elliptic integrals (Carlson R_F, R_D, R_J; AGM).
 /// Every function evaluates in double-float256 (~474 bits) and rounds once in
 /// the caller's rounding mode, raising IEEE flags like the elementary
 /// functions. See README "Special functions" for measured accuracy and limits.
@@ -980,5 +981,243 @@ namespace igamma {
 [[nodiscard]] inline float256 gamma_p(float256 a, float256 x) { return detail_sf::igamma::eval(a, x, 2); }
 /// Regularized upper incomplete gamma Q(a, x) = Γ(a, x)/Γ(a) = 1 − P(a, x).
 [[nodiscard]] inline float256 gamma_q(float256 a, float256 x) { return detail_sf::igamma::eval(a, x, 3); }
+
+namespace detail_sf {
+namespace ell {
+
+using detail_dd::sqrt;
+// max |A − v|/|A| below 2^-90: the degree-5 Taylor tails below are then < 2^-500.
+[[nodiscard]] inline bool close(const dd& A, const dd& a, const dd& b, const dd& c, const dd& d) {
+    const int ea = ilogb(A.hi) - 90;
+    for (const dd* v : {&a, &b, &c, &d}) {
+        const dd e = A - *v;
+        if (!e.hi.iszero() && ilogb(e.hi) >= ea) return false;
+    }
+    return true;
+}
+
+// R_F(x, y, z), x, y, z >= 0, at most one zero.
+[[nodiscard]] inline dd rf(dd x, dd y, dd z) {
+    const dd one{float256::one()};
+    dd A = (x + y + z) / float256(3);
+    for (int it = 0; it < 400 && !close(A, x, y, z, z); ++it) {
+        const dd sx = sqrt(x), sy = sqrt(y), sz = sqrt(z);
+        const dd lam = sx * sy + sy * sz + sz * sx;
+        x = detail_dd::ldexp(x + lam, -2); y = detail_dd::ldexp(y + lam, -2); z = detail_dd::ldexp(z + lam, -2);
+        A = detail_dd::ldexp(A + lam, -2);
+    }
+    const dd X = one - x / A, Y = one - y / A, Z = -(X + Y);
+    const dd E2 = X * Y - Z * Z, E3 = X * Y * Z;
+    const dd poly = one - E2 / float256(10) + E3 / float256(14) + E2 * E2 / float256(24) - E2 * E3 * float256(3) / float256(44);
+    return poly / sqrt(A);
+}
+
+// R_D(x, y, z), x, y >= 0 (at most one zero), z > 0.
+[[nodiscard]] inline dd rd(dd x, dd y, dd z) {
+    const dd one{float256::one()};
+    dd A = (x + y + z * float256(3)) / float256(5);
+    dd sum{float256::zero()};
+    int m = 0;
+    for (int it = 0; it < 400 && !close(A, x, y, z, z); ++it, ++m) {
+        const dd sx = sqrt(x), sy = sqrt(y), sz = sqrt(z);
+        const dd lam = sx * sy + sy * sz + sz * sx;
+        sum = sum + detail_dd::ldexp(one / (sz * (z + lam)), -2 * m);
+        x = detail_dd::ldexp(x + lam, -2); y = detail_dd::ldexp(y + lam, -2); z = detail_dd::ldexp(z + lam, -2);
+        A = detail_dd::ldexp(A + lam, -2);
+    }
+    const dd X = one - x / A, Y = one - y / A, Z = -(X + Y) / float256(3);
+    const dd XY = X * Y, Z2 = Z * Z;
+    const dd E2 = XY - Z2 * float256(6), E3 = (XY * float256(3) - Z2 * float256(8)) * Z;
+    const dd E4 = (XY - Z2) * Z2 * float256(3), E5 = XY * Z2 * Z;
+    const dd poly = one - E2 * float256(3) / float256(14) + E3 / float256(6) + E2 * E2 * float256(9) / float256(88) -
+                    E4 * float256(3) / float256(22) - E2 * E3 * float256(9) / float256(52) + E5 * float256(3) / float256(26);
+    return sum * float256(3) + detail_dd::ldexp(poly / (A * sqrt(A)), -2 * m);
+}
+
+// R_C(x, y) = ∫ dt / (2 √(t+x) (t+y)), x >= 0, y > 0.
+[[nodiscard]] inline dd rc(const dd& x, const dd& y) {
+    const dd one{float256::one()};
+    if (x.hi.iszero()) return detail_dd::pi() / (sqrt(y) * float256::two());
+    const dd t = (y - x) / x;  // R_C = atan(√t)/√t / √x  (atanh form for t < 0)
+    dd g;
+    if (t.hi.iszero() || ilogb(t.hi) < -8) {
+        const auto& io = detail_dd::inv_odd();
+        dd p = io[detail_dd::kMaxOddInv];
+        for (int n = detail_dd::kMaxOddInv - 1; n >= 0; --n) p = io[static_cast<std::size_t>(n)] - t * p;
+        g = p;
+    } else if (!t.hi.signbit()) {
+        const dd st = sqrt(t);
+        g = detail_math::atan_dd(st) / st;
+    } else {
+        const dd u = sqrt(-t);  // atanh(u)/u, 0 < u < 1
+        g = detail_dd::log((one + u) / (one - u)) / (u * float256::two());
+    }
+    return g / sqrt(x);
+}
+
+// R_J(x, y, z, p), x, y, z >= 0 (at most one zero), p > 0.
+[[nodiscard]] inline dd rj(dd x, dd y, dd z, dd p) {
+    const dd one{float256::one()};
+    dd A = (x + y + z + p * float256::two()) / float256(5);
+    dd sum{float256::zero()};
+    int m = 0;
+    for (int it = 0; it < 400 && !close(A, x, y, z, p); ++it, ++m) {
+        const dd sx = sqrt(x), sy = sqrt(y), sz = sqrt(z);
+        const dd lam = sx * sy + sy * sz + sz * sx;
+        const dd al0 = p * (sx + sy + sz) + sx * sy * sz;
+        const dd pl = p + lam;
+        sum = sum + detail_dd::ldexp(rc(al0 * al0, p * pl * pl), -2 * m);
+        x = detail_dd::ldexp(x + lam, -2); y = detail_dd::ldexp(y + lam, -2);
+        z = detail_dd::ldexp(z + lam, -2); p = detail_dd::ldexp(p + lam, -2);
+        A = detail_dd::ldexp(A + lam, -2);
+    }
+    const dd X = one - x / A, Y = one - y / A, Z = one - z / A;
+    const dd P = -(X + Y + Z) / float256(2);
+    const dd P2 = P * P;
+    const dd E2 = X * Y + X * Z + Y * Z - P2 * float256(3);
+    const dd XYZ = X * Y * Z;
+    const dd E3 = XYZ + E2 * P * float256(2) + P2 * P * float256(4);
+    const dd E4 = (XYZ * float256(2) + E2 * P + P2 * P * float256(3)) * P;
+    const dd E5 = XYZ * P2;
+    const dd poly = one - E2 * float256(3) / float256(14) + E3 / float256(6) + E2 * E2 * float256(9) / float256(88) -
+                    E4 * float256(3) / float256(22) - E2 * E3 * float256(9) / float256(52) + E5 * float256(3) / float256(26);
+    return sum * float256(3) + detail_dd::ldexp(poly / (A * sqrt(A)), -2 * m);
+}
+
+// 1 − k² = (1 − k)(1 + k), exact inputs, as dd.
+[[nodiscard]] inline dd kc2(float256 k) {
+    const dd one{float256::one()};
+    return (one - dd(k)) * (one + dd(k));
+}
+// K(k) and E(k) by the AGM (|k| < 1).
+inline void agm_ke(float256 k, dd& K, dd* E) {
+    dd a{float256::one()}, b = sqrt(kc2(k));
+    dd csum = detail_dd::ldexp(detail_dd::two_prod(k, k), -1);  // 2^{-1} c_0²
+    for (int n = 1; n < 100; ++n) {
+        const dd c = detail_dd::ldexp(a - b, -1);
+        const dd an = detail_dd::ldexp(a + b, -1);
+        b = sqrt(a * b);
+        a = an;
+        csum = csum + detail_dd::ldexp(c * c, n - 1);
+        if (c.hi.iszero() || ilogb(c.hi) < ilogb(a.hi) - 250) break;  // c_{n+1} ~ c_n² : next term < 2^-500
+    }
+    K = detail_dd::pio2() / a;
+    if (E) *E = K * (dd(float256::one()) - csum);
+}
+
+} // namespace ell
+} // namespace detail_sf
+
+/// Complete elliptic integral of the first kind K(k), |k| < 1 (|k| = 1: +∞, divide-by-zero).
+[[nodiscard]] inline float256 comp_ellint_1(float256 k) {
+    detail_dd::FnEnv env;
+    if (k.isnan()) return env.nan(k);
+    if (abs(k) > float256::one()) return env.invalid();
+    if (abs(k) == float256::one()) return env.pole(false);
+    detail_dd::dd K;
+    detail_sf::ell::agm_ke(k, K, nullptr);
+    return K.out(env);
+}
+/// Complete elliptic integral of the second kind E(k), |k| <= 1.
+[[nodiscard]] inline float256 comp_ellint_2(float256 k) {
+    detail_dd::FnEnv env;
+    if (k.isnan()) return env.nan(k);
+    if (abs(k) > float256::one()) return env.invalid();
+    if (abs(k) == float256::one()) return env.exact(float256::one());
+    detail_dd::dd K, E;
+    detail_sf::ell::agm_ke(k, K, &E);
+    return E.out(env);
+}
+/// Complete elliptic integral of the third kind Π(ν, k) = ∫_0^{π/2} dθ/((1 − ν sin²θ)√(1 − k² sin²θ)),
+/// |k| < 1, ν < 1 (ν = 1 or |k| = 1: +∞, divide-by-zero; ν > 1: domain error).
+[[nodiscard]] inline float256 comp_ellint_3(float256 k, float256 nu) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (k.isnan() || nu.isnan()) return env.nan2(k, nu);
+    if (abs(k) > float256::one() || nu > float256::one()) return env.invalid();
+    if (nu.isinf()) return env.exact(float256::zero());  // ν → −∞: Π → 0
+    if (abs(k) == float256::one() || nu == float256::one()) return env.pole(false);
+    const dd one{float256::one()};
+    const dd kc = detail_sf::ell::kc2(k);
+    const dd p = detail_dd::two_sum(float256::one(), -nu);
+    if (nu.iszero()) { dd K; detail_sf::ell::agm_ke(k, K, nullptr); return K.out(env); }
+    const dd v = detail_sf::ell::rf(dd(float256::zero()), kc, one) +
+                 dd(nu) * detail_sf::ell::rj(dd(float256::zero()), kc, one, p) / float256(3);
+    return v.out(env);
+}
+
+namespace detail_sf {
+namespace ell {
+// kind 1: F, 2: E, 3: Π. φ = mπ + r, |r| <= π/2: X(φ) = 2m X_complete + X(r).
+[[nodiscard]] inline float256 incomplete(int kind, float256 k, float256 nu, float256 phi) {
+    detail_dd::FnEnv env;
+    const float256 one = float256::one();
+    if (k.isnan() || phi.isnan() || nu.isnan()) {
+        if (nu.isnan()) return env.nan(nu);
+        return env.nan2(k, phi);
+    }
+    if (abs(k) > one) return env.invalid();
+    if (phi.isinf()) return (kind == 3 && nu.isinf()) ? env.invalid() : env.exact(phi);  // grows like φ
+    if (nu.isinf()) return env.invalid();
+    if (phi.iszero()) return env.exact(phi);
+    if (k.iszero() && (kind == 1 || kind == 2 || nu.iszero())) return env.exact(phi);  // F(φ,0) = E(φ,0) = φ
+    // tiny φ: X ≈ φ + c φ³, c = k²/6 (F), −k²/6 (E), (2ν + k²)/6 (Π)
+    if (ilogb(phi) < -250) {
+        int c = kind == 2 ? -1 : 1;
+        if (kind == 3) {
+            const dd t = dd(nu) * float256::two() + detail_dd::two_prod(k, k);
+            c = t.hi.iszero() ? 0 : (t.hi.signbit() ? -1 : 1);
+        }
+        const int tail = c == 0 ? 2 : (phi.signbit() ? -c : c);
+        return env.round(phi, float256::zero(), 0, tail);
+    }
+    const dd pi = detail_dd::pi();
+    const float256 mf = round(phi / pi.hi);
+    const dd r = dd(phi) - pi * mf;
+    dd s, c;
+    detail_dd::sincos_reduced(r, s, c);
+    const dd s2 = s * s, c2 = c * c;
+    const dd k2 = detail_dd::two_prod(k, k);
+    const dd delta = c2 + kc2(k) * s2;  // 1 − k² sin² r
+    const dd one_d{one};
+    dd part;
+    if (kind == 3) {
+        const dd p = one_d - dd(nu) * s2;
+        if (p.hi.signbit() || p.hi.iszero()) return env.invalid();  // 1 − ν sin²φ <= 0: not supported
+        part = s * rf(c2, delta, one_d) + dd(nu) * s * s2 * rj(c2, delta, one_d, p) / float256(3);
+    } else if (abs(k) == one && mf.iszero() && c2.hi.iszero()) {
+        return env.pole(phi.signbit());
+    } else {
+        part = s * rf(c2, delta, one_d);
+        if (kind == 2) part = part - k2 * s * s2 * rd(c2, delta, one_d) / float256(3);
+    }
+    if (!mf.iszero()) {
+        dd full;
+        if (kind == 1) {
+            if (abs(k) == one) return env.pole(phi.signbit());
+            agm_ke(k, full, nullptr);
+        } else if (kind == 2) {
+            if (abs(k) == one) full = one_d;
+            else { dd K; agm_ke(k, K, &full); }
+        } else {
+            if (abs(k) == one || nu >= one) return nu > one ? env.invalid() : env.pole(phi.signbit());
+            const dd kc = kc2(k);
+            full = rf(dd(float256::zero()), kc, one_d) +
+                   dd(nu) * rj(dd(float256::zero()), kc, one_d, detail_dd::two_sum(one, -nu)) / float256(3);
+        }
+        part = part + full * (mf + mf);
+    }
+    return part.out(env);
+}
+} // namespace ell
+} // namespace detail_sf
+
+/// Incomplete elliptic integral of the first kind F(k, φ) = ∫_0^φ dθ/√(1 − k² sin²θ), |k| <= 1.
+[[nodiscard]] inline float256 ellint_1(float256 k, float256 phi) { return detail_sf::ell::incomplete(1, k, float256::zero(), phi); }
+/// Incomplete elliptic integral of the second kind E(k, φ) = ∫_0^φ √(1 − k² sin²θ) dθ, |k| <= 1.
+[[nodiscard]] inline float256 ellint_2(float256 k, float256 phi) { return detail_sf::ell::incomplete(2, k, float256::zero(), phi); }
+/// Incomplete elliptic integral of the third kind Π(ν; φ, k) = ∫_0^φ dθ/((1 − ν sin²θ)√(1 − k² sin²θ)),
+/// |k| <= 1, 1 − ν sin²φ > 0 (and ν < 1 when |φ| > π/2); otherwise a domain error.
+[[nodiscard]] inline float256 ellint_3(float256 k, float256 nu, float256 phi) { return detail_sf::ell::incomplete(3, k, nu, phi); }
 
 } // namespace base256

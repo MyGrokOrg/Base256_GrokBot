@@ -85,7 +85,24 @@ def GU(a, x): return mp.gammainc(a, x, mp.inf)
 def GP(a, x): return mp.gammainc(a, 0, x, regularized=True)
 def GQ(a, x): return mp.gammainc(a, x, mp.inf, regularized=True)
 
+def EK(k): return mp.ellipk(k * k)
+def EE(k): return mp.ellipe(k * k)
+def EPI(k, n): return mp.ellippi(n, k * k)
+def EF(k, phi): return mp.ellipf(phi, k * k)
+def EE2(k, phi): return mp.ellipe(phi, k * k)
+def EP3(k, n, phi): return mp.ellippi(n, phi, k * k)
+
 RANGES = [
+    ("ell_K",    "K", EK, [(-1, 1, False)]),
+    ("ell_K1",   "K", EK, [(0.999, 1, False)]),
+    ("ell_E",    "E", EE, [(-1, 1, False)]),
+    ("ell_Pi",   "Pi", EPI, [(-1, 1, False), (-10, 1, False)]),
+    ("ell_F",    "F1", EF, [(-1, 1, False), (-1.57, 1.57, False)]),
+    ("ell_Fbig", "F1", EF, [(-1, 1, False), (-100, 100, False)]),
+    ("ell_E2",   "E2", EE2, [(-1, 1, False), (-1.57, 1.57, False)]),
+    ("ell_E2big","E2", EE2, [(-1, 1, False), (-100, 100, False)]),
+    ("ell_P3",   "P3", EP3, [(-1, 1, False), (-10, 0.9, False), (-1.57, 1.57, False)]),
+    ("ell_P3big","P3", EP3, [(-0.99, 0.99, False), (-10, 0.9, False), (-20, 20, False)]),
     ("gl",       "gl", GL, [(-10, 8, True), (-10, 9, True)]),
     ("gu",       "gu", GU, [(-10, 8, True), (-10, 9, True)]),
     ("gp",       "gp", GP, [(-10, 8, True), (-10, 9, True)]),
