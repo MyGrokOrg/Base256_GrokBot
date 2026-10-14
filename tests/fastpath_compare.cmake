@@ -1,0 +1,10 @@
+# Run the fast-path and no-fast-path builds of fastpath_diff and require equal digests.
+execute_process(COMMAND ${A} ${N} OUTPUT_VARIABLE out_a RESULT_VARIABLE ra)
+execute_process(COMMAND ${B} ${N} OUTPUT_VARIABLE out_b RESULT_VARIABLE rb)
+if(NOT ra EQUAL 0 OR NOT rb EQUAL 0)
+    message(FATAL_ERROR "fastpath_diff failed to run")
+endif()
+if(NOT out_a STREQUAL out_b)
+    message(FATAL_ERROR "fast path differs from general path:\nfast:\n${out_a}\ngeneral:\n${out_b}")
+endif()
+message(STATUS "fast path identical:\n${out_a}")

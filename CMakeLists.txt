@@ -33,6 +33,15 @@ if(BUILD_TESTING)
     add_executable(test_math_flags tests/test_math_flags.cpp)
     target_link_libraries(test_math_flags PRIVATE base256)
     add_test(NAME math_flags COMMAND test_math_flags)
+    # Fast paths of + - * must match the general path bit for bit (flags included).
+    add_executable(fastpath_fast tests/fastpath_diff.cpp)
+    target_link_libraries(fastpath_fast PRIVATE base256)
+    add_executable(fastpath_slow tests/fastpath_diff.cpp)
+    target_link_libraries(fastpath_slow PRIVATE base256)
+    target_compile_definitions(fastpath_slow PRIVATE BASE256_NO_FAST_PATHS)
+    set(BASE256_FASTPATH_CASES "200000" CACHE STRING "Random cases for the fastpath test")
+    add_test(NAME fastpath COMMAND ${CMAKE_COMMAND} -DA=$<TARGET_FILE:fastpath_fast> -DB=$<TARGET_FILE:fastpath_slow>
+             -DN=${BASE256_FASTPATH_CASES} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/fastpath_compare.cmake)
     # Benchmark (not a test): build/base256_bench [min_seconds] [filter]
     add_executable(base256_bench bench/bench.cpp)
     target_link_libraries(base256_bench PRIVATE base256)
