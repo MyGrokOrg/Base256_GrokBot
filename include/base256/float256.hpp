@@ -346,6 +346,10 @@ private:
 
     static constexpr float256 pack(detail::Unpacked u, round_mode mode) noexcept {
         using namespace detail;
+#ifndef BASE256_NO_FAST_PATHS
+        if (u.kind == Kind::normal && normal_range(u.wexp) && u.sig.bit(255))
+            return pack_normal_range(u.sign, u.wexp, u.sig, u.sticky, mode);  // common case first
+#endif
         if (u.kind == Kind::nan) {
             std::uint64_t w3 = (1ULL << 63) * (u.sign ? 1ULL : 0ULL);
             w3 |= static_cast<std::uint64_t>(kExpAllOnes) << 44;
@@ -541,6 +545,36 @@ private:
         const u512 dn = d << dz;
         e = pack_rne_normal(eneg, we, dn.hi256(), !dn.lo256().is_zero());
         return true;
+    }
+
+    // --- fast paths for normal operands (bit-identical to the general path) -----
+    [[nodiscard]] constexpr bool is_normal_enc() const noexcept {
+        const int be = biased_exp();
+        return be != 0 && be != detail::kExpAllOnes;
+    }
+    // Significand of a normal number with the leading bit at 255 (as unpack()).
+    [[nodiscard]] constexpr detail::u256 normal_sig() const noexcept {
+        const std::uint64_t w3 = (bits_[3] & detail::kFracHiMask) | (1ULL << 44);
+        constexpr int s = detail::kLsbPos;
+        return detail::u256::from_words(bits_[0] << s, (bits_[1] << s) | (bits_[0] >> (64 - s)),
+                                        (bits_[2] << s) | (bits_[1] >> (64 - s)),
+                                        (w3 << s) | (bits_[2] >> (64 - s)));
+    }
+    // pack() restricted to results with kEmin <= wexp < kEmax (normal before and
+    // after rounding): the normal branch of pack(), without the special cases.
+    static constexpr float256 pack_normal_range(bool sign, int wexp, detail::u256 sig, bool sticky,
+                                                round_mode mode) noexcept {
+        bool inexact = false;
+        if (round_bits(sig, detail::kLsbPos, sticky, sign, mode, inexact)) {
+            ++wexp;
+            sig = {};
+            sig.set_bit(255);
+        }
+        if (inexact) detail::raise_flag(fe_inexact);
+        return pack_normal(sign, wexp, sig);
+    }
+    [[nodiscard]] static constexpr bool normal_range(int wexp) noexcept {
+        return wexp >= detail::kEmin && wexp < detail::kEmax;
     }
 
     static constexpr bool finite_nonzero(const detail::Unpacked& u) noexcept {
@@ -1355,6 +1389,53 @@ private:
 constexpr float256 float256::add_sub(float256 a, float256 b, bool subtract) noexcept {
     using namespace detail;
     if (subtract) b.set_sign_bit(!b.sign_bit());
+#ifndef BASE256_NO_FAST_PATHS
+    if (a.is_normal_enc() && b.is_normal_enc()) {
+        // Fast path: both normal. Same arithmetic as below; falls back to pack()
+        // only when the result may be subnormal, zero or overflow.
+        int ea = a.biased_exp(), eb = b.biased_exp();
+        u256 sa = a.normal_sig(), sbig = b.normal_sig();
+        bool na = a.sign_bit(), nb = b.sign_bit();
+        if (ea < eb || (ea == eb && sa < sbig)) {
+            std::swap(ea, eb);
+            std::swap(sa, sbig);
+            std::swap(na, nb);
+        }
+        bool sticky = false;
+        const u256 sb = shr_sticky(sbig, ea - eb, sticky);
+        int wexp = ea - kBias;
+        u256 sig;
+        if (na == nb) {
+            std::uint64_t carry = 0;
+            sig = add_u256(sa, sb, carry);
+            if (carry) {
+                sticky = sticky || sig.bit(0);
+                sig = sig >> 1;
+                sig.set_bit(255);
+                ++wexp;
+            }
+        } else {
+            std::uint64_t br = 0;
+            sig = sub_u256(sa, sb, br);
+            if (sticky) {
+                std::uint64_t br2 = 0;
+                sig = sub_u256(sig, u256{1}, br2);
+            }
+            if (sig.is_zero() && !sticky) return exact_zero_sum();
+            const int lz = sig.clz();
+            sig = sig << lz;
+            wexp -= lz;
+        }
+        if (normal_range(wexp)) return pack_normal_range(na, wexp, sig, sticky, current_mode());
+        Unpacked r;
+        r.sign = na;
+        r.kind = Kind::normal;
+        r.wexp = wexp;
+        r.sig = sig;
+        r.sticky = sticky;
+        return pack(r);
+    }
+#endif
     Unpacked ua = a.unpack();
     Unpacked ub = b.unpack();
 
@@ -1422,6 +1503,32 @@ constexpr float256 float256::add_sub(float256 a, float256 b, bool subtract) noex
 
 constexpr float256 float256::mul(float256 a, float256 b) noexcept {
     using namespace detail;
+#ifndef BASE256_NO_FAST_PATHS
+    if (a.is_normal_enc() && b.is_normal_enc()) {
+        const bool sign = a.sign_bit() != b.sign_bit();
+        const u512 p = mul_wide(a.normal_sig(), b.normal_sig());
+        int wexp = (a.biased_exp() - kBias) + (b.biased_exp() - kBias);
+        u256 sig;
+        bool sticky;
+        if (p.bit(511)) {
+            sig = p.hi256();
+            sticky = !p.lo256().is_zero();
+            ++wexp;
+        } else {
+            const u512 q = p << 1;
+            sig = q.hi256();
+            sticky = !q.lo256().is_zero();
+        }
+        if (normal_range(wexp)) return pack_normal_range(sign, wexp, sig, sticky, current_mode());
+        Unpacked r;
+        r.sign = sign;
+        r.kind = Kind::normal;
+        r.wexp = wexp;
+        r.sig = sig;
+        r.sticky = sticky;
+        return pack(r);
+    }
+#endif
     Unpacked ua = a.unpack();
     Unpacked ub = b.unpack();
     const bool sign = ua.sign ^ ub.sign;
