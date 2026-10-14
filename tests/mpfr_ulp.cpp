@@ -1,5 +1,7 @@
 // Measures elementary-function error in ulps against MPFR (exact reference
-// at 1024 bits). Usage: mpfr_ulp [cases_per_fn] [seed] [bound_check]
+// at 1100 bits). Usage: mpfr_ulp [cases_per_fn] [seed] [bound_check] ["fn list"] [modes 1..5]
+// Every case is evaluated in each rounding mode (RNE, RNA, RZ, RU, RD) and
+// checked for value (vs. MPFR rounded in that mode), direction and flags.
 // With bound_check=1 the program exits nonzero if any function exceeds its
 // documented bound (see README "Elementary function accuracy").
 #include <base256/base256.hpp>
@@ -126,6 +128,121 @@ float256 hard_trig(long E) {
     return x;
 }
 
+// --- rounding modes and flags ------------------------------------------------
+constexpr base256::round_mode kModes[5] = {base256::round_mode::to_nearest_even, base256::round_mode::to_nearest_away,
+                                           base256::round_mode::toward_zero, base256::round_mode::upward,
+                                           base256::round_mode::downward};
+// MPFR has no ties-away mode for set(); transcendental results are never ties.
+constexpr mpfr_rnd_t kMpfrModes[5] = {MPFR_RNDN, MPFR_RNDN, MPFR_RNDZ, MPFR_RNDU, MPFR_RNDD};
+const char* const kModeNames[5] = {"RNE", "RNA", "RZ", "RU", "RD"};
+int g_modes = 5;  // how many of kModes to test
+
+struct Expected {
+    bool inexact, overflow, tiny;
+};
+// Round the (1100-bit) reference to binary256 in rnd, emulating its exponent range.
+Expected round_b256(mpfr_t out, mpfr_srcptr ref, mpfr_rnd_t rnd) {
+    const mpfr_exp_t emin = mpfr_get_emin(), emax = mpfr_get_emax();
+    mpfr_set_emin(kEminN - 237 + 2);  // -262377: smallest subnormal 2^-262378
+    mpfr_set_emax(262144);
+    mpfr_clear_flags();
+    int t = mpfr_set(out, ref, rnd);
+    t = mpfr_check_range(out, t, rnd);
+    t = mpfr_subnormalize(out, t, rnd);
+    Expected e{};
+    e.inexact = t != 0;
+    e.overflow = mpfr_overflow_p() != 0;
+    mpfr_set_emin(emin);
+    mpfr_set_emax(emax);
+    // Tininess after rounding (unbounded exponent): |round_237(ref)| < 2^-262142.
+    mpfr_t u;
+    mpfr_init2(u, 237);
+    mpfr_set(u, ref, rnd);
+    e.tiny = !mpfr_zero_p(u) && !mpfr_inf_p(u) && !mpfr_nan_p(u) && mpfr_get_exp(u) <= kEminN;
+    mpfr_clear(u);
+    return e;
+}
+
+// If the 1100-bit reference was rounded (ternary != 0), move it one 1100-bit ulp
+// toward the true value, so that a true value just off a binary256 number (e.g.
+// expm1(-80000) = -1 + 2^-115000) is still seen as inexact and on the right side.
+void nudge(mpfr_t r, int ternary) {
+    if (ternary > 0) mpfr_nextbelow(r);
+    else if (ternary < 0) mpfr_nextabove(r);
+}
+
+struct Stat {
+    double worst[5] = {0, 0, 0, 0, 0};
+    long misround[5] = {0, 0, 0, 0, 0};
+    long flag_bad = 0, dir_bad = 0, cases = 0;
+    std::string first_bad;
+    bool failed(double bound) const {
+        for (int m = 0; m < 5; ++m) if (worst[m] > (m < 2 ? bound : 1.0)) return true;  // directed: at most 1 ulp (=1 only at a binade edge)
+        return flag_bad > 0 || dir_bad > 0;
+    }
+};
+
+// Evaluate `call` in every mode and check value, direction and flags against `ref`.
+void check_case(Stat& st, const std::function<float256()>& call, mpfr_srcptr ref, const std::string& where) {
+    mpfr_t o, ym;
+    mpfr_init2(o, 237);
+    mpfr_init2(ym, 1100);
+    ++st.cases;
+    for (int m = 0; m < g_modes; ++m) {
+        base256::fenv::set_round(kModes[m]);
+        base256::fenv::clear_flags();
+        const float256 y = call();
+        const unsigned fl = base256::fenv::get_flags();
+        base256::fenv::set_round(base256::round_mode::to_nearest_even);
+        base256::fenv::clear_flags();
+        const Expected ex = round_b256(o, ref, kMpfrModes[m]);
+        to_mpfr(ym, y);
+        const bool same = (mpfr_nan_p(ym) && mpfr_nan_p(o)) || (mpfr_equal_p(ym, o) && mpfr_signbit(ym) == mpfr_signbit(o));
+        if (!same) ++st.misround[m];
+        double err = 0;
+        // (an overflow saturated to the largest finite value in a directed mode is not an ulp error)
+        if (!ex.overflow && !mpfr_inf_p(ym) && !mpfr_nan_p(ym) && !mpfr_inf_p(o)) err = ulp_err(y, const_cast<mpfr_ptr>(ref));
+        if (!same) {
+            if (mpfr_inf_p(ym) || mpfr_inf_p(o) || mpfr_nan_p(ym) || mpfr_nan_p(o)) err = 1e9;
+            // direction
+            const int c = mpfr_cmp(ym, ref);
+            bool bad_dir = false;
+            if (kMpfrModes[m] == MPFR_RNDU) bad_dir = c < 0;
+            if (kMpfrModes[m] == MPFR_RNDD) bad_dir = c > 0;
+            if (kMpfrModes[m] == MPFR_RNDZ) bad_dir = mpfr_cmpabs(ym, ref) > 0;
+            if (bad_dir) {
+                ++st.dir_bad;
+                if (st.first_bad.empty()) st.first_bad = std::string("direction ") + kModeNames[m] + " at " + where;
+            }
+        }
+        if (err > st.worst[m]) st.worst[m] = err;
+        unsigned want = 0;
+        if (ex.inexact) want |= base256::fe_inexact;
+        if (ex.overflow) want |= base256::fe_overflow;
+        if (ex.tiny && ex.inexact) want |= base256::fe_underflow;
+        if (fl != want) {
+            ++st.flag_bad;
+            if (st.first_bad.empty()) {
+                char buf[96];
+                std::snprintf(buf, sizeof buf, "flags %s got %#x want %#x at ", kModeNames[m], fl, want);
+                st.first_bad = buf + where;
+            }
+        }
+    }
+    mpfr_clears(o, ym, (mpfr_ptr)0);
+}
+
+void report(const char* name, const Stat& st, double bound, int& bad) {
+    const bool over = st.failed(bound);
+    bad += over;
+    std::printf("%-10s n=%ld max ulp", name, st.cases);
+    for (int m = 0; m < g_modes; ++m) std::printf(" %s %.3g", kModeNames[m], st.worst[m]);
+    long mis = 0;
+    for (int m = 0; m < g_modes; ++m) mis += st.misround[m];
+    std::printf(" | misrounded %ld, flag errors %ld, direction errors %ld%s%s\n", mis, st.flag_bad, st.dir_bad,
+                over ? "  OVER BOUND " : "", st.first_bad.empty() ? "" : (" [" + st.first_bad + "]").c_str());
+}
+
 int mpfr_lngamma_abs(mpfr_ptr r, mpfr_srcptr x, mpfr_rnd_t rnd) { int sg; return mpfr_lgamma(r, &sg, x, rnd); }
 
 struct Fn {
@@ -143,11 +260,18 @@ int main(int argc, char** argv) {
     const long n = argc > 1 ? std::atol(argv[1]) : 2000;
     rng.seed(argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 1);
     const bool check = argc > 3 && std::atoi(argv[3]) != 0;
+    if (argc > 5) g_modes = std::atoi(argv[5]) < 1 ? 1 : std::atoi(argv[5]) > 5 ? 5 : std::atoi(argv[5]);
     using namespace base256;
     std::vector<Fn> fns = {
         {"exp",   [](float256 x){return exp(x);},   mpfr_exp,   -120, 18, true, true, 1, 181000},
         {"exp2",  [](float256 x){return exp2(x);},  mpfr_exp2,  -120, 18, true, true, 1, 262000},
         {"expm1", [](float256 x){return expm1(x);}, mpfr_expm1, -300, 18, true, true, 1, 181000},
+        // Overflow / gradual-underflow / underflow-to-zero regions (flags and directed modes).
+        {"exp_big", [](float256 x){return exp(x);},   mpfr_exp,   17, 18, true, true, 1, 0},
+        {"exp2_big",[](float256 x){return exp2(x);},  mpfr_exp2,  17, 19, true, true, 1, 0},
+        {"expm1_big",[](float256 x){return expm1(x);},mpfr_expm1, 17, 18, true, true, 1, 0},
+        {"sinh_big",[](float256 x){return sinh(x);},  mpfr_sinh,  17, 18, true, true, 1, 0},
+        {"cosh_big",[](float256 x){return cosh(x);},  mpfr_cosh,  17, 18, true, true, 1, 0},
         {"log",   [](float256 x){return log(x);},   mpfr_log,   -262000, 262000, true, false, 1, 0},
         {"log2",  [](float256 x){return log2(x);},  mpfr_log2,  -262000, 262000, true, false, 1, 0},
         {"log10", [](float256 x){return log10(x);}, mpfr_log10, -262000, 262000, true, false, 1, 0},
@@ -197,7 +321,7 @@ int main(int argc, char** argv) {
     mpfr_set_emin(mpfr_get_emin_min()); mpfr_set_emax(mpfr_get_emax_max());
     int bad = 0;
     for (const Fn& f : fns) {
-        double worst = 0; float256 wx;
+        Stat st;
         for (long i = 0; i < n; ++i) {
             float256 x = rnd_in(f.lo, f.hi, f.logscale);
             if (f.gen == 4) x = -x;
@@ -222,50 +346,41 @@ int main(int argc, char** argv) {
             if (f.neg_too && (rng() & 1)) x = -x;
             if (f.maxabs > 0 && abs(x) > float256(f.maxabs)) { --i; continue; }
             to_mpfr(xm, x);
-            f.m(r, xm, MPFR_RNDN);
-            const double e = ulp_err(f.f(x), r);
-            if (e > worst) { worst = e; wx = x; }
+            nudge(r, f.m(r, xm, MPFR_RNDN));
+            check_case(st, [&] { return f.f(x); }, r, x.to_hex_string());
         }
-        const bool over = worst > f.bound;
-        bad += over;
-        std::printf("%-7s max %.3g ulp at %s%s\n", f.name, worst, wx.to_string().c_str(), over ? "  OVER BOUND" : "");
+        report(f.name, st, f.bound, bad);
     }
     if (argc <= 4 || std::string(argv[4]).find("pow") != std::string::npos) {
         // pow(x, y): x log-uniform in [2^-64, 2^64), y in [-2000, 2000] (half integers, half not).
         mpfr_t ym;
         mpfr_init2(ym, 1100);
-        double worst = 0; float256 wx, wy;
+        Stat st;
         for (long i = 0; i < n; ++i) {
             const float256 x = rnd_in(-64, 64, true);
             float256 y = rnd_in(-2000, 2000, false);
             if (rng() & 1) y = trunc(y);
             if (abs(y * log2(x)) > float256(250000)) { --i; continue; }
             to_mpfr(xm, x); to_mpfr(ym, y);
-            mpfr_pow(r, xm, ym, MPFR_RNDN);
-            const double e = ulp_err(pow(x, y), r);
-            if (e > worst) { worst = e; wx = x; wy = y; }
+            nudge(r, mpfr_pow(r, xm, ym, MPFR_RNDN));
+            check_case(st, [&] { return pow(x, y); }, r, x.to_hex_string() + ", " + y.to_hex_string());
         }
-        const bool over = worst > 1.0;
-        bad += over;
-        std::printf("%-7s max %.3g ulp at %s, %s%s\n", "pow", worst, wx.to_string(20).c_str(), wy.to_string(20).c_str(), over ? "  OVER BOUND" : "");
+        report("pow", st, 1.0, bad);
         mpfr_clear(ym);
     }
     if (argc <= 4 || std::string(argv[4]).find("atan2") != std::string::npos) {
         mpfr_t ym;
         mpfr_init2(ym, 1100);
-        double worst = 0; float256 wx, wy;
+        Stat st;
         for (long i = 0; i < n; ++i) {
             float256 y = rnd_in(-300, 300, true), x = rnd_in(-300, 300, true);
             if (rng() & 1) y = -y;
             if (rng() & 1) x = -x;
             to_mpfr(xm, x); to_mpfr(ym, y);
-            mpfr_atan2(r, ym, xm, MPFR_RNDN);
-            const double e = ulp_err(atan2(y, x), r);
-            if (e > worst) { worst = e; wx = x; wy = y; }
+            nudge(r, mpfr_atan2(r, ym, xm, MPFR_RNDN));
+            check_case(st, [&] { return atan2(y, x); }, r, y.to_hex_string() + ", " + x.to_hex_string());
         }
-        const bool over = worst > 1.0;
-        bad += over;
-        std::printf("%-7s max %.3g ulp at %s, %s%s\n", "atan2", worst, wy.to_string(20).c_str(), wx.to_string().c_str(), over ? "  OVER BOUND" : "");
+        report("atan2", st, 1.0, bad);
         mpfr_clear(ym);
     }
     mpfr_clears(xm, r, (mpfr_ptr)0);
