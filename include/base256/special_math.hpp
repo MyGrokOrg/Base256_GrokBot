@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 #include "detail/dd.hpp"
 #include "extra_math.hpp"
@@ -1069,7 +1070,8 @@ namespace zeta {
 }
 
 // Hurwitz ζ(s, a) = Σ_{n>=0} (n+a)^{−s}, s > 1, a > 0 finite, as m·2^k.
-[[nodiscard]] inline SD hurwitz(const dd& s, const dd& sm1, float256 a) {
+[[nodiscard]] inline SD hurwitz(const dd& s, const dd& sm1, float256 a, double* cancel = nullptr) {
+    if (cancel) *cancel = 0;
     const dd one{float256::one()};
     const double sd = s.hi.to_double(), ad = a.to_double();
     const double lsm1 = std::log2(std::fabs(sm1.hi.to_double()));
@@ -1111,6 +1113,10 @@ namespace zeta {
         // a^{1−s} (1/(s−1) + 1/(2a) + Σ_k B_2k/(2k)! (s)_{2k−1} a^{−2k})
         const dd br = one / sm1 + one / (A * float256::two());
         const dd v = br + em_corr(s, A, bestK, br);
+        if (cancel && !v.hi.iszero()) {
+            const float256 big = abs(one.hi / sm1.hi) > abs(one.hi / (a + a)) ? abs(one.hi / sm1.hi) : abs(one.hi / (a + a));
+            *cancel = ilogb(big) - ilogb(v.hi);
+        }
         return mul(exp_sd(-(sm1 * la)), v);
     }
     // Relative to c^{−s}, c = a (s > 0) or c = w = N + a (s < 0), so every
@@ -1129,7 +1135,9 @@ namespace zeta {
         // (w/c)^{−s} · w · (1/(s−1) + 1/(2w) + corrections)
         const dd f = neg ? W : detail_dd::exp(-(s * detail_dd::log(W / A))) * W;
         const dd br = one / sm1 + one / (W * float256::two());
-        sum = sum + f * (br + em_corr(s, W, bestK, br));
+        const dd tail = f * (br + em_corr(s, W, bestK, br));
+        sum = sum + tail;
+        if (cancel && !sum.hi.iszero()) *cancel = (ilogb(tail.hi) > 0 ? ilogb(tail.hi) : 0) - ilogb(sum.hi);
     }
     return mul(exp_sd(-(s * lc)), sum);
 }
@@ -1143,8 +1151,9 @@ namespace zeta {
 // combined in the log domain. The result has an absolute error ~2^-470 of
 // its largest part, so values near a zero in a lose relative accuracy.
 inline constexpr int kReflS = 89;
-[[nodiscard]] inline SD hurwitz_refl(float256 s, float256 a) {
+[[nodiscard]] inline SD hurwitz_refl(float256 s, float256 a, double* cancel = nullptr) {
     const dd one{float256::one()};
+    if (cancel) *cancel = 0;
     const float256 sig = float256::one() - s;  // exact (|s| >= 89)
     float256 m = ceil(a) - float256::one();
     if (m.signbit()) m = float256::zero();
@@ -1172,7 +1181,8 @@ inline constexpr int kReflS = 89;
     }
     // log magnitude of the reflection part: ln 2 + lnΓ(σ) − σ ln 2π + ln|S|
     const dd lg = detail_dd::ln2() + lgam(Sg) - Sg * detail_dd::log(detail_dd::pi() * float256::two());
-    if (S.hi.iszero()) return SD{dd(float256::zero()), 0};
+    if (S.hi.iszero()) { if (cancel) *cancel = 1e9; return SD{dd(float256::zero()), 0}; }
+    if (cancel) *cancel = -ilogb(S.hi);
     const long mi = static_cast<long>(m.to_double());
     if (mi == 0) return mul(exp_sd(lg), S);
     // minus Σ_{j<m} (b+j)^{|s|}: log terms −s ln(b+j); the largest is j = m−1.
@@ -1186,8 +1196,130 @@ inline constexpr int kReflS = 89;
         if (e.hi < float256(-400)) break;
         tot = tot - detail_dd::exp(e);
     }
+    if (cancel) {
+        // errors: ~2^-470 of each unit-size part, and of e^{lsS−M}/|S| for the S part
+        const double sw = (lsS.hi - M.hi).to_double() / 0.6931471805599453 - static_cast<double>(ilogb(S.hi));
+        *cancel = tot.hi.iszero() ? 1e9 : (sw > 0 ? sw : 0) - ilogb(tot.hi);
+    }
     return mul(exp_sd(M), tot);
 }
+
+// Multiprecision fallbacks for ζ(s, a), s < 1, next to a zero in a, where the
+// dd result above cancels below its error. Same formulas at P bits; `big`
+// returns the magnitude of the largest part (to measure the cancellation).
+namespace zmp {
+namespace M = detail_mp;
+[[nodiscard]] inline M::MP pow_neg(const M::MP& x, const M::MP& s, int Q) { return M::exp(M::neg(M::mul(s, M::log(x, Q), Q)), Q); }
+[[nodiscard]] inline M::MP absmax(const M::MP& a, const M::MP& b) { return M::cmp_abs(a, b) >= 0 ? a : b; }
+// t − 2·round(t/2) ∈ [−1, 1] (exact).
+[[nodiscard]] inline M::MP mod2(M::MP t) {
+    if (t.zero() || t.e >= 1) return M::MP{};  // e >= 1: an even integer
+    // integer part bits: m >> −e; keep the low bit of the integer part and the fraction
+    const int fb = static_cast<int>(-t.e);
+    M::MP r = t;
+    // reduce r.m modulo 2^{fb+1} exactly
+    auto q = r.m; q.shr(fb + 1); q.shl(fb + 1); r.m.sub(q);
+    // r in [0, 2) for t >= 0 (sign kept): map to [−1, 1)
+    M::MP one = M::from_u64(1);
+    if (M::cmp_abs(r, one) >= 0) r = M::sub(r, M::from_u64(2, r.neg), 1 << 20);
+    return r;
+}
+inline void sincos_pi(const M::MP& t, int Q, M::MP& s, M::MP& c) {
+    M::sincos(M::mul(M::pi(Q), mod2(t), Q), Q, s, c);
+}
+
+[[nodiscard]] inline M::MP em(float256 s, float256 a, int P, M::MP& big) {
+    const int Q = P + 64;
+    const M::MP S = M::from_f256(s), A = M::from_f256(a), one = M::from_u64(1);
+    const double w0 = 0.12 * P + std::fabs(s.to_double()) / 2 + 10;
+    const long N = a.to_double() < w0 ? static_cast<long>(std::ceil(w0 - a.to_double())) : 0;
+    M::MP sum, W = A;
+    big = M::MP{};
+    for (long n = 0; n < N; ++n) {
+        const M::MP t = pow_neg(M::add(A, M::from_u64(static_cast<std::uint64_t>(n)), Q), S, Q);
+        sum = M::add(sum, t, Q);
+        big = absmax(big, t);
+    }
+    W = M::add(A, M::from_u64(static_cast<std::uint64_t>(N)), Q);
+    const M::MP Wms = pow_neg(W, S, Q), W1ms = M::mul(Wms, W, Q);
+    const M::MP t1 = M::div(W1ms, M::sub(S, one, Q), Q), t2 = M::ldexp(Wms, -1);
+    big = absmax(absmax(big, t1), t2);
+    M::MP corr, poch = S, pw = M::div(one, W, Q);
+    const M::MP iw2 = M::mul(pw, pw, Q);
+    M::MP prev;
+    for (int k = 1; k < 4000; ++k) {
+        const M::MP term = M::mul(M::mul(M::bern_fact(k, Q), poch, Q), M::mul(pw, Wms, Q), Q);
+        if (term.zero()) break;  // (s)_{2k−1} = 0 at a non-positive integer s
+        if (k > 2 && M::cmp_abs(term, prev) > 0) break;
+        corr = M::add(corr, term, Q);
+        big = absmax(big, term);
+        if (term.top() < big.top() - Q) break;
+        prev = term;
+        poch = M::mul(M::mul(poch, M::add(S, M::from_u64(static_cast<std::uint64_t>(2 * k - 1)), Q), Q),
+                      M::add(S, M::from_u64(static_cast<std::uint64_t>(2 * k)), Q), Q);
+        pw = M::mul(pw, iw2, Q);
+    }
+    big.neg = false;
+    return M::add(M::add(M::add(sum, t1, Q), t2, Q), corr, Q);
+}
+
+[[nodiscard]] inline M::MP refl(float256 s, float256 a, int P, M::MP& big) {
+    const int Q = P + 64;
+    const M::MP one = M::from_u64(1);
+    const M::MP sig = M::sub(one, M::from_f256(s), 1 << 20);  // exact
+    float256 m = ceil(a) - float256::one();
+    if (m.signbit()) m = float256::zero();
+    const float256 b = a - m;
+    M::MP sa, ca, st, ct;
+    sincos_pi(M::ldexp(sig, -1), Q, sa, ca);
+    sincos_pi(M::ldexp(M::from_f256(b), 1), Q, st, ct);
+    M::MP cn = ct, sn = st, S;
+    std::vector<M::MP> pw(2);
+    pw[1] = one;
+    for (std::uint32_t n = 1;; ++n) {
+        if (n >= 2) {
+            std::uint32_t p = 2;
+            while (p * p <= n && n % p) ++p;
+            pw.push_back(p * p > n ? pow_neg(M::from_u64(n), sig, Q) : M::mul(pw[p], pw[n / p], Q));
+        }
+        S = M::add(S, M::mul(M::add(M::mul(ca, cn, Q), M::mul(sa, sn, Q), Q), pw[n], Q), Q);
+        if (pw[n].zero() || pw[n].top() < -Q) break;
+        const M::MP c2 = M::sub(M::mul(cn, ct, Q), M::mul(sn, st, Q), Q), s2 = M::add(M::mul(sn, ct, Q), M::mul(cn, st, Q), Q);
+        cn = c2; sn = s2;
+    }
+    // 2 Γ(σ) (2π)^{−σ}
+    const M::MP lg = M::sub(M::lgamma_pos(sig, Q), M::mul(sig, M::log(M::ldexp(M::pi(Q), 1), Q), Q), Q);
+    const M::MP amp = M::ldexp(M::exp(lg, Q), 1);
+    M::MP r = M::mul(amp, S, Q);
+    big = amp;
+    const long mi = static_cast<long>(m.to_double());
+    const M::MP B = M::from_f256(b), Sm = M::from_f256(s);
+    for (long j = mi - 1; j >= 0; --j) {
+        const M::MP t = pow_neg(M::add(B, M::from_u64(static_cast<std::uint64_t>(j)), Q), Sm, Q);
+        r = M::sub(r, t, Q);
+        big = absmax(big, t);
+        if (t.top() < big.top() - Q) break;
+    }
+    big.neg = false;
+    return r;
+}
+
+// ζ(s, a) to ~330 bits after the cancellation, as m·2^k.
+[[nodiscard]] inline SD hurwitz_mp(float256 s, float256 a, double cancel) {
+    int P = 330 + 64 + static_cast<int>(cancel < 2000 ? cancel : 2000);
+    for (;;) {
+        M::MP big;
+        const M::MP v = s <= float256(-kReflS) ? refl(s, a, P, big) : em(s, a, P, big);
+        const long c = v.zero() ? 100000 : big.top() - v.top();
+        if (P - c >= 330 || P > 6000) {
+            if (v.zero()) return SD{dd(float256::zero()), 0};
+            const long k = v.top();
+            return norm({M::to_dd(M::ldexp(v, -k)), static_cast<int>(k)});
+        }
+        P = static_cast<int>(c) + 400 > 2 * P ? static_cast<int>(c) + 400 : 2 * P;
+    }
+}
+} // namespace zmp
 
 } // namespace zeta
 } // namespace detail_sf
@@ -1252,10 +1384,19 @@ inline constexpr int kReflS = 89;
         const dd q = detail_dd::two_sum(float256::half(), -a);
         return env.round(q.hi, q.lo, 0, q.lo.iszero() ? 0 : 2);
     }
+    // ζ(−2n, 1/2) = (2^{−2n} − 1) ζ(−2n) = 0: the only zeros in a at a binary256 point
+    // (the rational roots of Bernoulli polynomials are 0, 1/2 and 1).
+    if (s.signbit() && a == float256::half() && trunc(ldexp(s, -1)) == ldexp(s, -1)) return env.exact(float256::zero());
+    double cancel = 0;
+    detail_sf::SD r;
     if (s <= float256(-detail_sf::zeta::kReflS) &&
         !(a > one && detail_sf::zeta::em_plan(s.to_double(), a.to_double(), -std::log2(1 - s.to_double())) > 0))  // EM at N = 0 (no cancellation) when it converges
-        return detail_sf::out(env, detail_sf::zeta::hurwitz_refl(s, a));
-    return detail_sf::out(env, detail_sf::zeta::hurwitz(dd(s), detail_dd::two_sum(s, -one), a));
+        r = detail_sf::zeta::hurwitz_refl(s, a, &cancel);
+    else
+        r = detail_sf::zeta::hurwitz(dd(s), detail_dd::two_sum(s, -one), a, &cancel);
+    // next to a zero in a (s < 1) the dd sum cancels: redo it in multiprecision
+    if (s < one && cancel > 140) r = detail_sf::zeta::zmp::hurwitz_mp(s, a, cancel);
+    return detail_sf::out(env, r);
 }
 
 namespace detail_sf {

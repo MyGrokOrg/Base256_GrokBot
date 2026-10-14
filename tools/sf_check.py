@@ -214,7 +214,25 @@ def lg_zeros():
                     _LGZ.append(x)
     return _LGZ
 
+_HZZ = []
+def hz_zeros():
+    """(s, a) with ζ(s, a) = 0, a in (0, 1), for a few s < 1 (both EM and reflection paths)."""
+    if not _HZZ:
+        for s in [mp.mpf(-1), mp.mpf(-3), mp.mpf(-4), mp.mpf(-0.5), mp.mpf(0.5), mp.mpf(-2.5), mp.mpf(-7.25),
+                  mp.mpf(-30.75), mp.mpf(-100.5)]:
+            with mp.workprec(400):
+                g = [mp.mpf(i) / 100 for i in range(1, 100)]
+                v = [mp.zeta(s, x) for x in g]
+            for i in range(len(g) - 1):
+                if v[i] == 0 or v[i] * v[i + 1] < 0:
+                    with mp.workprec(1200):
+                        x = mp.findroot(lambda a: mp.zeta(s, a), (mp.mpf(g[i]), mp.mpf(g[i + 1])), solver="anderson", tol=mp.mpf(2)**-1100)
+                        if abs(x - mp.mpf(1) / 2) < mp.mpf(2)**-1000: continue  # exact zero, tested separately
+                        _HZZ.append((s, x))
+    return _HZZ
+
 RANGES = [
+    ("hz_nz",    "hz", HZ, [("pairzero", hz_zeros, 1, 236), None]),
     ("lg_negz",  "lg", LG, [("nearzero", lg_zeros, 1, 236)]),
     ("lg_neg",   "lg", LG, [(-60, -2, False)]),
     ("li2",      "li2", LI2, [(-3, 1, False)]),
@@ -483,7 +501,14 @@ def gen_cases(args, rng, n):
     for _ in range(n):
         hs, vs = [], []
         for a in args:
-            if a[0] == "nearnegeven":
+            if a is None: continue  # filled by the previous pair generator
+            if a[0] == "pairzero":
+                s, z = rng.choice(a[1]())
+                k = rng.randint(a[2], a[3])
+                v = z * (1 + rng.choice([-1, 1]) * mp.ldexp(rng.random(), -k))
+                hs.append(to_hex(s)); vs.append(s)
+                h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
+            elif a[0] == "nearnegeven":
                 v = -2 * mp.mpf(rng.randint(a[1], a[2])) + mp.ldexp(rng.choice([-1, 1]), -rng.randint(20, 200))
                 h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
             elif a[0] == "nearint":
