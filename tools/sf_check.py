@@ -88,7 +88,28 @@ def IBC(a, b, x):
 
 def ZETA(x): return mp.zeta(x)
 # mpmath's zeta(s, a) loses hundreds of bits at large a; evaluate it at 3000 bits.
+def _hz_hurwitz(s, a, bits):
+    """ζ(s, a), s <= −89, 0 < a <= 4, by Hurwitz's formula at `bits` (mpmath's zeta
+    can stall here, e.g. s ≈ −519.84, a ≈ 0.541 at 3000 bits)."""
+    with mp.workprec(bits + 64):
+        sig = 1 - s
+        m = int(mp.ceil(a)) - 1
+        b = a - m
+        S = mp.mpf(0); n = 1
+        while True:
+            t = mp.power(n, -sig)
+            S += mp.cos(mp.pi * sig / 2 - 2 * mp.pi * n * b) * t
+            if t < mp.mpf(2)**(-bits - 32): break
+            n += 1
+        r = 2 * mp.gamma(sig) / (2 * mp.pi)**sig * S
+        for j in range(m): r -= mp.power(b + j, -s)
+        return r
+
 def HZ(s, a):
+    if s <= -89 and a <= 4:
+        # two precisions must agree (guards cancellation near zeros)
+        r1, r2 = _hz_hurwitz(s, a, 1200), _hz_hurwitz(s, a, 1800)
+        if r2 == 0 or abs(r1 - r2) <= mp.mpf(2)**-700 * abs(r2): return r2
     with mp.workprec(3000): return mp.zeta(s, a)
 
 def GL(a, x): return mp.gammainc(a, 0, x)
