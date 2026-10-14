@@ -37,6 +37,10 @@ inline const float256& eps() { static const float256 e = ldexp(float256::one(), 
     const dd e = del - dd(float256::one());
     return e.hi.iszero() || ilogb(e.hi) < -468;
 }
+// Term t below 2^-245 of the sum s: the rest of a decreasing series only needs float256.
+[[nodiscard]] inline bool f256_tail(const dd& t, const dd& s) {
+    return t.hi.iszero() || (!s.hi.iszero() && ilogb(t.hi) < ilogb(s.hi) - 245);
+}
 [[nodiscard]] inline bool near_zero(const dd& v) { return v.hi.iszero() || ilogb(v.hi) < -468; }
 
 // A value m·2^k with a dd significand; keeps huge and tiny intermediates in range.
@@ -64,8 +68,55 @@ struct SD {
     if (v.k < -300000) return env.underflow(v.m.hi.signbit());
     return env.round(v.m.hi, v.m.lo, v.k, tail);
 }
+// 1/Γ(1+μ) = E(μ²) + μ·O(μ²) for |μ| <= 1/2 from the MPFR Taylor table
+// (detail/tables.hpp); trailing terms below 2^-492 are dropped.
+inline void rgamma1p_eo(const dd& mu, dd& E, dd& O) {
+    namespace T = detail_dd::tables;
+    E = O = dd(float256::zero());
+    if (mu.hi.iszero()) { E = dd(float256::one()); return; }
+    const int lm = ilogb(mu.hi) + 1;  // |μ| < 2^lm
+    int n = T::kRGamma1pN - 1;
+    while (n > 2) {
+        const float256 c = detail_dd::dd_from_words(T::kRGamma1p[n]).hi;
+        if (c.iszero() || ilogb(c) + n * lm >= -492) break;
+        --n;
+    }
+    // Terms below 2^-245 of the sum (|a_k μ^k| < 2^-245 and a_0 = 1) only need
+    // float256 precision: run that part of Horner in float256.
+    int nf = n | 1;
+    while (nf > 1) {
+        const float256 c = detail_dd::dd_from_words(T::kRGamma1p[nf - 1]).hi;
+        if (!c.iszero() && ilogb(c) + (nf - 1) * lm >= -245) break;
+        nf -= 2;
+    }
+    const dd m2 = mu * mu;
+    float256 Of{}, Ef{};
+    for (int k = n | 1; k > nf; k -= 2) {
+        Of = Of * m2.hi + detail_dd::dd_from_words(T::kRGamma1p[k]).hi;
+        Ef = Ef * m2.hi + detail_dd::dd_from_words(T::kRGamma1p[k - 1]).hi;
+    }
+    O = dd(Of); E = dd(Ef);
+    for (int k = nf; k >= 1; k -= 2) {
+        O = O * m2 + detail_dd::dd_from_words(T::kRGamma1p[k]);
+        E = E * m2 + detail_dd::dd_from_words(T::kRGamma1p[k - 1]);
+    }
+}
+inline constexpr int kGammaTableMax = 40;  // table + product for z < this
 // Γ(z) as m·2^k for a dd z > 0.
 [[nodiscard]] inline SD gamma_sd(const dd& z) {
+    if (z.hi >= float256::half() && z.hi < float256(kGammaTableMax)) {
+        // z = 1 + μ + n, |μ| <= 1/2: Γ(z) = (1+μ)…(n+μ) / (1/Γ(1+μ)).
+        const float256 r = floor(z.hi + float256::half());
+        const int n = static_cast<int>(r.to_double()) - 1;
+        const dd mu = z - dd(r);
+        if (n >= 0 && abs(mu.hi) <= float256::half()) {
+            dd E, O;
+            rgamma1p_eo(mu, E, O);
+            dd p{float256::one()};
+            for (int j = 1; j <= n; ++j) p = p * (dd(float256::from_int(j)) + mu);
+            return norm({p / (E + O * mu), 0});
+        }
+    }
     const detail_dd::Scaled s = detail_gamma::gamma_abs_scaled_pos(z);
     return norm({s.m, s.k});
 }
@@ -109,10 +160,22 @@ inline void cosh_sinhc(const dd& e, dd& ch, dd& shc) {
     const dd one{float256::one()};
     if (abs(e.hi) < float256(0.5)) {
         // Σ e^{2k}/(2k)!, Σ e^{2k}/(2k+1)!
+        // Terms with e^{2k}/(2k)! < 2^-492 are dropped; those below 2^-245 run in float256.
         const auto& f = detail_dd::inv_factorials();
         const dd e2 = e * e;
-        dd a = f[100], b = f[101];
-        for (int k = 49; k >= 0; --k) {
+        if (e2.hi.iszero()) { ch = shc = one; return; }
+        const int le = ilogb(e2.hi) + 1;  // e² < 2^le
+        int n = 50, nf = 50;
+        while (n > 1 && ilogb(f[static_cast<std::size_t>(2 * n)].hi) + n * le < -492) --n;
+        nf = n;
+        while (nf > 0 && ilogb(f[static_cast<std::size_t>(2 * nf)].hi) + nf * le < -245) --nf;
+        float256 af{}, bf{};
+        for (int k = n; k > nf; --k) {
+            af = af * e2.hi + f[static_cast<std::size_t>(2 * k)].hi;
+            bf = bf * e2.hi + f[static_cast<std::size_t>(2 * k + 1)].hi;
+        }
+        dd a{af}, b{bf};
+        for (int k = nf; k >= 0; --k) {
             a = a * e2 + f[static_cast<std::size_t>(2 * k)];
             b = b * e2 + f[static_cast<std::size_t>(2 * k + 1)];
         }
@@ -197,12 +260,25 @@ namespace bessel {
     const dd q = detail_dd::two_prod(ldexp(x, -1), ldexp(x, -1));
     const dd qs = s < 0 ? -q : q;
     dd term = one, sum = one;
-    for (int k = 1; k < 2000000; ++k) {
+    int k = 1;
+    for (; k < 2000000; ++k) {
         term = term * qs / (dd(float256::from_int(k)) * (np1 + D(k - 1)));
         sum = sum + term;
-        if (small_rel(term, sum) && float256::from_int(k) * float256::from_int(k) > abs(q.hi)) break;
+        if (float256::from_int(k) * float256::from_int(k) > abs(q.hi)) {
+            if (small_rel(term, sum)) return mul(pre, sum);
+            // Past the peak, terms below 2^-245 of the sum only need float256.
+            if (term.hi.iszero() || ilogb(term.hi) < ilogb(sum.hi) - 245) break;
+        }
     }
-    return mul(pre, sum);
+    float256 t = term.hi, tail{};
+    const float256 np1f = np1.hi;
+    const int lim = ilogb(sum.hi) - 492;
+    for (++k; k < 2000000; ++k) {
+        t = t * qs.hi / (float256::from_int(k) * (np1f + float256::from_int(k - 1)));
+        tail = tail + t;
+        if (t.iszero() || ilogb(t) < lim) break;
+    }
+    return mul(pre, sum + dd(tail));
 }
 
 // Forward recurrence v_{j+1} = (2(μ+j)/x) v_j + s v_{j−1}, n steps from (v0, v1) = (v_μ, v_{μ+1}).
@@ -223,22 +299,9 @@ namespace bessel {
 // 1/Γ(1+μ) = E(μ²) + μ O(μ²) from the MPFR Taylor table (|μ| <= 1/2), so
 // gam1 = (1/Γ(1−μ) − 1/Γ(1+μ))/(2μ) = −O and gam2 = (1/Γ(1−μ) + 1/Γ(1+μ))/2 = E.
 inline void temme_gammas(float256 mu, dd& gam1, dd& gam2, dd& gampl, dd& gammi) {
-    const dd one{float256::one()};
-    if (mu.iszero()) { gam1 = -euler_gamma(); gam2 = one; gampl = gammi = one; return; }
-    // Drop trailing terms with |a_k| |μ|^k < 2^-492.
-    const int lm = ilogb(mu);
-    int n = detail_dd::tables::kRGamma1pN - 1;
-    while (n > 2) {
-        const float256 c = detail_dd::dd_from_words(detail_dd::tables::kRGamma1p[n]).hi;
-        if (c.iszero() || ilogb(c) + n * lm >= -492) break;
-        --n;
-    }
-    const dd m2 = detail_dd::two_prod(mu, mu);
-    dd E{float256::zero()}, O{float256::zero()};
-    for (int k = n | 1; k >= 1; k -= 2) {
-        O = O * m2 + detail_dd::dd_from_words(detail_dd::tables::kRGamma1p[k]);
-        E = E * m2 + detail_dd::dd_from_words(detail_dd::tables::kRGamma1p[k - 1]);
-    }
+    if (mu.iszero()) { gam1 = -euler_gamma(); gam2 = gampl = gammi = dd(float256::one()); return; }
+    dd E, O;
+    rgamma1p_eo(dd(mu), E, O);
     const dd mo = O * mu;
     gampl = E + mo;
     gammi = E - mo;
@@ -303,6 +366,25 @@ inline void temme_y(float256 mu, float256 x, dd& ymu, dd& y1) {
         const dd del1 = c * p - di * del;
         sum1 = sum1 + del1;
         if (small_rel(del, sum + one) && small_rel(del1, sum1)) break;
+        if (float256::from_int(i) * float256::from_int(i) > abs(dq.hi) && f256_tail(del, sum + one) && f256_tail(c * p, sum1) && f256_tail(di * del, sum1)) {
+            // Remaining terms are below 2^-245 of the sums: finish in float256.
+            float256 F = ff.hi, P = p.hi, Q = q.hi, C = c.hi, ts{}, ts1{};
+            const float256 m = mu, rs = r_s.hi, dqf = dq.hi;
+            const int l0 = ilogb((sum + one).hi) - 492, l1 = ilogb(sum1.hi) - 492;
+            for (int j = i + 1; j < 100000; ++j) {
+                const float256 dj = float256::from_int(j);
+                const float256 r = float256::one() / (dj * dj - m * m);
+                F = (dj * F + P + Q) * r;
+                C = C * dqf / dj;
+                P = P * (dj + m) * r;
+                Q = Q * (dj - m) * r;
+                const float256 d0 = C * (F + rs * Q), d1 = C * P - dj * d0;
+                ts = ts + d0; ts1 = ts1 + d1;
+                if ((d0.iszero() || ilogb(d0) < l0) && (d1.iszero() || ilogb(d1) < l1)) break;
+            }
+            sum = sum + dd(ts); sum1 = sum1 + dd(ts1);
+            break;
+        }
     }
     ymu = -sum;
     y1 = -sum1 * float256::two() / dd(x);
@@ -334,6 +416,24 @@ inline void temme_k(float256 mu, float256 x, dd& kmu, dd& k1) {
         const dd del1 = c * (p - di * ff);
         sum1 = sum1 + del1;
         if (small_rel(del, sum) && small_rel(del1, sum1)) break;
+        if (float256::from_int(i) * float256::from_int(i) > abs(dq.hi) && f256_tail(del, sum) && f256_tail(c * p, sum1) && f256_tail(c * di * ff, sum1)) {
+            float256 F = ff.hi, P = p.hi, Q = q.hi, C = c.hi, ts{}, ts1{};
+            const float256 m = mu, dqf = dq.hi;
+            const int l0 = ilogb(sum.hi) - 492, l1 = ilogb(sum1.hi) - 492;
+            for (int j = i + 1; j < 100000; ++j) {
+                const float256 dj = float256::from_int(j);
+                const float256 r = float256::one() / (dj * dj - m * m);
+                F = (dj * F + P + Q) * r;
+                C = C * dqf / dj;
+                P = P * (dj + m) * r;
+                Q = Q * (dj - m) * r;
+                const float256 d0 = C * F, d1 = C * (P - dj * F);
+                ts = ts + d0; ts1 = ts1 + d1;
+                if ((d0.iszero() || ilogb(d0) < l0) && (d1.iszero() || ilogb(d1) < l1)) break;
+            }
+            sum = sum + dd(ts); sum1 = sum1 + dd(ts1);
+            break;
+        }
     }
     kmu = sum;
     k1 = sum1 * float256::two() / dd(x);
