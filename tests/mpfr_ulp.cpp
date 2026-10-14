@@ -6,6 +6,7 @@
 // documented bound (see README "Elementary function accuracy").
 #include <base256/base256.hpp>
 #include <mpfr.h>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -435,6 +436,33 @@ int main(int argc, char** argv) {
     two_arg("beta", [&](float256& a, float256& b) { a = rnd_in(-30, 30, true); b = rnd_in(-30, 30, true); },
             [](float256 a, float256 b) { return base256::beta(a, b); },
             [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_beta(r, a, b, MPFR_RNDN); });
+    // Incomplete gamma: a in [2^-8, 2^8), x = a·2^[-4, 4) or log-uniform; references
+    // from mpfr_gamma_inc (upper) and Γ(a) at 3000 bits for the others.
+    auto ig_gen = [&](float256& a, float256& b) {
+        a = rnd_in(-8, 8, true);
+        b = (rng() & 1) ? a * rnd_in(-4, 4, true) : rnd_in(-12, 9, true);
+    };
+    auto ig_ref = [](int kind) {
+        return [kind](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr x) {
+            // Γ(a) − Γ(a,x) cancels about log2(Γ(a)/γ(a,x)) bits; γ ≈ x^a e^{-x}/a for small x.
+            const double ad = mpfr_get_d(a, MPFR_RNDN), xd = mpfr_get_d(x, MPFR_RNDN);
+            const double cancel = (std::lgamma(ad) - ad * std::log(xd) + xd + std::log(ad)) / std::log(2.0);
+            const long prec = 3000 + (cancel > 0 ? static_cast<long>(cancel) : 0);
+            mpfr_t u, g;
+            mpfr_inits2(prec, u, g, (mpfr_ptr)0);
+            mpfr_gamma_inc(u, a, x, MPFR_RNDN);
+            mpfr_gamma(g, a, MPFR_RNDN);
+            if (kind == 0 || kind == 2) mpfr_sub(u, g, u, MPFR_RNDN);
+            if (kind >= 2) mpfr_div(u, u, g, MPFR_RNDN);
+            const int t = mpfr_set(r, u, MPFR_RNDN);
+            mpfr_clears(u, g, (mpfr_ptr)0);
+            return t;
+        };
+    };
+    two_arg("tgamma_lower", ig_gen, [](float256 a, float256 b) { return base256::tgamma_lower(a, b); }, ig_ref(0));
+    two_arg("tgamma_upper", ig_gen, [](float256 a, float256 b) { return base256::tgamma_upper(a, b); }, ig_ref(1));
+    two_arg("gamma_p", ig_gen, [](float256 a, float256 b) { return base256::gamma_p(a, b); }, ig_ref(2));
+    two_arg("gamma_q", ig_gen, [](float256 a, float256 b) { return base256::gamma_q(a, b); }, ig_ref(3));
     mpfr_clears(xm, r, (mpfr_ptr)0);
     return check && bad ? 1 : 0;
 }

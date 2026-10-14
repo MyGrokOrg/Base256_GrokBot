@@ -1,6 +1,6 @@
 #pragma once
 /// Special functions (C++17 <cmath> special-math names): Bessel functions,
-/// beta and the regularized incomplete beta, Riemann zeta.
+/// beta and the regularized incomplete beta, Riemann zeta, incomplete gamma.
 /// Every function evaluates in double-float256 (~474 bits) and rounds once in
 /// the caller's rounding mode, raising IEEE flags like the elementary
 /// functions. See README "Special functions" for measured accuracy and limits.
@@ -764,7 +764,7 @@ namespace detail_sf {
     else part = mul(front, betacf(dd(b), dd(a), Xc) / dd(b));
     // part = I (no swap) or 1 − I (swap)
     if (swap == complement) return out(env, part);
-    if (part.k < -600) return env.round(one, float256::zero(), 0, -1);  // 1 − tiny
+    if (part.k < -400) return env.round(one, float256::zero(), 0, -1);  // 1 − tiny
     return (dd(one) - detail_dd::ldexp(part.m, part.k)).out(env);
 }
 } // namespace detail_sf
@@ -864,5 +864,121 @@ inline void inv_powers(const dd& s, dd* out) {
     r = detail_sf::mul(r, s * z);
     return detail_sf::out(env, r);
 }
+
+namespace detail_sf {
+namespace igamma {
+
+// Σ_{n>=0} x^n / (a(a+1)…(a+n)) (γ(a,x) = x^a e^{-x} · this), for x < a + 1.
+[[nodiscard]] inline dd series(const dd& a, const dd& x) {
+    const dd one{float256::one()};
+    dd term = one / a, sum = term;
+    for (int n = 1; n < 100000000; ++n) {
+        term = term * x / (a + D(n));
+        sum = sum + term;
+        if (small_rel(term, sum)) break;
+    }
+    return sum;
+}
+// Continued fraction h with Γ(a,x) = x^a e^{-x} · h, for x >= a + 1 (Lentz).
+[[nodiscard]] inline dd cf(const dd& a, const dd& x) {
+    const dd one{float256::one()};
+    const float256 tiny = ldexp(float256::one(), -20000);
+    dd b = x + one - a;
+    dd c = dd(ldexp(float256::one(), 20000));
+    dd d = one / b;
+    dd h = d;
+    for (int i = 1; i < 100000000; ++i) {
+        const dd an = -(D(i) * (D(i) - a));
+        b = b + D(2);
+        d = an * d + b;
+        if (abs(d.hi) < tiny) d = dd(tiny);
+        c = b + an / c;
+        if (abs(c.hi) < tiny) c = dd(tiny);
+        d = one / d;
+        const dd del = d * c;
+        h = h * del;
+        if (near_one(del)) break;
+    }
+    return h;
+}
+// ln Γ(1 + a) for 0 < a < 1, accurate relative to its size near a = 0.
+[[nodiscard]] inline dd lgamma1p(float256 a) {
+    if (ilogb(a) < -100) return detail_gamma::lgamma_near_1_2(a, false);
+    return detail_gamma::lgamma_pos_dd(detail_dd::two_sum(float256::one(), a));
+}
+// Γ(a) as m·2^k, a > 0.
+[[nodiscard]] inline SD gam(float256 a) {
+    if (a < ldexp(float256::one(), 20)) return gamma_sd(dd(a));
+    return exp_sd(detail_gamma::lgamma_pos_dd(dd(a)));
+}
+
+// kind: 0 lower γ, 1 upper Γ, 2 P, 3 Q.
+[[nodiscard]] inline float256 eval(float256 a, float256 x, int kind) {
+    // γ(a, ∞) = Γ(a, 0) = Γ(a): tgamma's own rounding (exact for small integers).
+    if (kind < 2 && !a.isnan() && !a.signbit() && !a.iszero() && !a.isinf() &&
+        ((kind == 0 && x.isinf() && !x.signbit()) || (kind == 1 && x.iszero())))
+        return base256::tgamma(a);
+    detail_dd::FnEnv env;
+    const float256 one = float256::one();
+    if (a.isnan() || x.isnan()) return env.nan2(a, x);
+    if (a.signbit() || a.iszero() || a.isinf()) return env.invalid();
+    if (x.signbit() && !x.iszero()) return env.invalid();
+    const bool regularized = kind >= 2;
+    const bool upper = kind == 1 || kind == 3;
+    if (x.iszero() || x.isinf()) {
+        const bool full = upper == x.iszero();  // the integral covers (0, ∞)
+        if (!full) return env.exact(float256::zero());
+        return env.exact(one);  // regularized (the unregularized full case returned above)
+    }
+    const dd A{a}, X{x};
+    const dd lx = detail_dd::log(X);
+    const SD pre = exp_sd(A * lx - X);  // x^a e^{-x}
+    const bool use_series = x < a + one;
+    // Small a, x < a + 1, upper part: Γ(a,x) = Γ(a)·(−expm1(a ln x − lnΓ(1+a))) + x^a Σ_{n>=1} (−1)^{n+1} x^n/(n!(a+n)).
+    if (upper && use_series && a < one) {
+        const dd e = A * lx - lgamma1p(a);
+        const dd t1 = -detail_dd::expm1(e);  // Q part
+        dd term = dd(one), sum{float256::zero()};
+        for (int n = 1; n < 100000000; ++n) {
+            term = -(term * X) / D(n);
+            const dd tn = term / (A + D(n));
+            sum = sum - tn;
+            if (small_rel(tn, sum)) break;
+        }
+        // x^a Σ / Γ(a) = sum · exp(a ln x − lnΓ(a)), lnΓ(a) = lnΓ(1+a) − ln a
+        const SD r2 = exp_sd(A * lx - lgamma1p(a) + detail_dd::log(A));
+        const dd q = t1 + detail_dd::ldexp(r2.m * sum, r2.k);
+        if (regularized) return q.out(env);
+        return out(env, mul(gam(a), q));
+    }
+    SD part;  // lower (series) or upper (fraction), unregularized
+    if (use_series) part = mul(pre, series(A, X));
+    else part = mul(pre, cf(A, X));
+    const bool direct = use_series != upper;  // the part is what was asked for
+    const SD g = gam(a);
+    if (regularized) {
+        const SD r = norm({part.m / g.m, part.k - g.k});
+        if (direct) return out(env, r);
+        if (r.k < -400) return env.round(one, float256::zero(), 0, -1);
+        return (dd(one) - detail_dd::ldexp(r.m, r.k)).out(env);
+    }
+    if (direct) return out(env, part);
+    // Γ(a) − part, as m·2^k with Γ(a)'s exponent
+    const int dk = part.k - g.k;
+    if (dk < -400) return out(env, g, -1);
+    return out(env, norm({g.m - detail_dd::ldexp(part.m, dk), g.k}));
+}
+
+} // namespace igamma
+} // namespace detail_sf
+
+/// Lower incomplete gamma γ(a, x) = ∫_0^x t^{a−1} e^{−t} dt, a > 0, x >= 0.
+[[nodiscard]] inline float256 tgamma_lower(float256 a, float256 x) { return detail_sf::igamma::eval(a, x, 0); }
+/// Upper incomplete gamma Γ(a, x) = ∫_x^∞ t^{a−1} e^{−t} dt, a > 0, x >= 0.
+[[nodiscard]] inline float256 tgamma_upper(float256 a, float256 x) { return detail_sf::igamma::eval(a, x, 1); }
+/// Regularized lower incomplete gamma P(a, x) = γ(a, x)/Γ(a).
+[[nodiscard]] inline float256 gamma_p(float256 a, float256 x) { return detail_sf::igamma::eval(a, x, 2); }
+/// Regularized upper incomplete gamma Q(a, x) = Γ(a, x)/Γ(a) = 1 − P(a, x).
+[[nodiscard]] inline float256 gamma_q(float256 a, float256 x) { return detail_sf::igamma::eval(a, x, 3); }
 
 } // namespace base256

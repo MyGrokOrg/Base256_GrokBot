@@ -42,6 +42,10 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "yn") return yn(std::stoi(a), P(b));
     if (op == "beta") return beta(P(a), P(b));
     if (op == "zeta") return riemann_zeta(P(a));
+    if (op == "gl") return tgamma_lower(P(a), P(b));
+    if (op == "gu") return tgamma_upper(P(a), P(b));
+    if (op == "gp") return gamma_p(P(a), P(b));
+    if (op == "gq") return gamma_q(P(a), P(b));
     if (op == "ibeta") return ibeta(P(a), P(b), P(c));
     if (op == "ibetac") return ibetac(P(a), P(b), P(c));
     std::cerr << "unknown op " << op << "\n";
@@ -50,6 +54,16 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
 
 struct Ref { const char *op, *a, *b, *c, *want; };
 const Ref kRefs[] = {
+    {"gl", "2.5", "1.25", "", "0x1303eafab70f6a49de5ee0e4e006453935df1cf57293775c7a17f3f942f0p-238"},
+    {"gu", "2.5", "1.25", "", "0x1083ffae99efb56b3d948b9f68631d54b13311c1f6e5e7e706f2c38f9e3dp-236"},
+    {"gp", "0.5", "2", "", "0x1e8b4307d3627a06631767ca639834d36677f268934ad0a9cee41ba91302p-237"},
+    {"gq", "0.5", "2", "", "0x174bcf82c9d85f99ce898359c67cb2c99880d976cb52f56311be456ecfe1p-241"},
+    {"gq", "1e-20", "0.75", "", "0x101277cc5b0db0d33d28b5222e9b44cf38f6c487bb08647fe1fd0ccfbadcp-304"},
+    {"gu", "1e-20", "3", "", "0x1ab91c1085c70053d2d9a2a96940d462f11a279a81aff3a6cc5adeedda4ap-243"},
+    {"gp", "300", "250", "", "0x130b6ea8596daac26acf36c027111a4c0e244eac4680d68e3a79d4be2bebp-246"},
+    {"gq", "300", "350", "", "0x17b8e00a4441008a1596f3bf6ae9ae24c900ab8231b361aa3792efbc23a6p-245"},
+    {"gl", "40", "1e-3", "", "0x1082a1f50a644df2710567db8f103c38ac8bb24aa1d60ef8a08972dc95f7p-640"},
+    {"gq", "3", "600", "", "0x1cbfa6e535e8ea450cf2cea46fb57375e624e40f4e180faed273e6e07950p-1085"},
     {"zeta", "2", "", "", "0x1a51a6625307d3230e7b1224401759cbd6b911b55022c5b1666b0580634cp-236"},
     {"zeta", "3", "", "", "0x133ba004f0062138371715c59e6907f1b180b7db17493405dd149c7ab12dp-236"},
     {"zeta", "0.5", "", "", "-0x175d9cb07e73fee37e834e422bcb579a2298e52438c62304744275f7ba82p-236"},
@@ -231,6 +245,25 @@ int main() {
     EXPECT_M(riemann_zeta(float256(-30001.5)),
              [](round_mode m) { return (m == round_mode::toward_zero || m == round_mode::upward) ? -float256::max() : -float256::inf(false); },
              base256::fe_overflow | kInx);
+
+    // Incomplete gamma: special arguments.
+    EXPECT(gamma_p(float256(2), zero), zero, 0);
+    EXPECT(gamma_q(float256(2), zero), one, 0);
+    EXPECT(gamma_p(float256(2), inf), one, 0);
+    EXPECT(gamma_q(float256(2), inf), zero, 0);
+    EXPECT(tgamma_lower(float256(2), zero), zero, 0);
+    EXPECT(tgamma_upper(float256(4), zero), float256(6), 0);
+    EXPECT(tgamma_lower(float256(4), inf), float256(6), 0);
+    EXPECT(tgamma_upper(float256(4), inf), zero, 0);
+    EXPECT(gamma_p(zero, one), nan, kInv);
+    EXPECT(gamma_p(float256(-1), one), nan, kInv);
+    EXPECT(gamma_q(one, float256(-1)), nan, kInv);
+    EXPECT(gamma_q(nan, one), nan, 0);
+    for (double xv : {0.25, 1.0, 3.5, 12.0}) {  // P + Q = 1, γ + Γ = Γ(a)
+        const float256 a(2.75), x(xv);
+        CHECK(abs(gamma_p(a, x) + gamma_q(a, x) - one) <= ldexp(one, -235));
+        CHECK(abs((tgamma_lower(a, x) + tgamma_upper(a, x)) / tgamma(a) - one) <= ldexp(one, -234));
+    }
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;

@@ -80,7 +80,20 @@ def IBC(a, b, x): return mp.betainc(a, b, x, 1, regularized=True)
 
 def ZETA(x): return mp.zeta(x)
 
+def GL(a, x): return mp.gammainc(a, 0, x)
+def GU(a, x): return mp.gammainc(a, x, mp.inf)
+def GP(a, x): return mp.gammainc(a, 0, x, regularized=True)
+def GQ(a, x): return mp.gammainc(a, x, mp.inf, regularized=True)
+
 RANGES = [
+    ("gl",       "gl", GL, [(-10, 8, True), (-10, 9, True)]),
+    ("gu",       "gu", GU, [(-10, 8, True), (-10, 9, True)]),
+    ("gp",       "gp", GP, [(-10, 8, True), (-10, 9, True)]),
+    ("gq",       "gq", GQ, [(-10, 8, True), (-10, 9, True)]),
+    ("gq_tinya", "gq", GQ, [(-200, -10, True), (-10, 3, True)]),
+    ("gu_tinya", "gu", GU, [(-200, -10, True), (-10, 3, True)]),
+    ("gp_near",  "gp", GP, [(100, 3000, False), (100, 3000, False)]),
+    ("gq_near",  "gq", GQ, [(100, 3000, False), (100, 3000, False)]),
     ("zeta",     "zeta", ZETA, [(-60, 300, False)]),
     ("zeta_neg", "zeta", ZETA, [(-3000, -60, False)]),
     ("zeta_01",  "zeta", ZETA, [(-1, 1, False)]),
