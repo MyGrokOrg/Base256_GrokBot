@@ -203,6 +203,19 @@ inline Consts& consts() { static Consts c; return c; }
     MP r = c.pi; norm(r, P); return r;
 }
 
+// 2/π to P bits straight from the Payne–Hanek table (P < 264000).
+[[nodiscard]] inline MP two_over_pi(int P) {
+    const int words = (P + 127) / 64;
+    std::vector<std::uint32_t> limbs;
+    limbs.reserve(static_cast<std::size_t>(2 * words));
+    for (int i = words - 1; i >= 0; --i) {
+        limbs.push_back(static_cast<std::uint32_t>(detail_dd::kTwoOverPi[i]));
+        limbs.push_back(static_cast<std::uint32_t>(detail_dd::kTwoOverPi[i] >> 32));
+    }
+    MP t; t.m = BigInt::from_limbs(limbs); t.e = -64L * words;
+    norm(t, P); return t;
+}
+
 // e^x for |x| < 2^30: x = k ln2 + r, r/2^s by Taylor, then s squarings.
 [[nodiscard]] inline MP exp(const MP& x, int P) {
     if (x.zero()) return from_u64(1);

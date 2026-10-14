@@ -166,6 +166,13 @@ LBETA = W1500(lambda a, b: mp.log(mp.beta(a, b)))
 GR = W1500(lambda a, b: mp.exp(mp.loggamma(a) - mp.loggamma(b)))
 GDR = W1500(lambda a, d: mp.exp(mp.loggamma(a) - mp.loggamma(a + d)))
 
+def _airy_huge(k):
+    def f(x):
+        e = int(mp.log(abs(x), 2)) if x != 0 else 0
+        with mp.workprec(max(REFPREC[0], 3 * e // 2 + 900)):
+            return mp.airyai(x, k % 2) if k < 2 else mp.airybi(x, k % 2)
+    return f
+AIH, AIPH, BIH, BIPH = (_airy_huge(k) for k in range(4))
 AI = W1500(lambda x: mp.airyai(x)); AIP = W1500(lambda x: mp.airyai(x, 1))
 BI = W1500(lambda x: mp.airybi(x)); BIP = W1500(lambda x: mp.airybi(x, 1))
 
@@ -282,6 +289,11 @@ RANGES = [
     ("bip_pos",  "bip", BIP, [(0, 60, False)]),
     ("bip_neg",  "bip", BIP, [(-60, 0, False)]),
     ("bip_far",  "bip", BIP, [(6, 12, True)]),
+    ("ai_huge",  "ai", AIH, [("negexp", 94, 3000)]),
+    ("aip_huge", "aip", AIPH, [("negexp", 94, 3000)]),
+    ("bi_huge",  "bi", BIH, [("negexp", 94, 3000)]),
+    ("bip_huge", "bip", BIPH, [("negexp", 94, 3000)]),
+    ("ai_vhuge", "ai", AIH, [("negexp", 3000, 12000)]),
     ("ai_nfar",  "ai", AI, [(-10000, -60, False)]),
     ("ai_unf",   "ai", AI, [(4180, 4230, False)]),
     ("aip_unf",  "aip", AIP, [(4180, 4230, False)]),
@@ -502,7 +514,9 @@ def gen_cases(args, rng, n):
         hs, vs = [], []
         for a in args:
             if a is None: continue  # filled by the previous pair generator
-            if a[0] == "pairzero":
+            if a[0] == "negexp":
+                h, v = rnd256(a[1], a[2], True, rng); v = -v; h = to_hex(v); hs.append(h); vs.append(v)
+            elif a[0] == "pairzero":
                 s, z = rng.choice(a[1]())
                 k = rng.randint(a[2], a[3])
                 v = z * (1 + rng.choice([-1, 1]) * mp.ldexp(rng.random(), -k))

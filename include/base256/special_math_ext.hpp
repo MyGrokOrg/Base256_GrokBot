@@ -834,6 +834,33 @@ inline constexpr int kSerPos = 60;    // x > 0: Ai series while ζ < 60 (cancels
 inline constexpr int kAsym = 104;     // asymptotic for ζ >= 104 (smallest term ~e^{-2ζ} < 2^-300)
 inline constexpr int kSerNeg = 110;   // x < 0: series while ζ < 110 (cancels ~1.44ζ bits)
 
+// sin ζ, cos ζ for ζ = (2/3)t^{3/2} past dd range (t >= 2^140): ζ·(2/π) mod 4 by an
+// exact multiprecision reduction with the 2/π table. False when ζ needs more of
+// the table than it has (|x| beyond about 2^175000).
+[[nodiscard]] inline bool big_phase(float256 t, dd& sz, dd& cz) {
+    namespace M = detail_mp;
+    const int Q = 3 * ilogb(t) / 2 + 400;
+    if (Q > 263000) return false;
+    const M::MP T = M::from_f256(t);
+    const M::MP z = M::div_u(M::mul_u(M::mul(T, M::sqrt(T, Q), Q), 2, Q), 3, Q);
+    const M::MP y = M::mul(z, M::two_over_pi(Q + 64), Q);
+    const M::MP f = M::ldexp(zeta::zmp::mod2(M::ldexp(y, -1)), 1);  // in [−2, 2]
+    const long n = std::lround(M::to_dd(f).hi.to_double());
+    const M::MP r = M::sub(f, M::from_u64(static_cast<std::uint64_t>(n < 0 ? -n : n), n < 0), Q);
+    const dd th = M::to_dd(M::mul(r, M::ldexp(M::pi(600), -1), 600));
+    dd s1, c1, s2, c2;
+    sincos_x(th.hi, s1, c1);
+    sincos_x(th.lo, s2, c2);
+    const dd s = s1 * c2 + c1 * s2, c = c1 * c2 - s1 * s2;
+    switch (((n % 4) + 4) % 4) {
+        case 0: sz = s; cz = c; break;
+        case 1: sz = c; cz = -s; break;
+        case 2: sz = -s; cz = -c; break;
+        default: sz = -c; cz = s; break;
+    }
+    return true;
+}
+
 // which: 0 Ai, 1 Ai', 2 Bi, 3 Bi'. Finite x.
 [[nodiscard]] inline SD eval(float256 x, int which) {
     const Consts& C = consts();
@@ -875,10 +902,13 @@ inline constexpr int kSerNeg = 110;   // x < 0: series while ζ < 110 (cancels ~
     // x < 0, oscillatory: θ = ζ − π/4.
     dd ev, od;
     asym_sums(zeta, deriv, 2, ev, od);  // ev = Σ(−1)^k w_{2k}ζ^{-2k}, od = Σ(−1)^k w_{2k+1}ζ^{-2k−1}
-    dd s1, c1, s2, c2;
-    sincos_x(zeta.hi, s1, c1);
-    sincos_x(zeta.lo, s2, c2);
-    const dd sz = s1 * c2 + c1 * s2, cz = c1 * c2 - s1 * s2;
+    dd sz, cz;
+    if (!(zh >= ldexp(float256::one(), 140) && big_phase(t, sz, cz))) {
+        dd s1, c1, s2, c2;
+        sincos_x(zeta.hi, s1, c1);
+        sincos_x(zeta.lo, s2, c2);
+        sz = s1 * c2 + c1 * s2; cz = c1 * c2 - s1 * s2;
+    }
     const dd r2 = detail_dd::sqrt(dd(float256::half()));
     const dd st = (sz - cz) * r2, ct = (cz + sz) * r2;  // sin θ, cos θ
     dd r;
@@ -912,8 +942,10 @@ inline constexpr int kSerNeg = 110;   // x < 0: series while ζ < 110 (cancels ~
 } // namespace detail_sf
 
 /// Airy functions Ai(x), Bi(x) and their derivatives, any real x. For x < 0
-/// they oscillate; for x below about −2^110 the phase ζ = (2/3)|x|^{3/2} is only
-/// known to ~2^-474·ζ and the results lose accuracy. Ai, Ai' underflow and Bi,
+/// they oscillate; for x below −2^93 the phase ζ = (2/3)|x|^{3/2} is reduced
+/// mod π/2 exactly in multiprecision (cost grows like log2|x|²), so the results
+/// stay correctly rounded down to about −2^175000; below that the 2/π table runs
+/// out and accuracy degrades. Ai, Ai' underflow and Bi,
 /// Bi' overflow above x ≈ 4205. Ai(±∞) = +0, Bi(+∞) = +∞, Bi(−∞) = +0;
 /// Ai'(−∞), Bi'(−∞) are domain errors.
 [[nodiscard]] inline float256 airy_ai(float256 x) { return detail_sf::airy::pub(x, 0); }
