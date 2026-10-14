@@ -131,7 +131,7 @@ fenv::set_round(round_mode::to_nearest_even);
 - The mode applies to `+ − × ÷`, `fma`, `sqrt`, `parse`/literals, `to_double`/`to_float`/`to_long_double`, and `rint`/`nearbyint`. `round_to_integral(x, mode)` takes an explicit direction.
 - Overflow gives `±∞`, or `±max()` when the direction is toward zero. An exact zero sum is `+0`, or `−0` in `downward` mode.
 - **Constant evaluation** (`constexpr`) always uses `to_nearest_even` and records no flags.
-- Elementary functions (`exp`, `sin`, `pow`, …) always evaluate internally in round-to-nearest and leave the caller's flags unchanged. Their accuracy is under 1 ulp, but they are not guaranteed to be correctly rounded (see [Elementary function accuracy](#elementary-function-accuracy)).
+- Elementary functions (`exp`, `sin`, `pow`, …) honor the current rounding mode: the ~474-bit internal result is rounded once, in that mode. They raise `fe_invalid` for domain errors and signaling NaNs, `fe_divbyzero` at poles (`log(0)`, `atanh(±1)`, `lgamma` at non-positive integers, `pow(0, y<0)`, `tgamma(±0)`), `fe_overflow`/`fe_underflow` by the convention above, and `fe_inexact` on every inexact result (never on exact ones such as `exp(0)`, `log(1)`, `sin(±0)`, exact `pow`, `cbrt(27)`, `tgamma(5)`). Internal steps leave no flags behind (see [Elementary function accuracy](#elementary-function-accuracy)).
 
 ## IEEE 754 conformance
 
@@ -144,7 +144,7 @@ fenv::set_round(round_mode::to_nearest_even);
 | Decimal/hex parsing, literals | Correctly rounded in the current mode |
 | Decimal output (`to_string`, `format`, `to_chars`, `std::format`) | Shortest round-trip, or exact at any precision and correctly rounded in the current mode |
 | `totalOrder`, `convertToInteger` | `total_order`, `total_order_mag`, `to_integer<T>(mode, exact)` |
-| Elementary functions | Under 1 ulp (≈ ½ ulp observed), round-to-nearest internally; correct rounding not guaranteed |
+| Elementary functions | All 5 modes, flags included. Under 1 ulp in every mode, correct direction in directed modes; no misrounding observed against MPFR (correct rounding not guaranteed) |
 
 Elementary functions are not guaranteed correctly rounded, so `std::numeric_limits<float256>::is_iec559` stays `false`.
 
@@ -157,7 +157,7 @@ Every elementary function evaluates in double-float256 (`detail/dd.hpp`, an unev
 Exceptions and limits:
 - `lgamma` within ~2^-220 of its non-trivial zeros on the negative axis (and `tgamma` there, where it is ±1) has an absolute error of about 2^-460, not a relative bound.
 - `float256::pi()` is π rounded, so `sin(pi())` is the residual `π − pi()` (≈ 1.2e-72), not zero. The same goes for `cos(pi()/2)` and `tan(pi())`.
-- The functions run in round-to-nearest whatever the current mode, and do not raise flags.
+- Since 4.12.0 every case is checked in all five rounding modes against MPFR rounded in that mode (237-bit, subnormalized, binary256 exponent range), with the flags: inexact iff the result is inexact, overflow iff MPFR overflows, underflow iff tiny after rounding and inexact, never invalid/divbyzero for these arguments. Overflow and gradual-underflow ranges of `exp`, `exp2`, `expm1`, `sinh`, `cosh` are included. Over 53 checks × 1000 cases × 5 modes (265k evaluations), 0 results differed from MPFR's correctly rounded value and 0 flag mismatches. `tests/test_math_flags.cpp` covers exact cases, poles, domain errors, sNaN, overflow/underflow per mode and flag hygiene.
 
 
 ## Notes on specific functions

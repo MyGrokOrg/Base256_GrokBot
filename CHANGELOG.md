@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.12.0
+
+- **Elementary functions honor the rounding mode and raise IEEE flags.** All of `math.hpp` and `extra_math.hpp` round their ~474-bit dd result once in the current mode (new `float256::round_dd(hi, lo, k, mode, tail)`, with a tail hint for results such as `tanh → ±1` or `expm1 → -1` where the correction is below the dd precision). Before, they always rounded to nearest and raised no flags.
+  - `fe_invalid`: domain errors (`log(-1)`, `asin(2)`, `sin(inf)`, `pow(-2, 0.5)`, `tgamma(-3)`, …) and signaling-NaN inputs (the result is the quieted NaN).
+  - `fe_divbyzero`: poles — `log*(±0)`, `log1p(-1)`, `atanh(±1)`, `lgamma(0, -1, -2, …)`, `tgamma(±0)`, `pow(±0, y<0)`.
+  - `fe_overflow`/`fe_underflow`: library convention (tininess after rounding; underflow only with inexact); directed modes saturate to `max()`/`denorm_min()` as IEEE requires.
+  - `fe_inexact`: on every inexact result, never on exact ones (`exp(0)`, `exp2(n)`, `log(1)`, `log2(2^n)`, `log10(10^n)`, `sin(±0)`, exact `pow`, `cbrt` of perfect cubes, `tgamma` of small integers, `lgamma(1|2)`).
+  - Internal steps run in a private environment (`detail::FnEnv`), so no intermediate flag leaks; the caller's flags are kept.
+- `mpfr_ulp` evaluates every case in all five modes and compares with MPFR rounded in that mode (binary256 range emulated), checking direction, the 1-ulp bound and the exact flag set. New overflow/underflow ranges (`exp_big`, `exp2_big`, `expm1_big`, `sinh_big`, `cosh_big`). Result: 0 misrounded values and 0 flag errors over 265k mode-evaluations.
+- New test `tests/test_math_flags.cpp` (ctest `math_flags`).
+- `test_fenv` now expects elementary functions to follow the mode.
+
 ## 4.11.0
 
 - **`sin`, `cos`, `tan`, `sincos` are accurate for every finite argument.** For |x| ≥ 2^100 they now use Payne–Hanek reduction: the significand is multiplied exactly by a window of 2/π bits, leaving 1216 guard bits. The bits come from a 264,192-bit table generated with MPFR (`detail/two_over_pi.hpp`, 4128 `uint64_t` words, about 100 KB). Before this, results above 2^100 could be wrong in every digit. Now they are under 1 ulp up to `max()`. The old float256 path is gone; `reduce_trig` is kept only for compatibility.
