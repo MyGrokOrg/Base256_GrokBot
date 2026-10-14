@@ -1361,9 +1361,11 @@ inline const std::array<dd, kZetaN + 1>& zeta_int() {
 //   Σ_{k≠n−1} ζ(n−k) μ^k/k! + μ^{n−1}/(n−1)! (H_{n−1} − ln(−μ)).
 [[nodiscard]] inline dd mu_exp(unsigned n, const dd& mu) {
     const dd one{float256::one()};
+    if (mu.hi.iszero()) return zeta_at(static_cast<int>(n));
     dd sum{float256::zero()}, p = one;  // p = μ^k/k!
     for (int k = 0; k < 2000; ++k) {
         if (k > 0) p = p * mu / float256::from_int(k);
+        if (p.hi.iszero() || k - static_cast<int>(n) > 2 * detail_dd::tables::kBernFactN - 2) break;  // |μ/2π|^k < 2^-750 by then
         dd t;
         if (k == static_cast<int>(n) - 1) {
             if (mu.hi.iszero()) continue;
