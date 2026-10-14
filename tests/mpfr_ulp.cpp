@@ -387,6 +387,46 @@ int main(int argc, char** argv) {
         report("atan2", st, 1.0, bad);
         mpfr_clear(ym);
     }
+    // Two-argument special functions: gen() draws (a, b); ref(r, a, b) is the MPFR reference.
+    auto two_arg = [&](const char* name, const std::function<void(float256&, float256&)>& gen,
+                       const std::function<float256(float256, float256)>& ours,
+                       const std::function<int(mpfr_ptr, mpfr_srcptr, mpfr_srcptr)>& ref) {
+        if (!all_fns && std::string(argv[4]).find(name) == std::string::npos) return;
+        mpfr_t am, bm;
+        mpfr_inits2(1100, am, bm, (mpfr_ptr)0);
+        Stat st;
+        for (long i = 0; i < n; ++i) {
+            float256 a, b;
+            gen(a, b);
+            to_mpfr(am, a); to_mpfr(bm, b);
+            nudge(r, ref(r, am, bm));
+            check_case(st, [&] { return ours(a, b); }, r, a.to_hex_string() + ", " + b.to_hex_string());
+        }
+        report(name, st, 1.0, bad);
+        mpfr_clears(am, bm, (mpfr_ptr)0);
+    };
+    auto rnd_int = [&](int lo, int hi) { return lo + static_cast<int>(rng() % static_cast<unsigned>(hi - lo + 1)); };
+    // jn / yn (MPFR has integer orders): x log-uniform, jn also for negative n and x.
+    two_arg("jn", [&](float256& a, float256& b) {
+                a = float256::from_int(rnd_int(-40, 40));
+                b = rnd_in(-12, 9, true);
+                if (rng() & 1) b = -b;
+            },
+            [](float256 a, float256 b) { return base256::jn(static_cast<int>(a.to_double()), b); },
+            [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_jn(r, mpfr_get_si(a, MPFR_RNDN), b, MPFR_RNDN); });
+    two_arg("yn", [&](float256& a, float256& b) {
+                a = float256::from_int(rnd_int(-40, 40));
+                b = rnd_in(-12, 9, true);
+            },
+            [](float256 a, float256 b) { return base256::yn(static_cast<int>(a.to_double()), b); },
+            [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_yn(r, mpfr_get_si(a, MPFR_RNDN), b, MPFR_RNDN); });
+    // cyl_bessel_j / cyl_neumann at integer orders (the general-ν code paths).
+    two_arg("cyl_j", [&](float256& a, float256& b) { a = float256::from_int(rnd_int(0, 30)); b = rnd_in(-4, 11, true); },
+            [](float256 a, float256 b) { return base256::cyl_bessel_j(a, b); },
+            [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_jn(r, mpfr_get_si(a, MPFR_RNDN), b, MPFR_RNDN); });
+    two_arg("cyl_y", [&](float256& a, float256& b) { a = float256::from_int(rnd_int(0, 30)); b = rnd_in(-4, 11, true); },
+            [](float256 a, float256 b) { return base256::cyl_neumann(a, b); },
+            [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_yn(r, mpfr_get_si(a, MPFR_RNDN), b, MPFR_RNDN); });
     mpfr_clears(xm, r, (mpfr_ptr)0);
     return check && bad ? 1 : 0;
 }

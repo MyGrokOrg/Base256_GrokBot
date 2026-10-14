@@ -9,3 +9,4 @@
 #include "float256.hpp"
 #include "math.hpp"
 #include "extra_math.hpp"
+#include "special_math.hpp"

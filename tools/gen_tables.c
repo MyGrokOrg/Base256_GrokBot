@@ -102,7 +102,20 @@ int main(void) {
         }
         mpfr_clears(f, z, tp, (mpfr_ptr)0);
     }
-    printf("};\n\n} // namespace base256::detail_dd::tables\n");
+    printf("};\n");
+    /* Euler's gamma and c3 = gamma^3/6 - gamma pi^2/12 + zeta(3)/3 (1/Gamma(1+z) = 1 + gamma z + c2 z^2 + c3 z^3 + ...) */
+    {
+        mpfr_t g, t, u; mpfr_inits2(PREC, g, t, u, (mpfr_ptr)0);
+        mpfr_const_euler(g, MPFR_RNDN);
+        printf("inline constexpr std::uint64_t kEulerGamma[8] = "); emit_dd(g); printf(";\n");
+        mpfr_pow_ui(v, g, 3, MPFR_RNDN); mpfr_div_ui(v, v, 6, MPFR_RNDN);
+        mpfr_const_pi(t, MPFR_RNDN); mpfr_sqr(t, t, MPFR_RNDN); mpfr_mul(t, t, g, MPFR_RNDN); mpfr_div_ui(t, t, 12, MPFR_RNDN);
+        mpfr_sub(v, v, t, MPFR_RNDN);
+        mpfr_zeta_ui(u, 3, MPFR_RNDN); mpfr_div_ui(u, u, 3, MPFR_RNDN); mpfr_add(v, v, u, MPFR_RNDN);
+        printf("inline constexpr std::uint64_t kInvGammaC3[8] = "); emit_dd(v); printf(";\n");
+        mpfr_clears(g, t, u, (mpfr_ptr)0);
+    }
+    printf("\n} // namespace base256::detail_dd::tables\n");
     mpfr_clears(c, v, inv, (mpfr_ptr)0);
     return 0;
 }
