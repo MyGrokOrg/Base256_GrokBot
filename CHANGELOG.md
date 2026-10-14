@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.22.0
+
+- New `detail/mp.hpp`: small BigInt-mantissa multiprecision (exp, log, sqrt, sincos, π, ln 2, Bernoulli numbers, Stirling lgamma) used as a fallback where the dd evaluation cancels.
+- `lgamma` is correctly rounded next to its non-trivial negative zeros (was absolute error ~2^-460). sf_check `lg_negz`: max 0.496 ulp, all five modes clean.
+- `hurwitz_zeta(s, a)`, s < 1: correctly rounded next to zeros in a, via a cancellation estimate and a multiprecision Euler–Maclaurin / Hurwitz-formula fallback; ζ(−2n, ½) = 0 exactly. sf_check `hz_nz`: max 0.497 ulp, all modes clean.
+- Airy Ai, Ai', Bi, Bi' for x < −2^93: exact multiprecision reduction of the phase ζ = (2/3)|x|^{3/2} modulo π/2. Correctly rounded down to about −2^175000 (sf_check `*_huge` to −2^3000 and `ai_vhuge` to −2^12000, all modes clean); below that the 2/π table runs out.
+
 ## 4.21.0
 
 - **Directed modes and flags checked against mpmath.** `tools/sf_check.py EVAL n seed filter modes` (with `SF_MODES=1` in `sf_eval`) evaluates every case in RNE, RNA, RZ, RU and RD. It compares each result with the correctly rounded value of a 2000-bit mpmath reference in that mode and checks the flags (inexact, overflow, underflow with tininess after rounding). Run over every range of polygamma/trigamma, Airy Ai/Bi/Ai'/Bi' (new overflow/underflow ranges near x = 4205), Lambert W0/W−1, erf_inv/erfc_inv, Fresnel, Dawson, dilog/polylog, all Bessel functions, the elliptic integrals and hurwitz_zeta: 0 misroundings and 0 flag errors (40 cases per range).
