@@ -637,6 +637,84 @@ inline constexpr int kAsymW = 60;  // asymptotic series at w >= 60: the k = 140 
     return exp_sd(detail_gamma::lgamma_pos_dd(a) - detail_gamma::lgamma_pos_dd(b));
 }
 
+// ψ^(n)(x) for x < 0, not an integer, n >= 1. With m = ⌈−x⌉, f = x + m in (0, 1) and
+// g = 1 − f (exact in MP), s = n + 1:
+//   ψ^(n)(x) = (−1)^{n+1} n! [ζ(s, f) + (−1)^s (ζ(s, g) − ζ(s, g + m))]
+// (the sum Σ_k (x+k)^{−s} split at the sign change). For odd n every part is
+// positive; for even n ζ(s, f) − ζ(s, g) cancels next to the zeros, so the
+// precision grows until ~330 bits survive. Next to a pole the term h^{−s} of the
+// small one of f, g dominates; when h is a power of two that term is exact and
+// the rest only decides the direction (`tail`), however far below it lies.
+[[nodiscard]] inline bool mp_pow2(const detail_mp::MP& v) {
+    if (v.zero()) return false;
+    auto t = v.m;
+    t.shr(t.bit_length() - 1);
+    auto u = t; u.shl(v.m.bit_length() - 1);
+    auto w = v.m; w.sub(u);
+    return w.is_zero();
+}
+[[nodiscard]] inline SD poly_neg(unsigned n, float256 x, int& tail) {
+    namespace M = detail_mp;
+    namespace Z = zeta::zmp;
+    tail = 2;
+    const float256 mf = -floor(x);  // ⌈−x⌉ for non-integer x
+    const double s_d = static_cast<double>(n) + 1;
+    const M::MP S = M::from_u64(n + 1ull), one = M::from_u64(1);
+    const M::MP X = M::from_f256(x), Mm = M::from_f256(mf);
+    const M::MP F = M::add(X, Mm, 1 << 22), G = M::sub(one, F, 1 << 22);  // exact
+    const bool fsmall = M::cmp_abs(F, G) <= 0;
+    const M::MP H = fsmall ? F : G;  // the one next to the pole
+    const bool hexact = mp_pow2(H);
+    const bool sgn_h = !fsmall && !(n & 1);  // H's part enters with −1 (g, even n)
+    // n! exactly (BigInt) while small, else exp lnΓ(n+1) (inexact)
+    const bool fact_exact = n < 300;
+    M::MP factx = one;
+    if (fact_exact) for (unsigned k = 2; k <= n; ++k) factx = M::mul_u(factx, k, 1 << 22);
+    int P = 400;
+    for (;;) {
+        const int Q = P + 64;
+        const double fd = M::to_dd(F).hi.to_double(), gd = M::to_dd(G).hi.to_double();
+        M::MP b1, b2, b3;
+        // the small argument's first term apart (exact if a power of two)
+        M::MP E;
+        if (hexact) E = M::ldexp(one, -static_cast<long>(n + 1) * (H.top() - 1));
+        else E = Z::pow_neg(H, S, Q);
+        if (sgn_h) E = M::neg(E);
+        const M::MP H1 = M::add(H, one, 1 << 22);
+        const double h1d = (fsmall ? fd : gd) + 1;
+        const M::MP zh1 = Z::em_mp(S, H1, s_d, h1d, P, b1);           // ζ(s, h + 1)
+        const M::MP zo = Z::em_mp(S, fsmall ? G : F, s_d, fsmall ? gd : fd, P, b2);  // the other one
+        const bool odd = (n & 1) != 0;  // σ_g = (−1)^s = +1 for odd n
+        M::MP R = fsmall ? (odd ? M::add(zh1, zo, Q) : M::sub(zh1, zo, Q))
+                         : (odd ? M::add(zo, zh1, Q) : M::sub(zo, zh1, Q));
+        // ζ(s, g + m) with sign −(−1)^s, unless below 2^-Q of ζ(s, other) (~ other^{−s})
+        const double gm = gd + mf.to_double();
+        if (-s_d * std::log2(gm) > -s_d * std::log2(fsmall ? gd : fd) - Q) {
+            const M::MP zgm = Z::em_mp(S, M::add(G, Mm, 1 << 22), s_d, gm, P, b3);
+            R = (n & 1) ? M::sub(R, zgm, Q) : M::add(R, zgm, Q);
+        }
+        const M::MP T = M::add(E, R, Q);
+        const M::MP big = Z::absmax(Z::absmax(E, zo), zh1);
+        const long c = T.zero() ? 100000 : big.top() - T.top();
+        const bool split = hexact && fact_exact && !R.zero() && R.top() < E.top() - 300;
+        if (split || P - c >= 330 || P > 8000) {
+            if (T.zero()) return SD{dd(float256::zero()), 0};
+            M::MP fact = fact_exact ? factx : M::exp(M::lgamma_pos(M::from_u64(n + 1ull), Q), Q);
+            M::MP v = split ? M::mul(fact, E, 1 << 22) : M::mul(fact, T, Q);
+            if ((n & 1) == 0) v = M::neg(v);
+            if (split) {
+                // exact v plus a tiny R·n!·(−1)^{n+1}: its sign is the direction
+                const bool up = (!R.neg) == ((n & 1) != 0);
+                tail = up ? 1 : -1;
+                if (v.m.bit_length() > 470) tail = 2;  // v itself not held exactly (cannot happen for n < 58)
+            }
+            const long k = v.top();
+            return norm({M::to_dd(M::ldexp(v, -k)), static_cast<int>(k)});
+        }
+        P = static_cast<int>(c) + 400 > 2 * P ? static_cast<int>(c) + 400 : 2 * P;
+    }
+}
+
 } // namespace psi
 } // namespace detail_sf
 
@@ -661,15 +739,24 @@ inline constexpr int kAsymW = 60;  // asymptotic series at w >= 60: the k = 140 
     return r.out(env);
 }
 
-/// Polygamma ψ^(n)(x) = (−1)^{n+1} n! ζ(n+1, x) for n >= 1 and x > 0
-/// (n = 0 is digamma). x <= 0 is a domain error for n >= 1 (x = 0: pole).
+/// Polygamma ψ^(n)(x), any real x (n = 0 is digamma). x > 0: (−1)^{n+1} n! ζ(n+1, x).
+/// x < 0 by the reflected sum, correctly rounded also next to its zeros (even n).
+/// Poles at x = 0, −1, −2, …: odd n gives +∞; even n gives −∞ at +0, +∞ at −0
+/// (the limit from the left) and a domain error at the negative integers, where
+/// the two sides have opposite signs. ψ^(n)(−∞) is a domain error.
 [[nodiscard]] inline float256 polygamma(unsigned n, float256 x) {
     if (n == 0) return digamma(x);
     detail_dd::FnEnv env;
     using detail_dd::dd;
     if (x.isnan()) return env.nan(x);
-    if (x.iszero()) return env.pole((n & 1) == 0);
-    if (x.signbit()) return env.invalid();
+    if (x.iszero()) return env.pole((n & 1) == 0 && !x.signbit());
+    if (x.signbit()) {
+        if (x.isinf()) return env.invalid();
+        if (x == floor(x)) return (n & 1) ? env.pole(false) : env.invalid();
+        int tail;
+        const detail_sf::SD v = detail_sf::psi::poly_neg(n, x, tail);
+        return detail_sf::out(env, v, tail);
+    }
     if (x.isinf()) return env.exact((n & 1) ? float256::zero() : -float256::zero());
     const float256 s = float256::from_uint(n + 1ull);
     detail_sf::SD z = detail_sf::zeta::hurwitz(dd(s), dd(float256::from_uint(n)), x);

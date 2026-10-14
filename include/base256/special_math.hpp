@@ -1273,11 +1273,25 @@ inline void sincos_pi(const M::MP& t, int Q, M::MP& s, M::MP& c) {
     M::sincos(M::mul(M::pi(Q), mod2(t), Q), Q, s, c);
 }
 
-[[nodiscard]] inline M::MP em(float256 s, float256 a, int P, M::MP& big) {
+// ζ(S, A) for an MP s and a > 0 (sd, ad: their values as doubles). Large s: the
+// terms fall so fast that the direct sum is used.
+[[nodiscard]] inline M::MP em_mp(const M::MP& S, const M::MP& A, double sd, double ad, int P, M::MP& big) {
     const int Q = P + 64;
-    const M::MP S = M::from_f256(s), A = M::from_f256(a), one = M::from_u64(1);
-    const double w0 = 0.12 * P + std::fabs(s.to_double()) / 2 + 10;
-    const long N = a.to_double() < w0 ? static_cast<long>(std::ceil(w0 - a.to_double())) : 0;
+    const M::MP one = M::from_u64(1);
+    if (sd > 0.5 * P + 50) {
+        M::MP sum;
+        big = M::MP{};
+        for (std::uint64_t n = 0;; ++n) {
+            const M::MP t = pow_neg(M::add(A, M::from_u64(n), Q), S, Q);
+            sum = M::add(sum, t, Q);
+            big = absmax(big, t);
+            if (t.zero() || t.top() < big.top() - Q) break;
+        }
+        big.neg = false;
+        return sum;
+    }
+    const double w0 = 0.12 * P + std::fabs(sd) / 2 + 10;
+    const long N = ad < w0 ? static_cast<long>(std::ceil(w0 - ad)) : 0;
     M::MP sum, W = A;
     big = M::MP{};
     for (long n = 0; n < N; ++n) {
@@ -1306,6 +1320,9 @@ inline void sincos_pi(const M::MP& t, int Q, M::MP& s, M::MP& c) {
     }
     big.neg = false;
     return M::add(M::add(M::add(sum, t1, Q), t2, Q), corr, Q);
+}
+[[nodiscard]] inline M::MP em(float256 s, float256 a, int P, M::MP& big) {
+    return em_mp(M::from_f256(s), M::from_f256(a), s.to_double(), a.to_double(), P, big);
 }
 
 [[nodiscard]] inline M::MP refl(float256 s, float256 a, int P, M::MP& big) {

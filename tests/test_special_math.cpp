@@ -214,6 +214,12 @@ const Ref kRefs[] = {
     {"psi", "1e10", "", "", "0x17069e2aa2736123e0ea2691300091bf7aed131ab0c1e751ec9b1727e1aap-232"},
     {"pg", "1", "0.5", "", "0x13bd3cc9be45de5a4adc4d9b30118358e10acd47fc1a14450cd044204a79p-234"},
     {"pg", "3", "17.25", "", "0x1bd76f17737bc701a71d9b2d23e23ca4afbc606f0097b69e12f2f9f07895p-248"},
+    {"pg", "1", "-0.5", "", "0x11de9e64df22ef2d256e26cd9808c1ac708566a3fe0d0a2286682210253cp-233"},
+    {"pg", "2", "-2.25", "", "0x1ef967a0066f8d5129748bc3be64058926375f83ccdef12d9558ff437778p-230"},
+    {"pg", "3", "-10.75", "", "0x185a2d1d617e34a31533f9dfcdf829c3ced62288989cdbdb2e1c47b76a27p-226"},
+    {"pg", "4", "-0.125", "", "0x17ffa0039f7223bbda35dbc3c503ecc3ced82224f16383102de79e5a198bp-217"},
+    {"pg", "7", "-33.3", "", "0x1255f35155363c3d71ddfdd63791624a7a160aad0a22f2f7eeeaf532aed6p-210"},
+    {"pg", "2", "-999999999999999999999999999999.5", "", "-0x19b604aaaca62636c6f25e825960cf29a4ad7f4ac51e30bf2c2b602aa772p-436"},
     {"pg", "60", "2.5", "", "-0x168dd83d16e3fec7b7ea22157620ee8e257824978508cda6671c3bd26d13p-45"},
     {"lbeta", "2.5", "3.5", "", "-0x1a6a289c2a217a99525b751804b0e7795f58bfd3314796186efa84e938e3p-235"},
     {"lbeta", "1e6", "3e5", "", "-0x156e7d4810d583b00e57792e5da0ab8be26928e005780d85d47f16c9ef14p-217"},
@@ -583,6 +589,18 @@ int main() {
     EXPECT(polygamma(1, zero), inf, kDiv);
     EXPECT(polygamma(2, zero), -inf, kDiv);
     EXPECT(polygamma(2, -one), nan, kInv);
+    EXPECT(polygamma(1, -one), inf, kDiv);   // odd n: +∞ on both sides of a pole
+    EXPECT(polygamma(3, float256(-7)), inf, kDiv);
+    EXPECT(polygamma(2, -zero), inf, kDiv);  // even n: the limit from the left
+    EXPECT(polygamma(1, -zero), inf, kDiv);
+    EXPECT(polygamma(1, -inf), nan, kInv);
+    // next to a pole with a power-of-two offset the result sits just past a representable value
+    EXPECT_M(polygamma(10, -float256(3) + ldexp(one, -200)),
+             [](round_mode m) {
+                 const float256 e = ldexp(float256(3628800), 2200);  // 10!·2^{200·11}, exact
+                 return m == round_mode::downward ? -nextafter(e, float256::inf(false)) : -e;  // just below −e
+             },
+             kInx);
     EXPECT(polygamma(1, inf), zero, 0);
     EXPECT(polygamma(2, inf), -zero, 0);
     CHECK(same(trigamma(float256(3.5)), polygamma(1, float256(3.5))));

@@ -187,7 +187,39 @@ SI, CI, SHI, CHI = W1500(mp.si), W1500(mp.ci), W1500(mp.shi), W1500(mp.chi)
 LI = W1500(lambda x: mp.li(x))
 
 PSI = W1500(mp.digamma)
-PG = W1500(lambda n, x: mp.polygamma(int(n), x))
+_PG = W1500(lambda n, x: mp.polygamma(int(n), x))
+_COTP = {}
+def _cot_poly(n):
+    """integer coefficients of P_n with d^n/dθ^n cot θ = P_n(cot θ)."""
+    if n not in _COTP:
+        p = [0, 1]
+        for _ in range(n):
+            d = [i * p[i] for i in range(1, len(p))] + [0, 0]  # P'
+            q = [0] * (len(d) + 2)
+            for i, c in enumerate(d): q[i] -= c; q[i + 2] -= c   # × (−1 − c²)
+            while len(q) > 1 and q[-1] == 0: q.pop()
+            p = q
+        _COTP[n] = p
+    return _COTP[n]
+def PG(n, x):
+    """mp.polygamma, except x < −64: reflection ψ^(n)(x) = (−1)^n ψ^(n)(1−x) − π^{n+1} cot^{(n)}(πx),
+    with x mod 1 taken exactly (mp.polygamma is very slow there)."""
+    n = int(n)
+    # next to a pole the δ^{-s} term exceeds the rest by s·log2(1/δ) bits: carry that many more
+    extra = 0
+    if x < 0:
+        with mp.workprec(REFPREC[0] + 400):
+            d = abs(x - mp.nint(x))
+            if d != 0: extra = int((n + 1) * max(0, -mp.log(d, 2))) + 64
+    if extra:
+        with mp.workprec(REFPREC[0] + extra):
+            if x >= -64: return mp.polygamma(n, x)
+    if x >= -64: return _PG(n, x)
+    with mp.workprec(REFPREC[0] + 64 + extra):
+        fr = x - mp.floor(x)  # exact: x is a binary256 value
+        c = mp.cot(mp.pi * fr)
+        cp = sum(k * c**i for i, k in enumerate(_cot_poly(n)))
+        return (-1)**n * mp.polygamma(n, 1 - x) - mp.pi**(n + 1) * cp
 LBETA = W1500(lambda a, b: mp.log(mp.beta(a, b)))
 GR = W1500(lambda a, b: mp.exp(mp.loggamma(a) - mp.loggamma(b)))
 GDR = W1500(lambda a, d: mp.exp(mp.loggamma(a) - mp.loggamma(a + d)))
@@ -297,7 +329,27 @@ def hz_zeros():
                         _HZZ.append((s, x))
     return _HZZ
 
+_PGZ = []
+def pg_zeros():
+    """(n, x) with ψ^(n)(x) = 0, even n, one per interval (−k, −k+1)."""
+    if not _PGZ:
+        for n in (2, 4, 6):
+            for k in range(1, 13):
+                with mp.workprec(1200):
+                    lo, hi = mp.mpf(-k) + mp.mpf(2)**-20, mp.mpf(-k + 1) - mp.mpf(2)**-20
+                    if k == 1: hi = -mp.mpf(2)**-20
+                    x = mp.findroot(lambda y: mp.polygamma(n, y), (lo, hi), solver="anderson", tol=mp.mpf(2)**-1100)
+                _PGZ.append((n, x))
+    return _PGZ
+
 RANGES = [
+    ("pg_negm",  "pg", PG, [("int", 1, 10), (-50, 0, False)]),
+    ("pg_negs",  "pg", PG, [("int", 1, 10), (-1, 0, False)]),
+    ("pg_negbig","pg", PG, [("int", 1, 10), ("negexp", 1, 230)]),
+    ("pg_negtiny","pg", PG, [("int", 1, 10), ("negexp", -300, -1)]),
+    ("pg_negn",  "pg", PG, [("int", 10, 300), (-20, 0, False)]),
+    ("pg_negpole","pg", PG, [("int", 1, 10), ("negnearint", 1, 40)]),
+    ("pg_negz",  "pg", PG, [("pairzero", pg_zeros, 1, 236), None]),
     ("hz_nz",    "hz", HZ, [("pairzero", hz_zeros, 1, 236), None]),
     ("lg_negz",  "lg", LG, [("nearzero", lg_zeros, 1, 236)]),
     ("lg_neg",   "lg", LG, [(-60, -2, False)]),
@@ -528,6 +580,11 @@ def _rnd(a, s, e, mode):
 
 def round_b256(v, mode):
     """Correctly rounded binary256 value of v in mode, and the flags it raises."""
+    if isinstance(v, mp.mpf) and v._mpf_[3] + 64 > mp.mp.prec:  # a reference carried more bits
+        with mp.workprec(v._mpf_[3] + 64): return _round_b256(v, mode)
+    return _round_b256(v, mode)
+
+def _round_b256(v, mode):
     if mp.isnan(v): return mp.nan, 0
     if mp.isinf(v): return v, 0
     if v == 0: return v, 0
@@ -594,7 +651,10 @@ def gen_cases(args, rng, n):
                 s, z = rng.choice(a[1]())
                 k = rng.randint(a[2], a[3])
                 v = z * (1 + rng.choice([-1, 1]) * mp.ldexp(rng.random(), -k))
-                hs.append(to_hex(s)); vs.append(s)
+                hs.append(str(s) if isinstance(s, int) else to_hex(s)); vs.append(mp.mpf(s))
+                h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
+            elif a[0] == "negnearint":
+                v = -mp.mpf(rng.randint(a[1], a[2])) + mp.ldexp(rng.choice([-1, 1]), -rng.randint(1, 200))
                 h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
             elif a[0] == "nearnegeven":
                 v = -2 * mp.mpf(rng.randint(a[1], a[2])) + mp.ldexp(rng.choice([-1, 1]), -rng.randint(20, 200))
