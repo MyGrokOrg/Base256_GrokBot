@@ -818,34 +818,36 @@ namespace detail_sf {
     return exp_sd(lgam(dd(a)) + lgam(dd(b)) - lgam(ab));
 }
 
-// Continued fraction for I_x(a, b) (modified Lentz), x and 1 − x given as dd.
+// Continued fraction for I_x(a, b): h = 1/(1 + e_1/(1 + e_2/(1 + …))) with
+// e_n = N_n/Q_n, Q_n = (a+n−1)(a+n), N_{2m} = m(b−m)x, N_{2m+1} = −(a+m)(a+b+m)x.
+// The equivalence transform c_n = Q_n clears the denominators (partial
+// numerators Q_{n−1}N_n, denominators Q_n), so the Wallis recurrence for the
+// convergents A_n/B_n needs no divisions; A, B are rescaled by powers of two,
+// and h = B_n/A_n is tested for convergence every 8 steps.
 [[nodiscard]] inline dd betacf(const dd& a, const dd& b, const dd& x) {
     const dd one{float256::one()};
-    const float256 tiny = ldexp(float256::one(), -20000);
-    const dd qab = a + b, qap = a + one, qam = a - one;
-    dd c = one;
-    dd d = one - qab * x / qap;
-    if (abs(d.hi) < tiny) d = dd(tiny);
-    d = one / d;
-    dd h = d;
-    for (int m = 1; m < 100000000; ++m) {
-        const dd dm = D(m), m2 = D(2 * m);
-        dd aa = dm * (b - dm) * x / ((qam + m2) * (a + m2));
-        d = one + aa * d;
-        if (abs(d.hi) < tiny) d = dd(tiny);
-        c = one + aa / c;
-        if (abs(c.hi) < tiny) c = dd(tiny);
-        d = one / d;
-        h = h * d * c;
-        aa = -((a + dm) * (qab + dm) * x) / ((a + m2) * (qap + m2));
-        d = one + aa * d;
-        if (abs(d.hi) < tiny) d = dd(tiny);
-        c = one + aa / c;
-        if (abs(c.hi) < tiny) c = dd(tiny);
-        d = one / d;
-        const dd del = d * c;
-        h = h * del;
-        if (near_one(del)) break;
+    const dd ab = a + b;
+    dd A0 = one, A1 = one, B0{float256::zero()}, B1 = one;  // A_{n−2}, A_{n−1}, B_{n−2}, B_{n−1}
+    dd Qprev = one;  // Q_{n−1} (c_0 = 1)
+    dd h = one, hprev{float256::zero()};
+    for (int n = 1; n < 100000000; ++n) {
+        const int m = n >> 1;
+        const dd Q = (a + D(n - 1)) * (a + D(n));
+        const dd N = (n & 1) ? -((a + D(m)) * (ab + D(m)) * x) : D(m) * (b - D(m)) * x;
+        const dd an = Qprev * N;
+        const dd A2 = Q * A1 + an * A0, B2 = Q * B1 + an * B0;
+        A0 = A1; A1 = A2; B0 = B1; B1 = B2;
+        Qprev = Q;
+        const int e = ilogb(A1.hi);
+        if (e > 2000 || e < -2000) {
+            A0 = detail_dd::ldexp(A0, -e); A1 = detail_dd::ldexp(A1, -e);
+            B0 = detail_dd::ldexp(B0, -e); B1 = detail_dd::ldexp(B1, -e);
+        }
+        if ((n & 7) == 0) {
+            h = B1 / A1;
+            if (near_one(h / hprev)) break;
+            hprev = h;
+        }
     }
     return h;
 }
@@ -1000,35 +1002,50 @@ namespace detail_sf {
 namespace igamma {
 
 // Σ_{n>=0} x^n / (a(a+1)…(a+n)) (γ(a,x) = x^a e^{-x} · this), for x < a + 1.
+// Positive terms; once they decrease and fall below 2^-245 of the sum the rest
+// runs in float256.
 [[nodiscard]] inline dd series(const dd& a, const dd& x) {
     const dd one{float256::one()};
     dd term = one / a, sum = term;
-    for (int n = 1; n < 100000000; ++n) {
+    int n = 1;
+    for (; n < 100000000; ++n) {
         term = term * x / (a + D(n));
         sum = sum + term;
-        if (small_rel(term, sum)) break;
+        if (small_rel(term, sum)) return sum;
+        if ((a + D(n)).hi > x.hi && f256_tail(term, sum)) break;
     }
-    return sum;
+    float256 t = term.hi, tail{};
+    const int lim = ilogb(sum.hi) - 492;
+    for (++n; n < 100000000; ++n) {
+        t = t * x.hi / (a.hi + float256::from_int(n));
+        tail = tail + t;
+        if (t.iszero() || ilogb(t) < lim) break;
+    }
+    return sum + dd(tail);
 }
-// Continued fraction h with Γ(a,x) = x^a e^{-x} · h, for x >= a + 1 (Lentz).
+// Continued fraction h = 1/(b_1 + a_2/(b_2 + …)), b_i = x + 2i − 1 − a,
+// a_i = −(i−1)(i−1−a), with Γ(a,x) = x^a e^{-x} · h, for x >= a + 1. Wallis
+// recurrence (no divisions) with power-of-two rescaling, tested every 8 steps.
 [[nodiscard]] inline dd cf(const dd& a, const dd& x) {
     const dd one{float256::one()};
-    const float256 tiny = ldexp(float256::one(), -20000);
     dd b = x + one - a;
-    dd c = dd(ldexp(float256::one(), 20000));
-    dd d = one / b;
-    dd h = d;
+    dd A0 = one, A1 = b, B0{float256::zero()}, B1 = one;
+    dd h = one / b, hprev{float256::zero()};
     for (int i = 1; i < 100000000; ++i) {
         const dd an = -(D(i) * (D(i) - a));
         b = b + D(2);
-        d = an * d + b;
-        if (abs(d.hi) < tiny) d = dd(tiny);
-        c = b + an / c;
-        if (abs(c.hi) < tiny) c = dd(tiny);
-        d = one / d;
-        const dd del = d * c;
-        h = h * del;
-        if (near_one(del)) break;
+        const dd A2 = b * A1 + an * A0, B2 = b * B1 + an * B0;
+        A0 = A1; A1 = A2; B0 = B1; B1 = B2;
+        const int e = ilogb(A1.hi);
+        if (e > 2000 || e < -2000) {
+            A0 = detail_dd::ldexp(A0, -e); A1 = detail_dd::ldexp(A1, -e);
+            B0 = detail_dd::ldexp(B0, -e); B1 = detail_dd::ldexp(B1, -e);
+        }
+        if ((i & 7) == 0) {
+            h = B1 / A1;
+            if (near_one(h / hprev)) break;
+            hprev = h;
+        }
     }
     return h;
 }
@@ -1064,9 +1081,13 @@ namespace igamma {
     const dd A{a}, X{x};
     const dd lx = detail_dd::log(X);
     const SD pre = exp_sd(A * lx - X);  // x^a e^{-x}
-    const bool use_series = x < a + one;
+    // The series for γ also runs for a + 1 <= x < 36, where the fraction for Γ
+    // converges slowly at this precision; the complement 1 − P then cancels at
+    // most ~e^36 (< 2^52) of the ~2^-474 working precision.
+    const bool small_x = x < a + one;
+    const bool use_series = small_x || x < float256(36);
     // Small a, x < a + 1, upper part: Γ(a,x) = Γ(a)·(−expm1(a ln x − lnΓ(1+a))) + x^a Σ_{n>=1} (−1)^{n+1} x^n/(n!(a+n)).
-    if (upper && use_series && a < one) {
+    if (upper && small_x && a < one) {
         const dd e = A * lx - lgamma1p(a);
         const dd t1 = -detail_dd::expm1(e);  // Q part
         dd term = dd(one), sum{float256::zero()};
