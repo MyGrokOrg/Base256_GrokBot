@@ -357,6 +357,7 @@ int main(int argc, char** argv) {
         {"expint", [](float256 x){return expint(x);}, mpfr_eint, -20, 9, true, true, 1, 0},
         {"ei_big", [](float256 x){return expint(x);}, mpfr_eint, 9, 17.5, true, true, 1, 0},
         {"e1",     [](float256 x){return expint(1u, x);}, mpfr_e1, -20, 8, true, false, 1, 0},
+        {"digamma",[](float256 x){return digamma(x);}, mpfr_digamma, -20, 12, true, true, 1, 0},
         {"logint", [](float256 x){return logint(x);}, mpfr_li, -40, 40, true, false, 1, 0},
         {"logint1",[](float256 x){return logint(x);}, mpfr_li, -236, -1, true, false, 1, 0, 3},
     };
@@ -583,6 +584,22 @@ int main(int argc, char** argv) {
                 const int tr = mpfr_div_z(r, s, f, MPFR_RNDN);
                 mpfr_clears(s, p, (mpfr_ptr)0); mpz_clears(c, f, nullptr);
                 return tr;
+            });
+    // lbeta(a, b) = lnΓ(a) + lnΓ(b) − lnΓ(a+b) at 3000 bits (never exact here).
+    two_arg("lbeta", [&](float256& a, float256& b) { a = rnd_in(-20, 30, true); b = rnd_in(-20, 30, true); },
+            [](float256 a, float256 b) { return base256::lbeta(a, b); },
+            [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) {
+                mpfr_t s, u, ab;
+                mpfr_inits2(3000, s, u, ab, (mpfr_ptr)0);
+                mpfr_lngamma(s, a, MPFR_RNDN);
+                mpfr_lngamma(u, b, MPFR_RNDN);
+                mpfr_add(s, s, u, MPFR_RNDN);
+                mpfr_add(ab, a, b, MPFR_RNDN);
+                mpfr_lngamma(u, ab, MPFR_RNDN);
+                mpfr_sub(s, s, u, MPFR_RNDN);
+                const int tr = mpfr_set(r, s, MPFR_RNDN);
+                mpfr_clears(s, u, ab, (mpfr_ptr)0);
+                return tr == 0 ? 1 : tr;
             });
     mpfr_clears(xm, r, (mpfr_ptr)0);
     return check && bad ? 1 : 0;

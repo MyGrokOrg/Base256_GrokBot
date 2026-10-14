@@ -51,6 +51,11 @@ int main() {
         else if (f == "shi") r = sinhint(P(a));
         else if (f == "chi") r = coshint(P(a));
         else if (f == "li") r = logint(P(a));
+        else if (f == "psi") r = digamma(P(a));
+        else if (f == "pg") r = polygamma(static_cast<unsigned>(std::stoul(a)), P(b));
+        else if (f == "lbeta") r = lbeta(P(a), P(b));
+        else if (f == "gr") r = tgamma_ratio(P(a), P(b));
+        else if (f == "gdr") r = tgamma_delta_ratio(P(a), P(b));
 #ifdef SF_MORE
         SF_MORE
 #endif

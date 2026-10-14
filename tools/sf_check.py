@@ -43,7 +43,7 @@ def to_hex(v):
     return f"{s}0x{m:x}p{e - (P - 1):+d}"
 
 def parse_hex(s):
-    s = s.strip()
+    s = s.strip().replace("0xinf", "inf")
     if s in ("inf", "+inf"): return mp.inf
     if s == "-inf": return -mp.inf
     if "nan" in s: return mp.nan
@@ -154,7 +154,25 @@ def W1500(f):
 SI, CI, SHI, CHI = W1500(mp.si), W1500(mp.ci), W1500(mp.shi), W1500(mp.chi)
 LI = W1500(lambda x: mp.li(x))
 
+PSI = W1500(mp.digamma)
+PG = W1500(lambda n, x: mp.polygamma(int(n), x))
+LBETA = W1500(lambda a, b: mp.log(mp.beta(a, b)))
+GR = W1500(lambda a, b: mp.exp(mp.loggamma(a) - mp.loggamma(b)))
+GDR = W1500(lambda a, d: mp.exp(mp.loggamma(a) - mp.loggamma(a + d)))
+
 RANGES = [
+    ("psi",      "psi", PSI, [(-20, 10, True)]),
+    ("psi_mid",  "psi", PSI, [(0, 100, False)]),
+    ("psi_neg",  "psi", PSI, [(-60, 0, False)]),
+    ("psi_big",  "psi", PSI, [(10, 3000, True)]),
+    ("psi_root", "psi", PSI, [(1.4616, 1.4617, False)]),
+    ("pg",       "pg", PG, [("int", 1, 10), (-10, 8, True)]),
+    ("pg_bign",  "pg", PG, [("int", 10, 300), (-4, 8, True)]),
+    ("lbeta",    "lbeta", LBETA, [(-20, 30, True), (-20, 30, True)]),
+    ("lbeta_1",  "lbeta", LBETA, [(0.999, 1.001, False), (0.5, 2, False)]),
+    ("gr",       "gr", GR, [(-10, 12, True), (-10, 12, True)]),
+    ("gdr_big",  "gdr", GDR, [(20, 100, True), (-10, 5, True)]),
+    ("gdr",      "gdr", GDR, [(-10, 15, True), (-60, -1, True)]),
     ("si",       "si", SI, [(-10, 6, True)]),
     ("si_mid",   "si", SI, [(-400, 400, False)]),
     ("si_big",   "si", SI, [(8, 1000, True)]),

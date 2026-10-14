@@ -67,6 +67,11 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "shi") return sinhint(P(a));
     if (op == "chi") return coshint(P(a));
     if (op == "li") return logint(P(a));
+    if (op == "psi") return digamma(P(a));
+    if (op == "pg") return polygamma(static_cast<unsigned>(std::stoul(a)), P(b));
+    if (op == "lbeta") return lbeta(P(a), P(b));
+    if (op == "gr") return tgamma_ratio(P(a), P(b));
+    if (op == "gdr") return tgamma_delta_ratio(P(a), P(b));
     if (op == "her") return hermite(static_cast<unsigned>(std::stoul(a)), P(b));
     std::cerr << "unknown op " << op << "\n";
     return float256::qnan();
@@ -180,6 +185,17 @@ const Ref kRefs[] = {
     {"li", "1.0000001", "", "", "-0x1f14ee3708da5aa5faf4425058f911cccd9b5fdecc432e91fc3e7f2eaedfp-233"},
     {"li", "1e30", "", "", "0x17bca23e192a6b0c865bf71a9def67463c314db4998ce6f00162b6645ca9p-143"},
     {"li", "2", "", "", "0x10b8fda7e918078599e853393f0af3deefad54b9ce533d61088126a05a6bp-236"},
+    {"psi", "1.5", "", "", "0x12aed059bd608a0734f4b29ded8e8e95b8955af048e3a717bfc3e428f01ep-241"},
+    {"psi", "-3.25", "", "", "0x11dd776c1aa21f7468bec30e8e07957f2d18c64eee70d83c6f9d14b64aeep-234"},
+    {"psi", "1e-30", "", "", "-0x193e5939a08ce9dbd4800000012788cfc6fb618f49a37c7f01bfeb9dd9dfp-137"},
+    {"psi", "1e10", "", "", "0x17069e2aa2736123e0ea2691300091bf7aed131ab0c1e751ec9b1727e1aap-232"},
+    {"pg", "1", "0.5", "", "0x13bd3cc9be45de5a4adc4d9b30118358e10acd47fc1a14450cd044204a79p-234"},
+    {"pg", "3", "17.25", "", "0x1bd76f17737bc701a71d9b2d23e23ca4afbc606f0097b69e12f2f9f07895p-248"},
+    {"pg", "60", "2.5", "", "-0x168dd83d16e3fec7b7ea22157620ee8e257824978508cda6671c3bd26d13p-45"},
+    {"lbeta", "2.5", "3.5", "", "-0x1a6a289c2a217a99525b751804b0e7795f58bfd3314796186efa84e938e3p-235"},
+    {"lbeta", "1e6", "3e5", "", "-0x156e7d4810d583b00e57792e5da0ab8be26928e005780d85d47f16c9ef14p-217"},
+    {"gr", "7.5", "3.25", "", "0x16f05017023fda00515b1ef457e4121e756720c926c72b9428b44d679102p-227"},
+    {"gdr", "100.5", "1e-20", "", "0x1fffffffffffffffe4d0db767be128760f587c065d58eb2ff99707602844p-237"},
     {"ibetac", "30", "2", "0.0625", "0x1ffffffffffffffffffffffffffffc5c0000000000000000000000000000p-237"},
 };
 
@@ -457,6 +473,29 @@ int main() {
     EXPECT(logint(inf), inf, 0);
     CHECK(same(sinhint(float256(-3.5)), -sinhint(float256(3.5))));
     CHECK(same(sinint(float256(-200.25)), -sinint(float256(200.25))));
+
+    // Digamma / polygamma / lbeta / gamma ratios.
+    EXPECT(digamma(zero), -inf, kDiv);
+    EXPECT(digamma(-zero), inf, kDiv);
+    EXPECT(digamma(float256(-3)), nan, kInv);
+    EXPECT(digamma(inf), inf, 0);
+    EXPECT(digamma(-inf), nan, kInv);
+    EXPECT(digamma(nan), nan, 0);
+    EXPECT(polygamma(1, zero), inf, kDiv);
+    EXPECT(polygamma(2, zero), -inf, kDiv);
+    EXPECT(polygamma(2, -one), nan, kInv);
+    EXPECT(polygamma(1, inf), zero, 0);
+    EXPECT(polygamma(2, inf), -zero, 0);
+    CHECK(same(trigamma(float256(3.5)), polygamma(1, float256(3.5))));
+    EXPECT(lbeta(one, one), zero, 0);
+    EXPECT(lbeta(zero, one), inf, kDiv);
+    EXPECT(lbeta(-one, one), nan, kInv);
+    EXPECT(lbeta(inf, one), -inf, 0);
+    EXPECT(tgamma_ratio(float256(2.5), float256(2.5)), one, 0);
+    EXPECT(tgamma_ratio(one, zero), zero, 0);
+    EXPECT(tgamma_ratio(zero, one), inf, kDiv);
+    EXPECT(tgamma_delta_ratio(float256(3), zero), one, 0);
+    EXPECT(tgamma_delta_ratio(float256(3), float256(-4)), nan, kInv);
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;

@@ -588,4 +588,144 @@ inline void asym(float256 x, dd& si, dd& ci, int& ck) {
     return detail_sf::out(env, detail_sf::eint::ei_sd(detail_dd::log(detail_dd::dd(x))));
 }
 
+namespace detail_sf {
+namespace psi {
+
+inline constexpr int kAsymW = 60;  // asymptotic series at w >= 60: the k = 140 term is below 2^-520
+
+// ψ(w) = ln w − 1/(2w) − Σ_{k>=1} B_2k/(2k) w^{−2k}, w >= kAsymW (B_2k/(2k) = bern_fact(k)·(2k−1)!).
+[[nodiscard]] inline dd asym(const dd& w) {
+    const dd one{float256::one()};
+    const dd iw = one / w, iw2 = iw * iw;
+    dd sum{float256::zero()}, p = iw2, fact = one;  // fact = (2k−1)!
+    for (int k = 1; k <= detail_dd::tables::kBernFactN; ++k) {
+        if (k > 1) fact = fact * float256::from_int((2 * k - 2) * (2 * k - 1));
+        const dd t = zeta::bern_fact(k) * fact * p;
+        sum = sum + t;
+        if (small_rel(t, sum) && k > 2) break;
+        p = p * iw2;
+    }
+    return detail_dd::log(w) - detail_dd::ldexp(iw, -1) - sum;
+}
+
+// ψ(x) for x > 0: ψ(x) = ψ(x + N) − Σ_{j<N} 1/(x + j), the sum kept as one fraction P/Q.
+[[nodiscard]] inline dd pos(const dd& x) {
+    if (x.hi >= float256(kAsymW)) return asym(x);
+    const int N = kAsymW - static_cast<int>(floor(x.hi).to_double());
+    dd P{float256::zero()}, Q{float256::one()};
+    for (int j = 0; j < N; ++j) {
+        const dd t = x + dd(float256::from_int(j));
+        P = P * t + Q;
+        Q = Q * t;
+        const int e = ilogb(Q.hi);
+        if (e > 1000) { P = detail_dd::ldexp(P, -e); Q = detail_dd::ldexp(Q, -e); }
+    }
+    return asym(x + dd(float256::from_int(N))) - P / Q;
+}
+
+// Γ(a)/Γ(b), a, b > 0: gamma_sd below 2^20, else exp(lnΓ(a) − lnΓ(b)) (absolute
+// error ~2^-474·lnΓ there, so correctly rounded only while lnΓ < 2^200 or so).
+[[nodiscard]] inline SD gamma_ratio(const dd& a, const dd& b) {
+    const float256 lim = ldexp(float256::one(), 20);
+    if (a.hi < lim && b.hi < lim) {
+        const SD ga = gamma_sd(a), gb = gamma_sd(b);
+        return norm({ga.m / gb.m, ga.k - gb.k});
+    }
+    return exp_sd(detail_gamma::lgamma_pos_dd(a) - detail_gamma::lgamma_pos_dd(b));
+}
+
+} // namespace psi
+} // namespace detail_sf
+
+/// Digamma ψ(x) = Γ'(x)/Γ(x), any real x: ψ(±0) = ∓∞ (pole), negative
+/// integers are a domain error, ψ(+∞) = +∞, ψ(−∞) is a domain error.
+[[nodiscard]] inline float256 digamma(float256 x) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.pole(!x.signbit());
+    if (x.isinf()) return x.signbit() ? env.invalid() : env.exact(x);
+    if (!x.signbit()) {
+        if (x > ldexp(float256::one(), 2000)) return detail_dd::log(dd(x)).out(env);  // 1/(2x) below 2^-1990 relative
+        return detail_sf::psi::pos(dd(x)).out(env);
+    }
+    if (x == floor(x)) return env.invalid();
+    // ψ(x) = ψ(1 − x) − π cot(πx)
+    dd s, c;
+    detail_sf::sincos_pi(x, s, c);
+    const dd y = detail_dd::two_sum(float256::one(), -x);
+    const dd r = detail_sf::psi::pos(y) - detail_dd::pi() * c / s;
+    return r.out(env);
+}
+
+/// Polygamma ψ^(n)(x) = (−1)^{n+1} n! ζ(n+1, x) for n >= 1 and x > 0
+/// (n = 0 is digamma). x <= 0 is a domain error for n >= 1 (x = 0: pole).
+[[nodiscard]] inline float256 polygamma(unsigned n, float256 x) {
+    if (n == 0) return digamma(x);
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.pole((n & 1) == 0);
+    if (x.signbit()) return env.invalid();
+    if (x.isinf()) return env.exact((n & 1) ? float256::zero() : -float256::zero());
+    const float256 s = float256::from_uint(n + 1ull);
+    detail_sf::SD z = detail_sf::zeta::hurwitz(dd(s), dd(float256::from_uint(n)), x);
+    z = detail_sf::mul(z, detail_sf::gamma_sd(dd(s)));
+    if ((n & 1) == 0) z.m = -z.m;
+    return detail_sf::out(env, z);
+}
+
+/// Trigamma ψ'(x) = ζ(2, x) for x > 0.
+[[nodiscard]] inline float256 trigamma(float256 x) { return polygamma(1, x); }
+
+/// ln B(a, b) for a, b > 0 (zero argument: +∞ pole; negative: domain error).
+[[nodiscard]] inline float256 lbeta(float256 a, float256 b) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (a.isnan() || b.isnan()) return env.nan2(a, b);
+    if ((a.signbit() && !a.iszero()) || (b.signbit() && !b.iszero())) return env.invalid();
+    if (a.iszero() || b.iszero()) return env.pole(false);
+    if (a.isinf() || b.isinf()) return env.exact(-float256::inf(false));
+    const float256 one = float256::one();
+    if (a == one || b == one) {  // ln(1/b)
+        const float256 o = a == one ? b : a;
+        if (o == one) return env.exact(float256::zero());
+        return (-detail_dd::log(dd(o))).out(env);
+    }
+    if (a > float256(65536) || b > float256(65536))  // B may leave the SD range: lnΓ(a) + lnΓ(b) − lnΓ(a+b)
+        return (detail_gamma::lgamma_pos_dd(dd(a)) + detail_gamma::lgamma_pos_dd(dd(b)) -
+                detail_gamma::lgamma_pos_dd(detail_dd::two_sum(a, b))).out(env);
+    const detail_sf::SD v = detail_sf::beta_sd(a, b);
+    const dd r = detail_dd::log(v.m) + detail_dd::ln2() * float256::from_int(v.k);
+    return r.out(env);
+}
+
+/// Γ(a)/Γ(b) for a, b > 0 (Boost's tgamma_ratio).
+[[nodiscard]] inline float256 tgamma_ratio(float256 a, float256 b) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (a.isnan() || b.isnan()) return env.nan2(a, b);
+    if (a.signbit() || b.signbit() || (a.isinf() && b.isinf())) return env.invalid();
+    if (b.iszero()) return a.iszero() ? env.invalid() : env.exact(float256::zero());
+    if (a.iszero()) return env.pole(false);
+    if (a.isinf()) return env.exact(a);
+    if (b.isinf()) return env.exact(float256::zero());
+    if (a == b) return env.exact(float256::one());
+    return detail_sf::out(env, detail_sf::psi::gamma_ratio(dd(a), dd(b)));
+}
+
+/// Γ(a)/Γ(a + δ) for a > 0, a + δ > 0 (Boost's tgamma_delta_ratio); a + δ is
+/// formed exactly.
+[[nodiscard]] inline float256 tgamma_delta_ratio(float256 a, float256 delta) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (a.isnan() || delta.isnan()) return env.nan2(a, delta);
+    if (a.signbit() || a.isinf() || delta.isinf()) return env.invalid();
+    if (a.iszero()) return env.pole(false);
+    if (delta.iszero()) return env.exact(float256::one());
+    const dd b = detail_dd::two_sum(a, delta);
+    if (b.hi.signbit() || b.hi.iszero()) return env.invalid();
+    return detail_sf::out(env, detail_sf::psi::gamma_ratio(dd(a), b));
+}
+
 } // namespace base256
