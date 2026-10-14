@@ -23,6 +23,9 @@ int main() {
         else if (f == "sy") r = sph_neumann(static_cast<unsigned>(std::stoul(a)), P(b));
         else if (f == "jn") r = jn(std::stoi(a), P(b));
         else if (f == "yn") r = yn(std::stoi(a), P(b));
+        else if (f == "beta") r = beta(P(a), P(b));
+        else if (f == "ibeta") r = ibeta(P(a), P(b), P(c));
+        else if (f == "ibetac") r = ibetac(P(a), P(b), P(c));
 #ifdef SF_MORE
         SF_MORE
 #endif

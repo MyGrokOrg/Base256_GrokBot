@@ -427,6 +427,10 @@ int main(int argc, char** argv) {
     two_arg("cyl_y", [&](float256& a, float256& b) { a = float256::from_int(rnd_int(0, 30)); b = rnd_in(-4, 11, true); },
             [](float256 a, float256 b) { return base256::cyl_neumann(a, b); },
             [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_yn(r, mpfr_get_si(a, MPFR_RNDN), b, MPFR_RNDN); });
+    // beta(x, y), x and y log-uniform in [2^-30, 2^30).
+    two_arg("beta", [&](float256& a, float256& b) { a = rnd_in(-30, 30, true); b = rnd_in(-30, 30, true); },
+            [](float256 a, float256 b) { return base256::beta(a, b); },
+            [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_beta(r, a, b, MPFR_RNDN); });
     mpfr_clears(xm, r, (mpfr_ptr)0);
     return check && bad ? 1 : 0;
 }

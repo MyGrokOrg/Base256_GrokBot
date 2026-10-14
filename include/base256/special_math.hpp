@@ -1,5 +1,6 @@
 #pragma once
-/// Special functions (C++17 <cmath> special-math names): Bessel functions.
+/// Special functions (C++17 <cmath> special-math names): Bessel functions,
+/// beta and the regularized incomplete beta.
 /// Every function evaluates in double-float256 (~474 bits) and rounds once in
 /// the caller's rounding mode, raising IEEE flags like the elementary
 /// functions. See README "Special functions" for measured accuracy and limits.
@@ -671,5 +672,103 @@ namespace detail_sf {
     fenv::set_round(m);
     return -v;
 }
+
+namespace detail_sf {
+// ln Γ(z) for a dd z > 0.
+[[nodiscard]] inline dd lgam(const dd& z) { return detail_gamma::lgamma_pos_dd(z); }
+// B(a, b) = Γ(a)Γ(b)/Γ(a+b) as m·2^k for a, b > 0 finite (a + b exact as dd).
+[[nodiscard]] inline SD beta_sd(float256 a, float256 b) {
+    const dd ab = detail_dd::two_sum(a, b);
+    const float256 big = ldexp(float256::one(), 20);
+    if (a < big && b < big) {
+        const SD ga = gamma_sd(dd(a)), gb = gamma_sd(dd(b)), gab = gamma_sd(ab);
+        return norm({ga.m * gb.m / gab.m, ga.k + gb.k - gab.k});
+    }
+    return exp_sd(lgam(dd(a)) + lgam(dd(b)) - lgam(ab));
+}
+
+// Continued fraction for I_x(a, b) (modified Lentz), x and 1 − x given as dd.
+[[nodiscard]] inline dd betacf(const dd& a, const dd& b, const dd& x) {
+    const dd one{float256::one()};
+    const float256 tiny = ldexp(float256::one(), -20000);
+    const dd qab = a + b, qap = a + one, qam = a - one;
+    dd c = one;
+    dd d = one - qab * x / qap;
+    if (abs(d.hi) < tiny) d = dd(tiny);
+    d = one / d;
+    dd h = d;
+    for (int m = 1; m < 100000000; ++m) {
+        const dd dm = D(m), m2 = D(2 * m);
+        dd aa = dm * (b - dm) * x / ((qam + m2) * (a + m2));
+        d = one + aa * d;
+        if (abs(d.hi) < tiny) d = dd(tiny);
+        c = one + aa / c;
+        if (abs(c.hi) < tiny) c = dd(tiny);
+        d = one / d;
+        h = h * d * c;
+        aa = -((a + dm) * (qab + dm) * x) / ((a + m2) * (qap + m2));
+        d = one + aa * d;
+        if (abs(d.hi) < tiny) d = dd(tiny);
+        c = one + aa / c;
+        if (abs(c.hi) < tiny) c = dd(tiny);
+        d = one / d;
+        const dd del = d * c;
+        h = h * del;
+        if (near_one(del)) break;
+    }
+    return h;
+}
+} // namespace detail_sf
+
+/// Beta function B(x, y) = Γ(x)Γ(y)/Γ(x+y) for x, y > 0. A zero argument is a
+/// pole (+∞, divide-by-zero); negative arguments are a domain error.
+[[nodiscard]] inline float256 beta(float256 x, float256 y) {
+    detail_dd::FnEnv env;
+    if (x.isnan() || y.isnan()) return env.nan2(x, y);
+    if ((x.signbit() && !x.iszero()) || (y.signbit() && !y.iszero())) return env.invalid();
+    if (x.iszero() || y.iszero()) return env.pole(false);
+    if (x.isinf() || y.isinf()) return env.exact(float256::zero());
+    if (x == float256::one() || y == float256::one()) {  // B(1, y) = 1/y
+        const detail_dd::dd q = detail_dd::dd(float256::one()) / (x == float256::one() ? y : x);
+        return env.round(q.hi, q.lo, 0, q.lo.iszero() ? 0 : 2);
+    }
+    return detail_sf::out(env, detail_sf::beta_sd(x, y));
+}
+
+/// Regularized incomplete beta I_x(a, b) = B(x; a, b)/B(a, b) for a, b > 0 and
+/// 0 <= x <= 1 (Boost's ibeta); ibetac = 1 − I_x(a, b) computed directly.
+namespace detail_sf {
+[[nodiscard]] inline float256 ibeta_impl(float256 a, float256 b, float256 x, bool complement) {
+    detail_dd::FnEnv env;
+    if (a.isnan() || b.isnan() || x.isnan()) {
+        if (a.isnan() || b.isnan()) return env.nan2(a, b);
+        return env.nan(x);
+    }
+    if (a.signbit() || b.signbit() || a.iszero() || b.iszero() || a.isinf() || b.isinf()) return env.invalid();
+    if (x.signbit() && !x.iszero()) return env.invalid();
+    if (x > float256::one()) return env.invalid();
+    const float256 one = float256::one();
+    if (x.iszero()) return env.exact(complement ? one : float256::zero());
+    if (x == one) return env.exact(complement ? float256::zero() : one);
+    const dd X{x};
+    const dd Xc = detail_dd::two_sum(one, -x);
+    // x^a (1−x)^b / B(a, b)
+    const dd L = dd(a) * detail_dd::log(X) + dd(b) * detail_dd::log(Xc);
+    const SD bt = beta_sd(a, b);
+    const SD front = mul(exp_sd(L), SD{dd(one) / bt.m, -bt.k});
+    // Use the fraction that converges fast: x < (a+1)/(a+b+2).
+    const dd lhs = X * (dd(a) + dd(b) + D(2)) - (dd(a) + dd(one));
+    const bool swap = !lhs.hi.signbit() && !lhs.hi.iszero();
+    SD part;
+    if (!swap) part = mul(front, betacf(dd(a), dd(b), X) / dd(a));
+    else part = mul(front, betacf(dd(b), dd(a), Xc) / dd(b));
+    // part = I (no swap) or 1 − I (swap)
+    if (swap == complement) return out(env, part);
+    if (part.k < -600) return env.round(one, float256::zero(), 0, -1);  // 1 − tiny
+    return (dd(one) - detail_dd::ldexp(part.m, part.k)).out(env);
+}
+} // namespace detail_sf
+[[nodiscard]] inline float256 ibeta(float256 a, float256 b, float256 x) { return detail_sf::ibeta_impl(a, b, x, false); }
+[[nodiscard]] inline float256 ibetac(float256 a, float256 b, float256 x) { return detail_sf::ibeta_impl(a, b, x, true); }
 
 } // namespace base256

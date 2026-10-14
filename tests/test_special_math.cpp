@@ -20,7 +20,11 @@ constexpr unsigned kInv = base256::fe_invalid, kDiv = base256::fe_divbyzero, kIn
 const round_mode kModes[5] = {round_mode::to_nearest_even, round_mode::to_nearest_away, round_mode::toward_zero,
                               round_mode::upward, round_mode::downward};
 
-static float256 P(const std::string& s) { return float256::parse(s).value(); }
+// Literals are parsed in round-to-nearest (parsing follows the current mode).
+static float256 P(const std::string& s) {
+    fenv::scoped_round g(round_mode::to_nearest_even);
+    return float256::parse(s).value();
+}
 static bool same(float256 a, float256 b) {
     if (a.isnan() || b.isnan()) return a.isnan() && b.isnan();
     return a == b && a.signbit() == b.signbit();
@@ -28,7 +32,6 @@ static bool same(float256 a, float256 b) {
 
 static float256 eval(const std::string& op, const std::string& a, const std::string& b, const std::string& c) {
     using namespace base256;
-    (void)c;
     if (op == "j") return cyl_bessel_j(P(a), P(b));
     if (op == "y") return cyl_neumann(P(a), P(b));
     if (op == "i") return cyl_bessel_i(P(a), P(b));
@@ -37,6 +40,9 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "sy") return sph_neumann(static_cast<unsigned>(std::stoul(a)), P(b));
     if (op == "jn") return jn(std::stoi(a), P(b));
     if (op == "yn") return yn(std::stoi(a), P(b));
+    if (op == "beta") return beta(P(a), P(b));
+    if (op == "ibeta") return ibeta(P(a), P(b), P(c));
+    if (op == "ibetac") return ibetac(P(a), P(b), P(c));
     std::cerr << "unknown op " << op << "\n";
     return float256::qnan();
 }
@@ -63,6 +69,14 @@ const Ref kRefs[] = {
     {"sy", "2", "1.5", "", "-0x15880a088e972991acc4f3441c8ddb3839cb1bc4a72d1fa60afa386c7fa4p-236"},
     {"jn", "-3", "-2.5", "", "0x1bb98fc5e82abb20d377d0fadde40255df35beecc62ddbed9ed35ab495d0p-239"},
     {"yn", "-3", "2.5", "", "0x18319b4c1093dfe62d671ffdb32be6e7c68c6efecb13bda0c2cd721f8a40p-237"},
+    {"beta", "0.5", "0.5", "", "0x1921fb54442d18469898cc51701b839a252049c1114cf98e804177d4c762p-235"},
+    {"beta", "3.25", "1e-5", "", "0x1869e67e354ec82c32f8c9d4e6353bad1d5bf1e7dd44298bf37a6edafb34p-220"},
+    {"beta", "2000.5", "3000.25", "", "0x1879218301e67217c8570d69842cf4e7b940ac91d918a1dfac085628536bp-5096"},
+    {"ibeta", "2.5", "3.5", "0.25", "0x1ac9d438759618f7f2aa3fcae85c861403ee6aefeafcd97b6bcfc6daa460p-239"},
+    {"ibeta", "0.001", "50", "0.5", "0x1fffffffffffffffeb58a617f0efef9affeca5e38a288b507323fe50d2ebp-237"},
+    {"ibeta", "400", "600", "0.375", "0x1adc195d15bd1fcd36a25c2eb71fa70b106eece9dee55e563613a3bbf209p-241"},
+    {"ibetac", "2.5", "3.5", "0.875", "0x12d53224bc5bec7b2c13201d7fcf46f98bb7e15a41318e24e01cc7d51bfdp-244"},
+    {"ibetac", "30", "2", "0.0625", "0x1ffffffffffffffffffffffffffffc5c0000000000000000000000000000p-237"},
 };
 
 // Value and flags in every rounding mode.
@@ -173,6 +187,25 @@ int main() {
     EXPECT_M(cyl_bessel_k(zero, float256(200000)),
              [](round_mode m) { return m == round_mode::upward ? float256::denorm_min() : float256::zero(); },
              base256::fe_underflow | kInx);
+
+    // Beta and incomplete beta: special arguments.
+    EXPECT(beta(zero, one), inf, kDiv);
+    EXPECT(beta(float256(-1), one), nan, kInv);
+    EXPECT(beta(inf, one), zero, 0);
+    EXPECT(beta(one, float256(4)), float256(0.25), 0);
+    EXPECT(beta(one, one), one, 0);
+    EXPECT(beta(nan, one), nan, 0);
+    EXPECT(ibeta(float256(2), float256(3), zero), zero, 0);
+    EXPECT(ibeta(float256(2), float256(3), one), one, 0);
+    EXPECT(ibetac(float256(2), float256(3), zero), one, 0);
+    EXPECT(ibeta(zero, float256(3), float256(0.5)), nan, kInv);
+    EXPECT(ibeta(one, float256(3), float256(1.5)), nan, kInv);
+    EXPECT(ibeta(one, float256(3), float256(-0.5)), nan, kInv);
+    // I_x(a, b) + I_{1−x}(b, a) = 1
+    for (double xv : {0.1, 0.4, 0.7, 0.95}) {
+        const float256 x(xv), a(2.75), b(4.5);
+        CHECK(abs(ibeta(a, b, x) - ibetac(b, a, float256::one() - x)) <= ldexp(one, -236));
+    }
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;

@@ -74,7 +74,20 @@ def K(nu, x): return mp.besselk(nu, x)
 def SJ(n, x): return mp.sqrt(mp.pi / (2 * x)) * mp.besselj(n + mp.mpf(1) / 2, x)
 def SY(n, x): return mp.sqrt(mp.pi / (2 * x)) * mp.bessely(n + mp.mpf(1) / 2, x)
 
+def BETA(a, b): return mp.beta(a, b)
+def IB(a, b, x): return mp.betainc(a, b, 0, x, regularized=True)
+def IBC(a, b, x): return mp.betainc(a, b, x, 1, regularized=True)
+
 RANGES = [
+    ("beta",     "beta", BETA, [(-20, 12, True), (-20, 12, True)]),
+    ("beta_mix", "beta", BETA, [(-200, -20, True), (0, 40, True)]),
+    ("beta_big", "beta", BETA, [(20, 60, True), (-10, 60, True)]),
+    ("ibeta_skw","ibeta", IB, [(-60, -5, True), (5, 15, True), (-30, 0, True)]),
+    ("ibeta_x1", "ibeta", IB, [(-3, 4, True), (-3, 4, True), (0.999, 1, False)]),
+    ("ibeta",    "ibeta", IB, [(-6, 7, True), (-6, 7, True), (0, 1, False)]),
+    ("ibeta_sm", "ibeta", IB, [(0, 10, False), (0, 10, False), (-60, -1, True)]),
+    ("ibetac",   "ibetac", IBC, [(-6, 7, True), (-6, 7, True), (0, 1, False)]),
+    ("ibeta_big","ibeta", IB, [(1000, 5000, False), (1000, 5000, False), (0.3, 0.7, False)]),
     ("j_small", "j", J, [(0, 5, False), (-8, 1, True)]),
     ("j_mid",   "j", J, [(0, 20, False), (0, 100, False)]),
     ("j_big",   "j", J, [(0, 20, False), (7, 12, True)]),

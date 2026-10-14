@@ -14,37 +14,63 @@ def r256(v):
     return to_hex(mp.ldexp(m, e - 236))
 
 H = mp.mpf(1) / 2
+
+def rd(s):
+    """the binary256 value of a decimal literal (round to nearest)"""
+    v = mp.mpf(s)
+    if v == 0 or (v == int(v) and abs(v) < 2**200):
+        return v
+    e = int(mp.floor(mp.log(abs(v), 2)))
+    return mp.ldexp(mp.nint(mp.ldexp(v, 236 - e)), e - 236)
+
+def sph(f, n, x): return mp.sqrt(mp.pi / (2 * x)) * f(n + H, x)
+F = {
+    "j": mp.besselj, "y": mp.bessely, "i": mp.besseli, "k": mp.besselk,
+    "sj": lambda n, x: sph(mp.besselj, n, x), "sy": lambda n, x: sph(mp.bessely, n, x),
+    "jn": mp.besselj, "yn": mp.bessely,
+    "beta": mp.beta,
+    "ibeta": lambda a, b, x: mp.betainc(a, b, 0, x, regularized=True),
+    "ibetac": lambda a, b, x: mp.betainc(a, b, x, 1, regularized=True),
+}
 CASES = [
-    ("j", "0", "1", lambda: mp.besselj(0, 1)),
-    ("j", "0.5", "3", lambda: mp.besselj(H, 3)),
-    ("j", "2.25", "17.5", lambda: mp.besselj(mp.mpf("2.25"), mp.mpf("17.5"))),
-    ("j", "10", "1000", lambda: mp.besselj(10, 1000)),
-    ("j", "150", "100", lambda: mp.besselj(150, 100)),
-    ("y", "0", "1", lambda: mp.bessely(0, 1)),
-    ("y", "1.75", "0.125", lambda: mp.bessely(mp.mpf("1.75"), mp.mpf("0.125"))),
-    ("y", "3", "60", lambda: mp.bessely(3, 60)),
-    ("y", "0.5", "500", lambda: mp.bessely(H, 500)),
-    ("i", "0", "1", lambda: mp.besseli(0, 1)),
-    ("i", "2.5", "30", lambda: mp.besseli(mp.mpf("2.5"), 30)),
-    ("i", "1", "1000", lambda: mp.besseli(1, 1000)),
-    ("k", "0", "1", lambda: mp.besselk(0, 1)),
-    ("k", "0.25", "0.0625", lambda: mp.besselk(mp.mpf("0.25"), mp.mpf("0.0625"))),
-    ("k", "7", "70", lambda: mp.besselk(7, 70)),
-    ("k", "1", "1000", lambda: mp.besselk(1, 1000)),
-    ("sj", "3", "2", lambda: mp.sqrt(mp.pi / 4) * mp.besselj(3 + H, 2)),
-    ("sy", "2", "1.5", lambda: mp.sqrt(mp.pi / 3) * mp.bessely(2 + H, mp.mpf("1.5"))),
-    ("jn", "-3", "-2.5", lambda: mp.besselj(-3, mp.mpf("-2.5"))),
-    ("yn", "-3", "2.5", lambda: mp.bessely(-3, mp.mpf("2.5"))),
+    ("j", "0", "1"),
+    ("j", "0.5", "3"),
+    ("j", "2.25", "17.5"),
+    ("j", "10", "1000"),
+    ("j", "150", "100"),
+    ("y", "0", "1"),
+    ("y", "1.75", "0.125"),
+    ("y", "3", "60"),
+    ("y", "0.5", "500"),
+    ("i", "0", "1"),
+    ("i", "2.5", "30"),
+    ("i", "1", "1000"),
+    ("k", "0", "1"),
+    ("k", "0.25", "0.0625"),
+    ("k", "7", "70"),
+    ("k", "1", "1000"),
+    ("sj", "3", "2"),
+    ("sy", "2", "1.5"),
+    ("jn", "-3", "-2.5"),
+    ("yn", "-3", "2.5"),
+    ("beta", "0.5", "0.5"),
+    ("beta", "3.25", "1e-5"),
+    ("beta", "2000.5", "3000.25"),
+    ("ibeta", "2.5", "3.5", "0.25"),
+    ("ibeta", "0.001", "50", "0.5"),
+    ("ibeta", "400", "600", "0.375"),
+    ("ibetac", "2.5", "3.5", "0.875"),
+    ("ibetac", "30", "2", "0.0625"),
 ]
 
 def main():
     which = set(sys.argv[1:])
     for c in CASES:
-        op, args, f = c[0], c[1:-1], c[-1]
+        op, args = c[0], c[1:]
         if which and op not in which:
             continue
         a = list(args) + [""] * (3 - len(args))
-        print(f'    {{"{op}", "{a[0]}", "{a[1]}", "{a[2]}", "{r256(f())}"}},')
+        print(f'    {{"{op}", "{a[0]}", "{a[1]}", "{a[2]}", "{r256(F[op](*[rd(x) for x in args]))}"}},')
 
 if __name__ == "__main__":
     main()
