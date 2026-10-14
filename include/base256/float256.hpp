@@ -420,6 +420,81 @@ private:
     }
 
 public:
+    /// Round (hi + lo) · 2^k to binary256 in `mode` with one rounding, raising
+    /// the flags as a single operation would. hi and lo are finite and form a
+    /// normalized double-float256 (|lo| <= ulp(hi)/2). `tail` describes the
+    /// exact value relative to hi + lo: 0 = exact, +1 = slightly above,
+    /// -1 = slightly below, 2 = unknown but inexact (taken in the direction of
+    /// lo, or away from zero when lo is 0). The tail only matters when hi + lo
+    /// is itself representable at the rounding position.
+    static constexpr float256 round_dd(float256 hi, float256 lo, int k, round_mode mode, int tail) noexcept {
+        using namespace detail;
+        Unpacked ua = hi.unpack();
+        Unpacked ub = lo.unpack();
+        if (ua.kind == Kind::zero) {
+            ua = ub;
+            ub = Unpacked{};
+        }
+        if (ua.kind == Kind::zero) return hi;  // exact zero
+        const bool rsign = ua.sign;
+        bool mag_up = true;  // the tail increases |value|
+        if (tail == 2) mag_up = ub.kind == Kind::zero || ub.sign == rsign;
+        else if (tail != 0) mag_up = (tail > 0) != rsign;
+        ua.wexp += k;
+        Unpacked r;
+        r.kind = Kind::normal;
+        r.sign = rsign;
+        bool sticky = false;
+        if (ub.kind == Kind::zero) {
+            r.sig = ua.sig;
+            r.wexp = ua.wexp;
+        } else {
+            ub.wexp += k;
+            if (ua.wexp < ub.wexp || (ua.wexp == ub.wexp && ua.sig < ub.sig)) std::swap(ua, ub);
+            const long long diff = static_cast<long long>(ua.wexp) - ub.wexp;
+            u256 sb = shr_sticky(ub.sig, diff > 300 ? 300 : static_cast<int>(diff), sticky);
+            r.sign = ua.sign;
+            r.wexp = ua.wexp;
+            if (ua.sign == ub.sign) {
+                std::uint64_t carry = 0;
+                r.sig = add_u256(ua.sig, sb, carry);
+                if (carry) {
+                    sticky = sticky || r.sig.bit(0);
+                    r.sig = r.sig >> 1;
+                    r.sig.set_bit(255);
+                    ++r.wexp;
+                }
+            } else {
+                std::uint64_t br = 0;
+                r.sig = sub_u256(ua.sig, sb, br);
+                if (sticky) {  // see add(): the truncated subtrahend borrows one unit
+                    std::uint64_t br2 = 0;
+                    r.sig = sub_u256(r.sig, u256{1}, br2);
+                }
+                if (r.sig.is_zero() && !sticky) {
+                    if (tail == 0) return zero(mode == round_mode::downward);
+                    r.sig.set_bit(0);  // degenerate: keep a nonzero trace of the tail
+                    r.sign = tail > 0 ? false : true;
+                }
+                const int lz = r.sig.clz();
+                r.sig = r.sig << lz;
+                r.wexp -= lz;
+            }
+        }
+        if (tail != 0 && !sticky) {
+            if (!mag_up) {
+                std::uint64_t br = 0;
+                r.sig = sub_u256(r.sig, u256{1}, br);
+                const int lz = r.sig.clz();
+                r.sig = r.sig << lz;
+                r.wexp -= lz;
+            }
+            sticky = true;
+        }
+        r.sticky = sticky;
+        return pack(r, mode);
+    }
+
     static constexpr float256 round_integral(float256 x, round_mode mode, bool signal) noexcept {
         using namespace detail;
         Unpacked u = x.unpack();

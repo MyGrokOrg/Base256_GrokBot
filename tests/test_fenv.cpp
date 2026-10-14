@@ -162,14 +162,21 @@ int main() {
     (void)base256::rint(h);
     CHECK(fenv::test_flags() == base256::fe_inexact);
 
-    // Elementary functions run in round-to-nearest and keep the caller's flags.
+    // Elementary functions honor the caller's mode, keep the caller's flags and
+    // add only the flags of their own result (here: inexact).
     fenv::clear_flags();
     fenv::raise_flags(base256::fe_overflow);
+    float256 eu, ed;
     {
         fenv::scoped_round g(round_mode::upward);
-        (void)base256::exp(one);
+        eu = base256::exp(one);
     }
-    CHECK(fenv::test_flags() == base256::fe_overflow);
+    {
+        fenv::scoped_round g(round_mode::downward);
+        ed = base256::exp(one);
+    }
+    CHECK(fenv::test_flags() == (base256::fe_overflow | base256::fe_inexact));
+    CHECK(eu == base256::nextup(ed));
     fenv::clear_flags();
 
     // Constant evaluation uses round-to-nearest-even and records nothing.

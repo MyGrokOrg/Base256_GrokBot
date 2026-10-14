@@ -9,7 +9,10 @@ namespace base256 {
 // nearbyint lives in float256.hpp (current rounding mode, no inexact).
 
 [[nodiscard]] inline float256 fdim(float256 x, float256 y) {
-    if (x.isnan() || y.isnan()) return float256::qnan();
+    if (x.isnan() || y.isnan()) {
+        if (x.issignaling() || y.issignaling()) detail::raise_flag(fe_invalid);
+        return x.isnan() ? x.quieted() : y.quieted();
+    }
     if (x > y) return x - y;
     return float256::zero(false);
 }
@@ -54,98 +57,104 @@ namespace detail_spec {
 } // namespace detail_spec
 
 [[nodiscard]] inline float256 erf(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    detail_dd::FnEnv env;
     using detail_dd::dd;
-    if (x.isnan()) return x;
-    if (x.isinf()) return copysign(float256::one(), x);
-    if (x.iszero()) return x;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) return env.exact(copysign(float256::one(), x));
+    if (x.iszero()) return env.exact(x);
     const float256 a = abs(x);
-    float256 y;
-    if (a < ldexp(float256::one(), -120)) {
-        // 2a/√π (1 - a²/3): the a³ term is below 2^-240 relative.
+    const int s = x.signbit() ? -1 : 1;
+    dd y;
+    int tail = 2;
+    if (detail_math::is_tiny(a)) {
+        // 2a/√π (1 - a²/3): the omitted a³ term points toward zero.
         const auto& c = detail_dd::consts();
-        y = (dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1])).round();
+        y = dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1]);
+        tail = -s;
     } else if (a < float256(4)) {
-        y = detail_spec::erf_series_dd(a).round();
+        y = detail_spec::erf_series_dd(a);
     } else if (a > float256(16)) {
-        y = float256::one();  // erfc(16) < 2^-370
+        y = dd(float256::one());  // erfc(16) < 2^-370
+        tail = -s;
     } else {
         const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
-        y = (dd(float256::one()) - detail_dd::ldexp(e.m, e.k)).round();
+        y = dd(float256::one()) - detail_dd::ldexp(e.m, e.k);
     }
-    return x.signbit() ? -y : y;
+    if (s < 0) y = -y;
+    return env.round(y.hi, y.lo, 0, tail);
 }
 
 [[nodiscard]] inline float256 erfc(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    detail_dd::FnEnv env;
     using detail_dd::dd;
-    if (x.isnan()) return x;
-    if (x.isinf()) return x.signbit() ? float256::two() : float256::zero();
-    if (x.iszero()) return float256::one();
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) return env.exact(x.signbit() ? float256::two() : float256::zero());
+    if (x.iszero()) return env.exact(float256::one());
     const float256 a = abs(x);
+    const auto& c = detail_dd::consts();
     if (x.signbit()) {
         // 1 + erf(a)
-        if (a > float256(16)) return float256::two();
-        if (a < ldexp(float256::one(), -120)) return float256::one();
-        if (a < float256(4)) return (dd(float256::one()) + detail_spec::erf_series_dd(a)).round();
+        if (a > float256(16)) return env.round(float256::two(), float256::zero(), 0, -1);
+        if (detail_math::is_tiny(a))
+            return (dd(float256::one()) + dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1])).out(env, 0, -1);
+        if (a < float256(4)) return (dd(float256::one()) + detail_spec::erf_series_dd(a)).out(env);
         const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
-        return (dd(float256::two()) - detail_dd::ldexp(e.m, e.k)).round();
+        return (dd(float256::two()) - detail_dd::ldexp(e.m, e.k)).out(env);
     }
-    if (a < ldexp(float256::one(), -120)) return float256::one();
-    if (a < float256(4)) return (dd(float256::one()) - detail_spec::erf_series_dd(a)).round();
-    if (a > float256(520)) return float256::zero();  // erfc(520) < 2^-390000
+    if (detail_math::is_tiny(a))
+        return (dd(float256::one()) - dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1])).out(env, 0, +1);
+    if (a < float256(4)) return (dd(float256::one()) - detail_spec::erf_series_dd(a)).out(env);
+    if (a > float256(520)) return env.underflow(false);  // erfc(520) < 2^-390000
     const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
-    return detail_dd::round_scaled(e.m, e.k);
+    return e.m.out(env, e.k);
 }
 
 [[nodiscard]] inline float256 asinh(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    detail_dd::FnEnv env;
     using detail_dd::dd;
-    if (x.isnan() || x.isinf() || x.iszero()) return x;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf() || x.iszero()) return env.exact(x);
     const float256 a = abs(x);
-    float256 y;
-    if (a < ldexp(float256::one(), -120)) {
-        y = (dd(a) - dd(a * a * a / float256::from_int(6))).round();
-    } else if (a > ldexp(float256::one(), 300)) {
-        y = (detail_dd::log(dd(a)) + detail_dd::ln2()).round();  // log(2a); 1/(4a^2) is negligible
+    if (detail_math::is_tiny(a)) return detail_math::tiny_odd(env, x, -1, 6, +1);  // x - x^3/6 (+3x^5/40)
+    dd y;
+    if (a > ldexp(float256::one(), 300)) {
+        y = detail_dd::log(dd(a)) + detail_dd::ln2();  // log(2a); 1/(4a^2) is negligible
     } else {
         const dd r = detail_dd::sqrt(detail_dd::two_prod(a, a) + dd(float256::one()));
-        y = detail_dd::log(dd(a) + r).round();
+        y = detail_dd::log(dd(a) + r);
     }
-    return x.signbit() ? -y : y;
+    if (x.signbit()) y = -y;
+    return y.out(env);
 }
 
 [[nodiscard]] inline float256 acosh(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    detail_dd::FnEnv env;
     using detail_dd::dd;
-    if (x.isnan()) return x;
-    if (x < float256::one()) return float256::qnan();
-    if (x == float256::one()) return float256::zero();
-    if (x.isinf()) return x;
-    if (x > ldexp(float256::one(), 300)) return (detail_dd::log(dd(x)) + detail_dd::ln2()).round();
+    if (x.isnan()) return env.nan(x);
+    if (x < float256::one()) return env.invalid();
+    if (x == float256::one()) return env.exact(float256::zero());
+    if (x.isinf()) return env.exact(x);
+    if (x > ldexp(float256::one(), 300)) return (detail_dd::log(dd(x)) + detail_dd::ln2()).out(env);
     const dd xm1 = detail_dd::two_sum(x, -float256::one());
     const dd xp1 = detail_dd::two_sum(x, float256::one());
-    return detail_dd::log(dd(x) + detail_dd::sqrt(xm1 * xp1)).round();
+    return detail_dd::log(dd(x) + detail_dd::sqrt(xm1 * xp1)).out(env);
 }
 
 [[nodiscard]] inline float256 atanh(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    detail_dd::FnEnv env;
     using detail_dd::dd;
-    if (x.isnan()) return x;
-    if (x.iszero()) return x;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x);
     const float256 a = abs(x);
-    if (a > float256::one()) return float256::qnan();
-    if (a == float256::one()) return float256::inf(x.signbit());
-    float256 y;
-    if (a < ldexp(float256::one(), -120)) {
-        y = (dd(a) + dd(a * a * a / float256::from_int(3))).round();
-    } else {
-        // (log(1 + a) - log(1 - a)) / 2, with 1 ± a exact as dd.
-        const dd lp = detail_dd::log(detail_dd::two_sum(float256::one(), a));
-        const dd lm = detail_dd::log(detail_dd::two_sum(float256::one(), -a));
-        y = detail_dd::ldexp(lp - lm, -1).round();
-    }
-    return x.signbit() ? -y : y;
+    if (a > float256::one()) return env.invalid();
+    if (a == float256::one()) return env.pole(x.signbit());
+    if (detail_math::is_tiny(a)) return detail_math::tiny_odd(env, x, 1, 3, +1);  // x + x^3/3 (+x^5/5)
+    // (log(1 + a) - log(1 - a)) / 2, with 1 ± a exact as dd.
+    const dd lp = detail_dd::log(detail_dd::two_sum(float256::one(), a));
+    const dd lm = detail_dd::log(detail_dd::two_sum(float256::one(), -a));
+    dd y = detail_dd::ldexp(lp - lm, -1);
+    if (x.signbit()) y = -y;
+    return y.out(env);
 }
 
 
@@ -286,7 +295,7 @@ struct StirlingTable {
 
 // ln Γ(1 + e) and ln Γ(2 + e) for |e| < 2^-100 (three Taylor terms; the
 // next one is below 2^-300 relative).
-[[nodiscard]] inline float256 lgamma_near_1_2(float256 e, bool at_two) {
+[[nodiscard]] inline detail_dd::dd lgamma_near_1_2(float256 e, bool at_two) {
     using detail_dd::dd;
     using detail_dd::hexc;
     const dd a1 = at_two
@@ -299,88 +308,78 @@ struct StirlingTable {
     const float256 a3 = at_two ? hexc("0x1.13e001a5576068125d0741df7857fb3b2ae7f3b26dbc01f45c3428e5b9dp-4")
                                : hexc("0x6.693556faacb5bd67b25c9734cdad5090803d4907c3115749b1897e3b0f4p-4");
     const float256 e2 = e * e;
-    return (a1 * e + dd(a2 * e2) - dd(a3 * e2 * e)).round();
+    return a1 * e + dd(a2 * e2) - dd(a3 * e2 * e);
 }
 
 } // namespace detail_gamma
 
-// Natural log of |Γ(x)|. Poles (±0 and non-positive integers) return +∞.
+// Natural log of |Γ(x)|. Poles (±0 and non-positive integers) return +∞ with divide-by-zero.
 [[nodiscard]] inline float256 lgamma(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
-    if (x.isinf()) return float256::inf(false);
-    if (x.iszero()) return float256::inf(false);
-    if (x.signbit() && trunc(x) == x) return float256::inf(false); // non-positive integer
-    if (x == float256::one() || x == float256::two()) return float256::zero();
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) return env.exact(float256::inf(false));
+    if (x.iszero()) return env.pole(false);
+    if (x.signbit() && trunc(x) == x) return env.pole(false); // non-positive integer
+    if (x == float256::one() || x == float256::two()) return env.exact(float256::zero());
     const float256 tiny = ldexp(float256::one(), -100);
-    if (abs(x - float256::one()) < tiny) return detail_gamma::lgamma_near_1_2(x - float256::one(), false);
-    if (abs(x - float256::two()) < tiny) return detail_gamma::lgamma_near_1_2(x - float256::two(), true);
-    return detail_gamma::lgamma_dd(x).round();
+    // Taylor at 1 and 2; the omitted ε^4 term is positive.
+    if (abs(x - float256::one()) < tiny) return detail_gamma::lgamma_near_1_2(x - float256::one(), false).out(env, 0, +1);
+    if (abs(x - float256::two()) < tiny) return detail_gamma::lgamma_near_1_2(x - float256::two(), true).out(env, 0, +1);
+    if (x > ldexp(float256::one(), 262100)) return env.overflow(false);  // x ln x > max
+    return detail_gamma::lgamma_dd(x).out(env);
 }
 
-// Γ(x). Negative integers and −∞ are NaN; tgamma(±0) is ±∞.
+// Γ(x). Negative integers and −∞ are invalid; tgamma(±0) is ±∞ (divide-by-zero).
 [[nodiscard]] inline float256 tgamma(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
-    if (x.iszero()) return float256::inf(x.signbit());
-    if (x.isinf()) return x.signbit() ? float256::qnan() : x;
-    if (x.signbit() && trunc(x) == x) return float256::qnan();
-    if (x > float256(20000)) return float256::inf(false);  // Γ(20000) > 2^262144
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.pole(x.signbit());
+    if (x.isinf()) return x.signbit() ? env.invalid() : env.exact(x);
+    if (x.signbit() && trunc(x) == x) return env.invalid();
+    if (x > float256(20000)) return env.overflow(false);  // Γ(20000) > 2^262144
+    // Γ(n) = (n-1)! is exact when representable: dd product, exact iff lo == 0.
+    if (!x.signbit() && trunc(x) == x && x <= float256(300)) {
+        detail_dd::dd p{float256::one()};
+        const int n = static_cast<int>(x.to_double());
+        for (int i = 2; i < n; ++i) p = p * float256::from_int(i);
+        return env.round(p.hi, p.lo, 0, p.lo.iszero() ? 0 : 2);
+    }
     bool neg = false;
     if (x.signbit()) {
-        if (x < float256(-20000)) {
-            // |Γ(x)| < 2^-262378: a signed zero.
-            const float256 k = round(x);
-            const bool odd = trunc(k * float256::half()) != k * float256::half();
-            neg = odd != (x - k).signbit();
-            return float256::zero(neg);
-        }
         // sign of Γ(x) = sign of sin(πx) = (-1)^k sign(x - k), k = round(x)
         const float256 k = round(x);
         const bool odd = trunc(k * float256::half()) != k * float256::half();
         neg = odd != (x - k).signbit();
+        if (x < float256(-20000)) return env.underflow(neg);  // |Γ(x)| < 2^-262378
     }
     const detail_dd::dd L = detail_gamma::lgamma_dd(x);
-    float256 mag;
-    if (L.hi > float256(181800)) mag = float256::inf(false);
-    else if (L.hi < float256(-182000)) mag = float256::zero();
-    else {
-        const detail_dd::Scaled e = detail_dd::exp_scaled(L);
-        mag = detail_dd::round_scaled(e.m, e.k);
-    }
-    return neg ? -mag : mag;
+    if (L.hi > float256(181800)) return env.overflow(neg);
+    if (L.hi < float256(-182000)) return env.underflow(neg);
+    detail_dd::Scaled e = detail_dd::exp_scaled(L);
+    if (neg) e.m = -e.m;
+    return e.m.out(env, e.k);
 }
 
 // sin and cos of the same argument, one reduction.
 inline void sincos(float256 x, float256* sin_out, float256* cos_out) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
     if (sin_out == nullptr && cos_out == nullptr) return;
-    if (x.isnan() || x.isinf()) {
-        const float256 nan = x.isnan() ? x : float256::qnan();
-        if (sin_out) *sin_out = nan;
-        if (cos_out) *cos_out = nan;
+    if (x.isnan() || x.isinf() || x.iszero() || detail_math::is_tiny(abs(x))) {
+        // Same results and flags as the separate calls.
+        if (sin_out) *sin_out = sin(x);
+        if (cos_out) *cos_out = cos(x);
         return;
     }
-    if (x.iszero()) {
-        if (sin_out) *sin_out = x;
-        if (cos_out) *cos_out = float256::one();
-        return;
-    }
+    detail_dd::FnEnv env;
     int quad = 0;
-    const bool neg = x.signbit();
-    {
-        detail_dd::dd sd, cd;
-        detail_math::trig_dd(abs(x), sd, cd, quad);
-        {
-            detail_dd::dd sv = (quad & 1) ? cd : sd;
-            detail_dd::dd cv = (quad & 1) ? -sd : cd;
-            if (quad >= 2) { sv = -sv; cv = -cv; }
-            const float256 so = sv.round();
-            if (sin_out) *sin_out = neg ? -so : so;
-            if (cos_out) *cos_out = cv.round();
-            return;
-        }
-    }
+    detail_dd::dd sd, cd;
+    detail_math::trig_dd(abs(x), sd, cd, quad);
+    detail_dd::dd sv = (quad & 1) ? cd : sd;
+    detail_dd::dd cv = (quad & 1) ? -sd : cd;
+    if (quad >= 2) { sv = -sv; cv = -cv; }
+    if (x.signbit()) sv = -sv;
+    const float256 so = sv.out(env);  // restores the caller's environment
+    if (sin_out) *sin_out = so;
+    if (cos_out) *cos_out = float256::round_dd(cv.hi, cv.lo, 0, env.mode(), 2);
 }
 
 // IEEE remainder, plus the low 31 bits of the integer quotient (sign of x/y).

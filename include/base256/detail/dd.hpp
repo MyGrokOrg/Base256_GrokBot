@@ -20,7 +20,58 @@ struct dd {
     dd(float256 h) : hi(h), lo(float256::zero()) {}  // NOLINT(google-explicit-constructor)
     dd(float256 h, float256 l) : hi(h), lo(l) {}
     [[nodiscard]] float256 round() const { return hi + lo; }
+    /// Round once in the caller's mode through `env` (inexact result).
+    [[nodiscard]] float256 out(class FnEnv& env, int k = 0, int tail = 2) const;
 };
+
+/// Environment guard for the public elementary functions. The body runs in
+/// round-to-nearest-even with cleared flags (internal operations never touch
+/// the caller's environment). The result is then produced by one of the
+/// member functions, which restore the caller's environment first and round
+/// or signal in the caller's mode, so only the final operation raises flags.
+class FnEnv {
+public:
+    FnEnv() noexcept : saved_(base256::detail::tls_env) { base256::detail::tls_env = base256::detail::Env{}; }
+    ~FnEnv() { if (!done_) base256::detail::tls_env = saved_; }
+    FnEnv(const FnEnv&) = delete;
+    FnEnv& operator=(const FnEnv&) = delete;
+
+    [[nodiscard]] round_mode mode() const noexcept { return saved_.mode; }
+    void restore() noexcept { base256::detail::tls_env = saved_; done_ = true; }
+
+    /// An exact result: no flags.
+    float256 exact(float256 x) noexcept { restore(); return x; }
+    /// (hi + lo)·2^k rounded once in the caller's mode. `tail`: 0 exact,
+    /// ±1 the exact value is slightly above/below, 2 inexact (direction from lo).
+    float256 round(float256 hi, float256 lo, int k = 0, int tail = 2) noexcept {
+        restore();
+        return float256::round_dd(hi, lo, k, saved_.mode, tail);
+    }
+    /// NaN operand: invalid for a signaling NaN, result quieted.
+    float256 nan(float256 x) noexcept {
+        restore();
+        if (x.issignaling()) base256::detail::raise_flag(fe_invalid);
+        return x.quieted();
+    }
+    float256 nan2(float256 x, float256 y) noexcept {
+        restore();
+        if (x.issignaling() || y.issignaling()) base256::detail::raise_flag(fe_invalid);
+        return x.isnan() ? x.quieted() : y.quieted();
+    }
+    /// Domain error.
+    float256 invalid() noexcept { restore(); base256::detail::raise_flag(fe_invalid); return float256::qnan(); }
+    /// Exact infinite result from finite operands (pole).
+    float256 pole(bool negative) noexcept { restore(); base256::detail::raise_flag(fe_divbyzero); return float256::inf(negative); }
+    /// Result far beyond max() / far below the subnormal range, rounded per mode.
+    float256 overflow(bool negative) noexcept { return round(negative ? -float256::one() : float256::one(), float256::zero(), 300000); }
+    float256 underflow(bool negative) noexcept { return round(negative ? -float256::one() : float256::one(), float256::zero(), -300000); }
+
+private:
+    base256::detail::Env saved_;
+    bool done_ = false;
+};
+
+inline float256 dd::out(FnEnv& env, int k, int tail) const { return env.round(hi, lo, k, tail); }
 
 [[nodiscard]] inline dd two_sum(float256 a, float256 b) {
     const float256 s = a + b;
@@ -155,6 +206,10 @@ struct Consts {
 /// exp(x) = m * 2^k with m a dd near [0.7, 1.42]; x finite, |x| < 2^20.
 struct Scaled { dd m; int k; };
 [[nodiscard]] inline Scaled exp_scaled(const dd& x) {
+    if (base256::ilogb(x.hi) < -200) {
+        // 1 + x + x^2/2: x/2^12 below would underflow for very small x.
+        return {dd(float256::one()) + x + dd(base256::ldexp(x.hi * x.hi, -1)), 0};
+    }
     const float256 kf = base256::round(x.hi / consts().ln2[0]);
     const dd r = x - k_ln2(kf);
     const dd m = expm1_reduced(r) + dd(float256::one());

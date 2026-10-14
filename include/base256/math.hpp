@@ -77,139 +77,214 @@ namespace detail_math {
 
 } // namespace detail_math
 
+namespace detail_math {
+[[nodiscard]] inline int sgn(float256 v) noexcept { return v.signbit() ? -1 : 1; }
+inline constexpr int kTiny = -120;  // below 2^-120 the leading Taylor terms suffice
+[[nodiscard]] inline bool is_tiny(float256 a) { return ilogb(a) < kTiny; }
+
+// x·(1 + c) with the correction c = x^2·coef (coef > 0 or < 0) for tiny x, as
+// an exact-direction dd: when x^2·coef underflows to zero the tail still
+// records its sign. `next_sign` is the sign of the first omitted term
+// relative to x (+1 same sign as x, -1 opposite).
+[[nodiscard]] inline float256 tiny_odd(detail_dd::FnEnv& env, float256 x, int coef_num, int coef_den, int next_sign) {
+    using detail_dd::dd;
+    const float256 c = x * x * x * float256::from_int(coef_num) / float256::from_int(coef_den);
+    if (c.iszero()) return env.round(x, float256::zero(), 0, sgn(x) * (coef_num > 0 ? 1 : -1));
+    const dd v = dd(x) + dd(c);
+    return env.round(v.hi, v.lo, 0, sgn(x) * next_sign);
+}
+} // namespace detail_math
+
 [[nodiscard]] inline float256 exp(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
-    if (x.isinf()) return x.signbit() ? float256::zero() : x;
-    if (x.iszero()) return float256::one();
-    if (x > float256(181800)) return float256::inf(false);
-    if (x < float256(-182000)) return float256::zero();
-    const detail_dd::Scaled e = detail_dd::exp_scaled(detail_dd::dd(x));
-    return detail_dd::round_scaled(e.m, e.k);
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) return env.exact(x.signbit() ? float256::zero() : x);
+    if (x.iszero()) return env.exact(float256::one());
+    if (x > float256(181800)) return env.overflow(false);
+    if (x < float256(-182000)) return env.underflow(false);
+    if (detail_math::is_tiny(abs(x))) {
+        // 1 + x + x^2/2; the omitted x^3/6 is far below the rounding position
+        const dd v = detail_dd::two_sum(float256::one(), x) + dd(ldexp(x * x, -1));
+        return env.round(v.hi, v.lo, 0, +1);
+    }
+    const detail_dd::Scaled e = detail_dd::exp_scaled(dd(x));
+    return env.round(e.m.hi, e.m.lo, e.k);
 }
 
 [[nodiscard]] inline float256 exp2(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
-    if (x.isinf()) return x.signbit() ? float256::zero() : x;
-    if (x.iszero()) return float256::one();
-    if (x > float256(262200)) return float256::inf(false);
-    if (x < float256(-262500)) return float256::zero();
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) return env.exact(x.signbit() ? float256::zero() : x);
+    if (x.iszero()) return env.exact(float256::one());
+    if (x > float256(262200)) return env.overflow(false);
+    if (x < float256(-262500)) return env.underflow(false);
     // 2^x = 2^k * exp(f ln2) with k = round(x) and f = x - k exact.
     const float256 kf = round(x);
     const float256 f = x - kf;
     const int k = static_cast<int>(kf.to_double());
-    if (f.iszero()) return ldexp(float256::one(), k);
-    const detail_dd::Scaled e = detail_dd::exp_scaled(detail_dd::ln2() * f);
-    return detail_dd::round_scaled(e.m, e.k + k);
+    if (f.iszero()) return env.round(float256::one(), float256::zero(), k, 0);  // exact unless out of range
+    const dd t = detail_dd::ln2() * f;
+    if (detail_math::is_tiny(abs(t.hi))) {
+        const dd v = dd(float256::one()) + t + dd(ldexp(t.hi * t.hi, -1));
+        return env.round(v.hi, v.lo, k, +1);
+    }
+    const detail_dd::Scaled e = detail_dd::exp_scaled(t);
+    return env.round(e.m.hi, e.m.lo, e.k + k);
 }
 
 [[nodiscard]] inline float256 expm1(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    detail_dd::FnEnv env;
     using detail_dd::dd;
-    if (x.isnan()) return x;
-    if (x.iszero()) return x;
-    if (x.isinf()) return x.signbit() ? -float256::one() : x;
-    if (x > float256(181800)) return float256::inf(false);
-    if (x < float256(-200)) return -float256::one();  // e^x < 2^-288 << ulp(1)/2
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x);
+    if (x.isinf()) return env.exact(x.signbit() ? -float256::one() : x);
+    if (x > float256(181800)) return env.overflow(false);
+    if (x < float256(-200)) return env.round(-float256::one(), float256::zero(), 0, +1);  // -1 + e^x
     const float256 ax = abs(x);
-    if (ax < ldexp(float256::one(), -200)) {
-        // x + x^2/2; x^3/6 is below 2^-400 relative.
-        return (dd(x) + dd(ldexp(x * x, -1))).round();
+    if (ilogb(ax) < -200) {
+        // x + x^2/2 (+ x^3/6 of the sign of x)
+        const float256 c = ldexp(x * x, -1);
+        if (c.iszero()) return env.round(x, float256::zero(), 0, +1);
+        const dd v = dd(x) + dd(c);
+        return env.round(v.hi, v.lo, 0, detail_math::sgn(x));
     }
-    if (ax <= float256(0.34)) return detail_dd::expm1_reduced(dd(x)).round();
+    if (ax <= float256(0.34)) return detail_dd::expm1_reduced(dd(x)).out(env);
     const detail_dd::Scaled e = detail_dd::exp_scaled(dd(x));
-    if (e.k > 600) return detail_dd::round_scaled(e.m, e.k);
-    return (detail_dd::ldexp(e.m, e.k) - dd(float256::one())).round();
+    if (e.k > 600) return env.round(e.m.hi, e.m.lo, e.k);
+    return (detail_dd::ldexp(e.m, e.k) - dd(float256::one())).out(env);
 }
 
 [[nodiscard]] inline float256 log(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
-    if (x.signbit() && !x.iszero()) return float256::qnan();
-    if (x.iszero()) return float256::inf(true);
-    if (x.isinf()) return x;
-    return detail_dd::log(detail_dd::dd(x)).round();
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.pole(true);
+    if (x.signbit()) return env.invalid();
+    if (x.isinf()) return env.exact(x);
+    if (x == float256::one()) return env.exact(float256::zero());
+    return detail_dd::log(detail_dd::dd(x)).out(env);
 }
 
 [[nodiscard]] inline float256 log2(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
-    if (x.signbit() && !x.iszero()) return float256::qnan();
-    if (x.iszero()) return float256::inf(true);
-    if (x.isinf()) return x;
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.pole(true);
+    if (x.signbit()) return env.invalid();
+    if (x.isinf()) return env.exact(x);
     // frexp returns m in [0.5, 1) with x = m * 2^e, so a pure power of two
     // is m == 0.5 and log2(x) = e - 1 exactly.
     int e = 0;
     const float256 m = frexp(x, &e);
-    if (m == float256::half())
-        return float256::from_int(static_cast<std::int64_t>(e) - 1);
-    return (detail_dd::log(detail_dd::dd(x)) / detail_dd::ln2()).round();
+    if (m == float256::half()) return env.exact(float256::from_int(static_cast<std::int64_t>(e) - 1));
+    return (detail_dd::log(detail_dd::dd(x)) / detail_dd::ln2()).out(env);
 }
+
 [[nodiscard]] inline float256 log10(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
-    if (x.signbit() && !x.iszero()) return float256::qnan();
-    if (x.iszero()) return float256::inf(true);
-    if (x.isinf()) return x;
-    return (detail_dd::log(detail_dd::dd(x)) / detail_dd::ln10()).round();
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.pole(true);
+    if (x.signbit()) return env.invalid();
+    if (x.isinf()) return env.exact(x);
+    const detail_dd::dd r = detail_dd::log(detail_dd::dd(x)) / detail_dd::ln10();
+    // log10 is exact only at x = 10^n, n = 0..102 (10^n has an odd part 5^n < 2^237).
+    const float256 n = round(r.hi);
+    if (n >= float256::zero() && n <= float256(102) && abs(r.hi - n) < ldexp(float256::one(), -100)) {
+        detail_dd::dd p{float256::one()}, b{float256(10)};
+        for (unsigned u = static_cast<unsigned>(n.to_double()); u; u >>= 1) {
+            if (u & 1U) p = p * b;
+            if (u > 1) b = b * b;
+        }
+        if (p.lo.iszero() && p.hi == x) return env.exact(n);
+    }
+    return r.out(env);
 }
 
 [[nodiscard]] inline float256 log1p(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    detail_dd::FnEnv env;
     using detail_dd::dd;
-    if (x.isnan()) return x;
-    if (x.iszero()) return x; // log1p(±0) = ±0
-    if (x == float256::from_int(-1)) return float256::inf(true);
-    if (x < float256::from_int(-1)) return float256::qnan();
-    if (x.isinf()) return x; // +∞ only; −∞ was rejected above
-    if (abs(x) < ldexp(float256::one(), -120)) {
-        // x - x^2/2 + x^3/3; the next term is below 2^-360 relative.
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x); // log1p(±0) = ±0
+    if (x == -float256::one()) return env.pole(true);
+    if (x < -float256::one()) return env.invalid();
+    if (x.isinf()) return env.exact(x); // +∞ only; −∞ was rejected above
+    if (detail_math::is_tiny(abs(x))) {
+        // x - x^2/2 + x^3/3; the omitted -x^4/4 is negative.
         const dd x2 = detail_dd::two_prod(x, x);
-        return (dd(x) - detail_dd::ldexp(x2, -1) + dd(x2.hi * x / float256::from_int(3))).round();
+        if (x2.hi.iszero()) return env.round(x, float256::zero(), 0, -1);
+        const dd v = dd(x) - detail_dd::ldexp(x2, -1) + dd(x2.hi * x / float256::from_int(3));
+        return env.round(v.hi, v.lo, 0, -1);
     }
-    return detail_dd::log(detail_dd::two_sum(float256::one(), x)).round();
+    return detail_dd::log(detail_dd::two_sum(float256::one(), x)).out(env);
 }
 
+namespace detail_math {
+// Exact product a·b (true when the rounding error is zero).
+[[nodiscard]] inline bool exact_mul(float256 a, float256 b, float256& out) {
+    const detail_dd::dd p = detail_dd::two_prod(a, b);
+    out = p.hi;
+    return p.lo.iszero() && p.hi.isfinite() && !(p.hi.iszero() && !a.iszero() && !b.iszero());
+}
+// base^n exactly (n >= 1), or false.
+[[nodiscard]] inline bool exact_ipow(float256 base, std::uint64_t n, float256& out) {
+    float256 r = float256::one(), b = base;
+    while (n) {
+        if (n & 1ULL) { if (!exact_mul(r, b, r)) return false; }
+        n >>= 1ULL;
+        if (n) { if (!exact_mul(b, b, b)) return false; }
+    }
+    out = r;
+    return true;
+}
+// Is c = x^y exactly? For y = m / 2^j (j <= 16, |m| <= 2^20): c^(2^j) == x^m.
+[[nodiscard]] inline bool pow_is_exact(float256 x, float256 y, float256 c) {
+    if (!c.isfinite() || c.iszero()) return false;
+    int j = 0;
+    float256 m = y;
+    while (trunc(m) != m && j < 16) { m = m + m; ++j; }
+    if (trunc(m) != m || abs(m) > float256(1 << 20)) return false;
+    const std::int64_t mi = static_cast<std::int64_t>(m.to_double());
+    float256 lhs;  // c^(2^j)
+    if (!exact_ipow(c, 1ULL << j, lhs)) return false;
+    float256 rhs;
+    if (!exact_ipow(x, static_cast<std::uint64_t>(mi < 0 ? -mi : mi), rhs)) return false;
+    if (mi < 0) {  // c^(2^j) · x^|m| == 1
+        float256 prod;
+        return exact_mul(lhs, rhs, prod) && prod == float256::one();
+    }
+    return lhs == rhs;
+}
+} // namespace detail_math
+
 [[nodiscard]] inline float256 pow(float256 x, float256 y) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    // C11 F.10.4.4 / IEEE 754-2019 recommended specials. These fire before
-    // the NaN rule: pow(x, ±0) and pow(+1, y) are +1 for every input, NaN
-    // included. pow(−1, ±∞) is +1 as well.
-    if (y.iszero()) return float256::one();
-    if (x == float256::one()) return float256::one();
-    if (x.isnan() || y.isnan()) return float256::qnan();
+    detail_dd::FnEnv env;
+    // C11 F.10.4.4 / IEEE 754-2019: pow(x, ±0) and pow(+1, y) are +1 for every
+    // quiet input, NaN included; pow(−1, ±∞) is +1. A signaling NaN is invalid.
+    if (x.issignaling() || y.issignaling()) return env.nan2(x, y);
+    if (y.iszero()) return env.exact(float256::one());
+    if (x == float256::one()) return env.exact(float256::one());
+    if (x.isnan() || y.isnan()) return env.nan2(x, y);
     if (y.isinf()) {
-        if (x == -float256::one()) return float256::one();
+        if (x == -float256::one()) return env.exact(float256::one());
         const float256 ax = abs(x);
-        if (ax > float256::one())
-            return y.signbit() ? float256::zero() : float256::inf(false);
-        if (ax < float256::one())
-            return y.signbit() ? float256::inf(false) : float256::zero();
-        return float256::qnan();
+        if (ax > float256::one()) return env.exact(y.signbit() ? float256::zero() : float256::inf(false));
+        return env.exact(y.signbit() ? float256::inf(false) : float256::zero());
     }
     if (x.iszero()) {
         const bool odd = detail_math::is_odd_integer(y);
-        if (y.signbit()) {
-            // pow(±0, −odd) = ±∞; otherwise +∞.
-            return odd ? float256::inf(x.signbit()) : float256::inf(false);
-        }
-        return odd ? float256::zero(x.signbit()) : float256::zero(false);
+        // pow(±0, −odd) = ±∞, pow(±0, −other) = +∞: divide-by-zero.
+        if (y.signbit()) return env.pole(odd && x.signbit());
+        return env.exact(odd ? float256::zero(x.signbit()) : float256::zero(false));
     }
     if (x.isinf()) {
         const bool yneg = y.signbit();
-        if (!x.signbit())
-            return yneg ? float256::zero() : float256::inf(false);
+        if (!x.signbit()) return env.exact(yneg ? float256::zero() : float256::inf(false));
         // −∞. Non-integers lose the sign; odd integers keep it.
-        if (trunc(y) != y)
-            return yneg ? float256::zero() : float256::inf(false);
         const bool odd = detail_math::is_odd_integer(y);
-        if (yneg) return odd ? float256::zero(true) : float256::zero(false);
-        return odd ? float256::inf(true) : float256::inf(false);
+        if (yneg) return env.exact(float256::zero(odd));
+        return env.exact(float256::inf(odd));
     }
-    // Integer exponents in this range are a short product, and exact whenever
-    // the mathematical power is a binary256 number. exp(y log x) is not.
-    if (x.signbit() && trunc(y) != y) return float256::qnan();
+    if (x.signbit() && trunc(y) != y) return env.invalid();
     const bool neg = x.signbit() && detail_math::is_odd_integer(y);
     const float256 ax = abs(x);
     // Integer exponents with |y| <= 4096, when the result stays well inside
@@ -224,25 +299,34 @@ namespace detail_math {
                 if (u & 1ULL) r = r * b;
                 if (u > 1) b = b * b;
             }
-            if (n < 0) r = detail_dd::dd(float256::one()) / r;
-            const float256 p = r.round();
-            return neg ? -p : p;
+            bool exact = r.lo.iszero();
+            if (n < 0) {
+                int e = 0;
+                exact = exact && frexp(r.hi, &e) == float256::half();
+                r = detail_dd::dd(float256::one()) / r;
+            }
+            if (neg) r = -r;
+            return env.round(r.hi, r.lo, 0, exact ? 0 : 2);
         }
     }
     const detail_dd::dd L = detail_dd::log(detail_dd::dd(ax)) * y;
-    float256 p;
-    if (L.hi > float256(181800)) p = float256::inf(false);
-    else if (L.hi < float256(-182000)) p = float256::zero();
-    else {
-        const detail_dd::Scaled e = detail_dd::exp_scaled(L);
-        p = detail_dd::round_scaled(e.m, e.k);
+    if (L.hi > float256(181800)) return env.overflow(neg);
+    if (L.hi < float256(-182000)) return env.underflow(neg);
+    detail_dd::Scaled e = detail_dd::exp_scaled(L);
+    if (neg) e.m = -e.m;
+    // Exact non-integer cases such as pow(4, 0.5) or pow(8, 1/2^k·m).
+    {
+        const float256 c = abs(detail_dd::round_scaled(e.m, e.k));
+        if (abs(e.m.lo) <= ldexp(abs(e.m.hi), -400) && detail_math::pow_is_exact(ax, y, c))
+            return env.exact(neg ? -c : c);
     }
-    return neg ? -p : p;
+    return env.round(e.m.hi, e.m.lo, e.k);
 }
 
 [[nodiscard]] inline float256 cbrt(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan() || x.isinf() || x.iszero()) return x;
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf() || x.iszero()) return env.exact(x);
     const bool s = x.signbit();
     // Scale by 2^(3j) to [1, 8): the cube root scales by 2^j exactly.
     const int j = ilogb(x) >= 0 ? ilogb(x) / 3 : -((-ilogb(x) + 2) / 3);
@@ -259,8 +343,16 @@ namespace detail_math {
     const detail_dd::dd y3 = detail_dd::two_prod(y, y) * y;
     const detail_dd::dd r = detail_dd::dd(ax) - y3;
     const float256 corr = r.hi / (float256::from_int(3) * y * y);
-    const float256 res = ldexp((detail_dd::dd(y) + detail_dd::dd(corr)).round(), j);
-    return s ? -res : res;
+    detail_dd::dd res = detail_dd::dd(y) + detail_dd::dd(corr);
+    // Perfect cubes are exact.
+    {
+        const float256 c = res.round();
+        float256 c2, c3;
+        if (detail_math::exact_mul(c, c, c2) && detail_math::exact_mul(c2, c, c3) && c3 == ax)
+            return env.exact(ldexp(s ? -c : c, j));
+    }
+    if (s) res = -res;
+    return env.round(res.hi, res.lo, j);
 }
 
 [[nodiscard]] inline float256 two_pi() {
@@ -308,52 +400,54 @@ inline void trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) 
 } // namespace detail_math
 
 [[nodiscard]] inline float256 sin(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan() || x.iszero()) return x;
-    if (x.isinf()) return float256::qnan();
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x);
+    if (x.isinf()) return env.invalid();
+    if (detail_math::is_tiny(abs(x))) return detail_math::tiny_odd(env, x, -1, 6, +1);  // x - x^3/6 (+x^5/120)
     int quad = 0;
-    const bool neg = x.signbit();
     detail_dd::dd sd, cd;
     detail_math::trig_dd(abs(x), sd, cd, quad);
-    {
-        detail_dd::dd y = (quad & 1) ? cd : sd;
-        if (quad >= 2) y = -y;
-        const float256 out = y.round();
-        return neg ? -out : out;
-    }
+    detail_dd::dd y = (quad & 1) ? cd : sd;
+    if (quad >= 2) y = -y;
+    if (x.signbit()) y = -y;
+    return y.out(env);
 }
 
 [[nodiscard]] inline float256 cos(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
-    if (x.isinf()) return float256::qnan();
-    if (x.iszero()) return float256::one();
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) return env.invalid();
+    if (x.iszero()) return env.exact(float256::one());
+    if (detail_math::is_tiny(abs(x))) {
+        // 1 - x^2/2 (+ x^4/24)
+        const detail_dd::dd v = detail_dd::dd(float256::one()) - detail_dd::dd(ldexp(x * x, -1));
+        return env.round(v.hi, v.lo, 0, v.lo.iszero() ? -1 : +1);
+    }
     int quad = 0;
     detail_dd::dd sd, cd;
     detail_math::trig_dd(abs(x), sd, cd, quad);
-    {
-        switch (quad) {
-            case 0: return cd.round();
-            case 1: return (-sd).round();
-            case 2: return (-cd).round();
-            default: return sd.round();
-        }
+    switch (quad) {
+        case 0: return cd.out(env);
+        case 1: return (-sd).out(env);
+        case 2: return (-cd).out(env);
+        default: return sd.out(env);
     }
 }
 
 [[nodiscard]] inline float256 tan(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
-    if (x.isinf()) return float256::qnan();
-    if (x.iszero()) return x;
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) return env.invalid();
+    if (x.iszero()) return env.exact(x);
+    if (detail_math::is_tiny(abs(x))) return detail_math::tiny_odd(env, x, 1, 3, +1);  // x + x^3/3 (+2x^5/15)
     int quad = 0;
     detail_dd::dd sd, cd;
     detail_math::trig_dd(abs(x), sd, cd, quad);
-    {
-        // tan = s/c in even quadrants, -c/s in odd ones.
-        const float256 t = ((quad & 1) ? -(cd / sd) : sd / cd).round();
-        return x.signbit() ? -t : t;
-    }
+    // tan = s/c in even quadrants, -c/s in odd ones.
+    detail_dd::dd t = (quad & 1) ? -(cd / sd) : sd / cd;
+    if (x.signbit()) t = -t;
+    return t.out(env);
 }
 
 namespace detail_math {
@@ -442,38 +536,50 @@ inline void sincos_small(float256 a, detail_dd::dd& s, detail_dd::dd& c) {
 } // namespace detail_math
 
 [[nodiscard]] inline float256 atan(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
-    if (x.isinf()) return copysign(float256::pi() * float256::half(), x);
-    if (x.iszero()) return x;
-    if (abs(x) < ldexp(float256::one(), -120)) {
-        // x - x^3/3; next term is below 2^-480 relative.
-        return (detail_dd::dd(x) - detail_dd::dd(x * x * x / float256::from_int(3))).round();
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) {
+        const detail_dd::dd h = x.signbit() ? -detail_dd::pio2() : detail_dd::pio2();
+        return h.out(env);
     }
-    return detail_math::atan2_dd(detail_dd::dd(x), detail_dd::dd(float256::one())).round();
+    if (x.iszero()) return env.exact(x);
+    if (detail_math::is_tiny(abs(x))) return detail_math::tiny_odd(env, x, -1, 3, +1);  // x - x^3/3 (+x^5/5)
+    return detail_math::atan2_dd(detail_dd::dd(x), detail_dd::dd(float256::one())).out(env);
 }
 
 [[nodiscard]] inline float256 atan2(float256 y, float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan() || y.isnan()) return float256::qnan();
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (x.isnan() || y.isnan()) return env.nan2(y, x);
+    const bool ys = y.signbit();
+    auto signed_out = [&](dd v) { return (ys ? -v : v).out(env); };
     if (y.isinf() && x.isinf()) {
         // atan2(±∞, +∞) = ±π/4, atan2(±∞, −∞) = ±3π/4
-        const float256 pi4 = float256::pi() * float256::half() * float256::half();
-        const float256 mag = x.signbit() ? pi4 * float256::from_int(3) : pi4;
-        return copysign(mag, y);
+        const dd pi4 = detail_dd::ldexp(detail_dd::pi(), -2);
+        return signed_out(x.signbit() ? pi4 * float256::from_int(3) : pi4);
     }
     if (x.isinf()) {
-        if (x.signbit()) return copysign(float256::pi(), y);
-        return copysign(float256::zero(), y);
+        if (x.signbit()) return signed_out(detail_dd::pi());
+        return env.exact(float256::zero(ys));
     }
-    if (y.isinf()) return copysign(float256::pi() * float256::half(), y);
-    if (x.iszero() && y.iszero()) {
-        if (x.signbit()) return copysign(float256::pi(), y);
-        return y; // ±0
+    if (y.isinf()) return signed_out(detail_dd::pio2());
+    if (y.iszero()) {
+        if (x.signbit()) return signed_out(detail_dd::pi());
+        return env.exact(y);  // ±0
     }
-    if (x.signbit() && y.iszero()) return copysign(float256::pi(), y);
-    if (y.iszero()) return y;
-    return detail_math::atan2_dd(detail_dd::dd(y), detail_dd::dd(x)).round();
+    if (x.iszero()) return signed_out(detail_dd::pio2());
+    // Tiny ratio with x > 0: atan(q) = q - q^3/3, q = y/x as dd.
+    if (!x.signbit() && ilogb(y) - ilogb(x) < detail_math::kTiny - 2) {
+        const dd q = dd(y) / dd(x);
+        const float256 c = q.hi * q.hi * q.hi / float256::from_int(-3);
+        if (c.iszero()) {
+            // q itself may be exact; the omitted -q^3/3 points toward zero.
+            return env.round(q.hi, q.lo, 0, q.hi.signbit() ? +1 : -1);
+        }
+        const dd v = q + dd(c);
+        return env.round(v.hi, v.lo, 0, q.hi.signbit() ? -1 : +1);
+    }
+    return detail_math::atan2_dd(dd(y), dd(x)).out(env);
 }
 
 namespace detail_math {
@@ -486,86 +592,90 @@ namespace detail_math {
 } // namespace detail_math
 
 [[nodiscard]] inline float256 asin(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan() || x.iszero()) return x;
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x);
     const float256 a = abs(x);
-    if (a > float256::one()) return float256::qnan();
-    if (a < ldexp(float256::one(), -120)) {
-        // x + x^3/6
-        return (detail_dd::dd(x) + detail_dd::dd(x * x * x / float256::from_int(6))).round();
-    }
-    return detail_math::atan2_dd(detail_dd::dd(x), detail_math::sqrt_one_minus_sq(x)).round();
+    if (a > float256::one()) return env.invalid();
+    if (detail_math::is_tiny(a)) return detail_math::tiny_odd(env, x, 1, 6, +1);  // x + x^3/6 (+3x^5/40)
+    return detail_math::atan2_dd(detail_dd::dd(x), detail_math::sqrt_one_minus_sq(x)).out(env);
 }
 
 [[nodiscard]] inline float256 acos(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
-    if (x.isnan()) return x;
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
     const float256 a = abs(x);
-    if (a > float256::one()) return float256::qnan();
-    if (x == float256::one()) return float256::zero();
-    return detail_math::atan2_dd(detail_math::sqrt_one_minus_sq(x), detail_dd::dd(x)).round();
+    if (a > float256::one()) return env.invalid();
+    if (x == float256::one()) return env.exact(float256::zero());
+    return detail_math::atan2_dd(detail_math::sqrt_one_minus_sq(x), detail_dd::dd(x)).out(env);
 }
 
 [[nodiscard]] inline float256 sinh(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    detail_dd::FnEnv env;
     using detail_dd::dd;
-    if (x.isnan() || x.isinf() || x.iszero()) return x;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf() || x.iszero()) return env.exact(x);
     const float256 a = abs(x);
-    float256 y;
-    if (a > float256(181800)) {
-        y = float256::inf(false);
-    } else if (a < ldexp(float256::one(), -120)) {
-        y = (dd(a) + dd(a * a * a / float256::from_int(6))).round();
-    } else if (a <= float256(0.34)) {
+    if (a > float256(181800)) return env.overflow(x.signbit());
+    if (detail_math::is_tiny(a)) return detail_math::tiny_odd(env, x, 1, 6, +1);  // x + x^3/6 (+x^5/120)
+    dd y;
+    int k = 0;
+    if (a <= float256(0.34)) {
         // (em + em/(em+1))/2 with em = expm1(a): no cancellation.
         const dd em = detail_dd::expm1_reduced(dd(a));
-        y = detail_dd::ldexp(em + em / (em + dd(float256::one())), -1).round();
+        y = detail_dd::ldexp(em + em / (em + dd(float256::one())), -1);
     } else {
         const detail_dd::Scaled e = detail_dd::exp_scaled(dd(a));
         if (e.k > 300) {
-            y = detail_dd::round_scaled(e.m, e.k - 1);
+            y = e.m;
+            k = e.k - 1;
         } else {
             const dd E = detail_dd::ldexp(e.m, e.k);
-            y = detail_dd::ldexp(E - dd(float256::one()) / E, -1).round();
+            y = detail_dd::ldexp(E - dd(float256::one()) / E, -1);
         }
     }
-    return x.signbit() ? -y : y;
+    if (x.signbit()) y = -y;
+    return y.out(env, k);
 }
+
 [[nodiscard]] inline float256 cosh(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    detail_dd::FnEnv env;
     using detail_dd::dd;
-    if (x.isnan()) return x;
-    if (x.isinf()) return float256::inf(false);
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) return env.exact(float256::inf(false));
+    if (x.iszero()) return env.exact(float256::one());
     const float256 a = abs(x);
-    if (a > float256(181800)) return float256::inf(false);
-    if (a < ldexp(float256::one(), -120)) return (dd(float256::one()) + dd(ldexp(a * a, -1))).round();
+    if (a > float256(181800)) return env.overflow(false);
+    if (detail_math::is_tiny(a)) {
+        const dd v = dd(float256::one()) + dd(ldexp(a * a, -1));  // 1 + a^2/2 (+a^4/24)
+        return env.round(v.hi, v.lo, 0, +1);
+    }
     if (a <= float256(0.34)) {
         // 1 + em^2 / (2 (1 + em))
         const dd em = detail_dd::expm1_reduced(dd(a));
-        return (dd(float256::one()) + detail_dd::ldexp(em * em / (em + dd(float256::one())), -1)).round();
+        return (dd(float256::one()) + detail_dd::ldexp(em * em / (em + dd(float256::one())), -1)).out(env);
     }
     const detail_dd::Scaled e = detail_dd::exp_scaled(dd(a));
-    if (e.k > 300) return detail_dd::round_scaled(e.m, e.k - 1);
+    if (e.k > 300) return e.m.out(env, e.k - 1);
     const dd E = detail_dd::ldexp(e.m, e.k);
-    return detail_dd::ldexp(E + dd(float256::one()) / E, -1).round();
+    return detail_dd::ldexp(E + dd(float256::one()) / E, -1).out(env);
 }
+
 [[nodiscard]] inline float256 tanh(float256 x) {
-    const fenv::scoped_default_env env_guard_; // RNE inside, caller's flags kept
+    detail_dd::FnEnv env;
     using detail_dd::dd;
-    if (x.isnan()) return x;
-    if (x.isinf()) return copysign(float256::one(), x);
-    if (x.iszero()) return x;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) return env.exact(copysign(float256::one(), x));
+    if (x.iszero()) return env.exact(x);
     const float256 a = abs(x);
     // 1 - tanh(x) ≈ 2 exp(-2|x|) is below ulp(1)/4 once |x| >= 83.
-    if (a >= float256::from_int(83)) return copysign(float256::one(), x);
-    float256 y;
-    if (a < ldexp(float256::one(), -120)) {
-        y = (dd(a) - dd(a * a * a / float256::from_int(3))).round();
-    } else {
-        const dd em = detail_dd::expm1(dd(a + a));
-        y = (em / (em + dd(float256::two()))).round();
-    }
-    return x.signbit() ? -y : y;
+    if (a >= float256::from_int(83))
+        return env.round(copysign(float256::one(), x), float256::zero(), 0, x.signbit() ? +1 : -1);
+    if (detail_math::is_tiny(a)) return detail_math::tiny_odd(env, x, -1, 3, +1);  // x - x^3/3 (+2x^5/15)
+    const dd em = detail_dd::expm1(dd(a + a));
+    dd y = em / (em + dd(float256::two()));
+    if (x.signbit()) y = -y;
+    return y.out(env);
 }
 
 /// Exact: x - trunc(x/y)*y, sign of x. invalid for y == 0 or x infinite.
