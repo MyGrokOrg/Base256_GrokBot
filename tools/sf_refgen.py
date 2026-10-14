@@ -4,7 +4,7 @@ tests/test_special_math.cpp: {"op", "a", "b", "c", "result"} lines."""
 import sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 import mpmath as mp
-from sf_check import to_hex, DAW, ERFINV, ERFCINV, LEG, ALEG, SLEG, LAG, ALAG, HER
+from sf_check import to_hex, LI2, PLOG, ETA, BERN, DAW, ERFINV, ERFCINV, LEG, ALEG, SLEG, LAG, ALAG, HER
 mp.mp.prec = 700
 
 def r256(v):
@@ -43,6 +43,7 @@ F = {
     "ai": mp.airyai, "aip": lambda x: mp.airyai(x, 1), "bi": mp.airybi, "bip": lambda x: mp.airybi(x, 1),
     "erfinv": ERFINV, "erfcinv": ERFCINV, "w0": lambda x: mp.lambertw(x).real, "wm1": lambda x: mp.lambertw(x, -1).real,
     "fs": mp.fresnels, "fc": mp.fresnelc, "daw": DAW,
+    "li2": LI2, "plog": PLOG, "eta": ETA, "bern": BERN,
     "ei": mp.ei, "en": lambda n, x: mp.expint(int(n), x),
     "leg": LEG, "aleg": ALEG, "sleg": SLEG, "lag": LAG, "alag": ALAG, "her": HER,
 }
@@ -101,6 +102,9 @@ CASES = [
     ("w0", "1"), ("w0", "-0.25"), ("w0", "1e100"), ("w0", "-0.3678794411"), ("wm1", "-0.1"), ("wm1", "-1e-200"),
     ("fs", "0.75"), ("fs", "-7.25"), ("fs", "30.5"), ("fc", "2"), ("fc", "11.75"), ("fc", "1e10"),
     ("daw", "0.5"), ("daw", "-9.5"), ("daw", "100"),
+    ("li2", "0.25"), ("li2", "-1"), ("li2", "0.875"), ("li2", "-1e8"), ("plog", "3", "0.5"), ("plog", "5", "-0.75"),
+    ("plog", "3", "1"), ("plog", "1", "-3"), ("plog", "0", "0.25"), ("eta", "1.0000001"), ("eta", "-7.5"), ("eta", "12"),
+    ("bern", "1"), ("bern", "13"), ("bern", "500"),
     ("en", "1", "45.5"), ("en", "3", "0.125"), ("en", "40", "12"), ("en", "1000", "2"), ("en", "0", "3"),
 ]
 

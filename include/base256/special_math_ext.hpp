@@ -8,6 +8,7 @@
 /// functions" for measured accuracy, domains and costs.
 
 #include <algorithm>
+#include <array>
 
 #include "special_math.hpp"
 
@@ -1315,6 +1316,214 @@ inline float256 pub(float256 x, bool sine) {
     if (neg) v.m = -v.m;
     // above 2^1000 the sum is 1 + (below 2^-2000): the true value is just above 1/(2x) in magnitude
     return detail_sf::out(env, v, ilogb(a) >= 1000 ? (neg ? -1 : 1) : 2);
+}
+
+namespace detail_sf {
+namespace plog {
+
+inline constexpr int kZetaN = 64;
+// ζ(j), j = 0..kZetaN (ζ(1) unused), computed once.
+inline const std::array<dd, kZetaN + 1>& zeta_int() {
+    static const std::array<dd, kZetaN + 1> z = [] {
+        const fenv::scoped_default_env g;
+        std::array<dd, kZetaN + 1> r{};
+        r[0] = dd(-float256::half());
+        for (int j = 2; j <= kZetaN; ++j) r[static_cast<std::size_t>(j)] = zeta::pos(D(j), D(j - 1));
+        return r;
+    }();
+    return z;
+}
+// ζ(m) for integer m <= kZetaN, m != 1: ζ(−2k) = 0, ζ(1−2k) = −B_2k/(2k) = −bern_fact(k)(2k−1)!.
+[[nodiscard]] inline dd zeta_at(int m) {
+    if (m >= 0) return zeta_int()[static_cast<std::size_t>(m)];
+    if ((-m) % 2 == 0) return dd(float256::zero());
+    const int k = (1 - m) / 2;
+    dd f{float256::one()};
+    for (int i = 2; i <= 2 * k - 1; ++i) f = f * float256::from_int(i);
+    return -(zeta::bern_fact(k) * f);
+}
+
+// Σ_{k>=1} x^k / k^n, |x| <= 1/2 or n large.
+[[nodiscard]] inline dd series(unsigned n, const dd& x) {
+    dd p = x, sum = x;
+    for (std::uint64_t k = 2; k < 100000; ++k) {
+        p = p * x;
+        const float256 K = float256::from_uint(k);
+        dd t = p;
+        for (unsigned i = 0; i < n; ++i) t = t / K;
+        sum = sum + t;
+        if (small_rel(t, sum) || t.hi.iszero()) break;
+    }
+    return sum;
+}
+
+// Li_n(e^μ), −ln 2 <= μ <= 0 (x in [1/2, 1]), n >= 2, n <= kZetaN:
+//   Σ_{k≠n−1} ζ(n−k) μ^k/k! + μ^{n−1}/(n−1)! (H_{n−1} − ln(−μ)).
+[[nodiscard]] inline dd mu_exp(unsigned n, const dd& mu) {
+    const dd one{float256::one()};
+    dd sum{float256::zero()}, p = one;  // p = μ^k/k!
+    for (int k = 0; k < 2000; ++k) {
+        if (k > 0) p = p * mu / float256::from_int(k);
+        dd t;
+        if (k == static_cast<int>(n) - 1) {
+            if (mu.hi.iszero()) continue;
+            dd H{float256::zero()};
+            for (unsigned j = 1; j < n; ++j) H = H + one / float256::from_uint(j);
+            t = p * (H - detail_dd::log(-mu));
+        } else {
+            t = zeta_at(static_cast<int>(n) - k) * p;
+            if (t.hi.iszero()) continue;  // trivial zeros ζ(−2j)
+        }
+        sum = sum + t;
+        if (k > static_cast<int>(n) && small_rel(t, sum) && !p.hi.iszero()) break;
+        if (p.hi.iszero()) break;
+    }
+    return sum;
+}
+
+// Li2(X) for −1 <= X <= 1/2 by the Bernoulli series in u = −ln(1 − X):
+//   Li2 = u − u²/4 + Σ_k B_2k u^{2k+1}/(2k+1)!, |u| <= ln 2.
+[[nodiscard]] inline dd li2_core(const dd& X) {
+    if (X.hi.iszero()) return X;
+    if (ilogb(X.hi) < -20) return series(2, X);
+    const dd one{float256::one()};
+    const dd u = -detail_dd::log(one - X);
+    const dd u2 = u * u;
+    dd sum = u - u2 * float256(0.25), p = u;
+    for (int k = 1; k <= detail_dd::tables::kBernFactN; ++k) {
+        p = p * u2;
+        const dd t = zeta::bern_fact(k) * p / float256::from_int(2 * k + 1);
+        sum = sum + t;
+        if (small_rel(t, sum)) break;
+    }
+    return sum;
+}
+
+// Li_n(X) for −1 <= X <= 1, n >= 2.
+[[nodiscard]] inline dd lin(unsigned n, const dd& X) {
+    const dd one{float256::one()};
+    const float256 half = float256::half();
+    if (n == 2 && X.hi <= half) return li2_core(X);
+    if (abs(X.hi) <= half || n > static_cast<unsigned>(kZetaN)) return series(n, X);
+    if (X.hi.signbit()) {  // Li_n(x) = 2^{1−n} Li_n(x²) − Li_n(−x)
+        return detail_dd::ldexp(lin(n, X * X), 1 - static_cast<int>(n)) - lin(n, -X);
+    }
+    if (n == 2) {  // Li2(x) = π²/6 − ln x ln(1−x) − Li2(1−x)
+        const dd y = one - X;
+        const dd pi2_6 = detail_dd::pi() * detail_dd::pi() / float256(6);
+        if (y.hi.iszero()) return pi2_6;
+        return pi2_6 - detail_dd::log(X) * detail_dd::log(y) - li2_core(y);
+    }
+    return mu_exp(n, detail_dd::log(X));
+}
+
+} // namespace plog
+} // namespace detail_sf
+
+/// Dilogarithm Li₂(x) = −∫_0^x ln(1−t)/t dt for real x <= 1 (x > 1 is complex:
+/// domain error); Li₂(1) = π²/6, Li₂(−∞) = −∞.
+[[nodiscard]] inline float256 dilog(float256 x) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x);
+    const float256 one = float256::one();
+    if (x > one) return env.invalid();
+    if (x.isinf()) return env.exact(x);
+    if (abs(x) < ldexp(one, -300)) return env.round(x, float256::zero(), 0, 1);  // x + x²/4
+    if (x >= -one) return detail_sf::plog::lin(2, dd(x)).out(env);
+    // x < −1: Li2(x) = −π²/6 − ln²(−x)/2 − Li2(1/x)
+    const dd l = detail_dd::log(dd(-x));
+    const dd r = -(detail_dd::pi() * detail_dd::pi() / float256(6)) - l * l * float256::half() -
+                 detail_sf::plog::li2_core(dd(one) / x);
+    return r.out(env);
+}
+
+/// Polylogarithm Li_n(x) = Σ_{k>=1} x^k/k^n for integer n >= 0: n = 0, 1 for
+/// any x < 1 (x/(1−x), −ln(1−x)), n = 2 as dilog, n >= 3 for −1 <= x <= 1
+/// (|x| > 1 is not supported: domain error). Li_n(1) = ζ(n) (n >= 2; n <= 1 pole).
+[[nodiscard]] inline float256 polylog(unsigned n, float256 x) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (n == 2) return dilog(x);
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x);
+    const float256 one = float256::one();
+    if (n <= 1) {
+        if (x == one) return env.pole(false);
+        if (x > one) return env.invalid();
+        if (n == 0) {
+            if (x.isinf()) return env.exact(-one);  // x/(1−x) → −1 from above
+            return (dd(x) / detail_dd::two_sum(one, -x)).out(env);
+        }
+        if (x.isinf()) return env.exact(-x);
+        if (abs(x) < ldexp(one, -300)) return env.round(x, float256::zero(), 0, 1);  // x + x²/2
+        if (abs(x) <= float256::half()) return detail_sf::plog::series(1, dd(x)).out(env);
+        return (-detail_dd::log(detail_dd::two_sum(one, -x))).out(env);
+    }
+    if (abs(x) > one) return env.invalid();
+    if (abs(x) < ldexp(one, -300)) return env.round(x, float256::zero(), 0, x.signbit() ? -1 : 1);
+    if (x == one && n > static_cast<unsigned>(detail_sf::plog::kZetaN))
+        return env.round(one, float256::zero(), 0, 1);
+    return detail_sf::plog::lin(n, dd(x)).out(env);
+}
+
+/// Dirichlet eta η(s) = Σ (−1)^{n−1} n^{−s} = (1 − 2^{1−s}) ζ(s), all real s
+/// (η(1) = ln 2, η(−2k) = 0, η(0) = 1/2); overflows below s ≈ −30000.
+[[nodiscard]] inline float256 dirichlet_eta(float256 s) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    const float256 one = float256::one();
+    if (s.isnan()) return env.nan(s);
+    if (s.isinf()) return s.signbit() ? env.invalid() : env.exact(one);
+    if (s.iszero()) return env.exact(float256::half());
+    if (s == one) return detail_dd::ln2().out(env);
+    const dd sm1 = detail_dd::two_sum(s, -one);
+    if (!s.signbit()) {
+        if (s > float256(600)) return env.round(one, float256::zero(), 0, -1);  // 1 − 2^-s
+        const dd f = -detail_dd::expm1(-(sm1 * detail_dd::ln2()));  // 1 − 2^{1−s}
+        return (f * detail_sf::zeta::pos(dd(s), sm1)).out(env);
+    }
+    const float256 h = ldexp(s, -1);
+    if (trunc(h) == h) return env.exact(float256::zero());
+    dd sn, cn;
+    detail_sf::sincos_pi(h, sn, cn);
+    if (s < float256(-30000)) return env.overflow(!sn.hi.signbit());  // (1 − 2^{1−s}) < 0
+    // ζ(s) = 2^s π^{s−1} sin(πs/2) Γ(1−s) ζ(1−s); 1 − 2^{1−s} = −2^{1−s}(1 − 2^{s−1})
+    const dd oms = detail_dd::two_sum(one, -s);
+    const dd z = detail_sf::zeta::pos(oms, dd(-s));
+    const detail_sf::SD g = detail_sf::gamma_sd(oms);
+    // 2^s · 2^{1−s} = 2: η = −2 π^{s−1} (1 − 2^{s−1}) sin(πs/2) Γ(1−s) ζ(1−s)
+    const dd L = (dd(s) - dd(one)) * detail_dd::log(detail_dd::pi());
+    const dd f = -detail_dd::expm1(sm1 * detail_dd::ln2());  // 1 − 2^{s−1}
+    detail_sf::SD r = detail_sf::mul(detail_sf::exp_sd(L), g);
+    r = detail_sf::mul(r, -(sn * z * f));
+    ++r.k;
+    return detail_sf::out(env, r);
+}
+
+/// Bernoulli number B_2n (B_0 = 1, B_2 = 1/6, ...) rounded to binary256, from
+/// B_2n = (−1)^{n+1} 2 (2n)! ζ(2n)/(2π)^{2n}; |B_2n| overflows from n = 13704 on.
+[[nodiscard]] inline float256 bernoulli_b2n(unsigned n) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (n == 0) return env.exact(float256::one());
+    if (n <= static_cast<unsigned>(detail_dd::tables::kBernFactN)) {
+        detail_sf::SD f{detail_sf::zeta::bern_fact(static_cast<int>(n)), 0};
+        f = detail_sf::mul(f, detail_sf::gamma_sd(dd(float256::from_uint(2ull * n + 1))));
+        return detail_sf::out(env, f);
+    }
+    if (n > 20000) return env.overflow(!(n & 1));
+    const float256 N2 = float256::from_uint(2ull * n);
+    // ζ(2n) = 1 + 2^{-2n} + … (n > 140: 1 + below 2^-280 rel.; include 2^-2n + 3^-2n)
+    const dd z = dd(float256::one()) + dd(ldexp(float256::one(), -static_cast<int>(2 * n))) +
+                 detail_dd::exp(-(dd(N2) * detail_dd::log(dd(float256(3)))));
+    detail_sf::SD r = detail_sf::gamma_sd(dd(N2 + float256::one()));
+    r = detail_sf::mul(r, detail_sf::exp_sd(-(dd(N2) * detail_dd::log(detail_dd::pi() * float256::two()))));
+    r = detail_sf::mul(r, z);
+    ++r.k;
+    if (!(n & 1)) r.m = -r.m;
+    return detail_sf::out(env, r);
 }
 
 } // namespace base256

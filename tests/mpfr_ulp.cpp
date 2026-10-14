@@ -360,6 +360,7 @@ int main(int argc, char** argv) {
         {"digamma",[](float256 x){return digamma(x);}, mpfr_digamma, -20, 12, true, true, 1, 0},
         {"airy_ai",[](float256 x){return airy_ai(x);}, mpfr_ai, -20, 6, true, true, 1, 0},
         {"airy_ai_lin",[](float256 x){return airy_ai(x);}, mpfr_ai, -60, 60, false, false, 1, 0},
+        {"dilog",[](float256 x){return dilog(x);}, mpfr_li2, -50, 1, false, false, 1, 0},
         {"logint", [](float256 x){return logint(x);}, mpfr_li, -40, 40, true, false, 1, 0},
         {"logint1",[](float256 x){return logint(x);}, mpfr_li, -236, -1, true, false, 1, 0, 3},
     };

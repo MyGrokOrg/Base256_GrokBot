@@ -181,7 +181,23 @@ def DAW(x):
             t *= (2 * k - 1) / (2 * x * x); s += t; k += 1
         return s / (2 * x)
 
+LI2 = W1500(lambda x: mp.polylog(2, x).real)
+PLOG = W1500(lambda n, x: mp.polylog(int(n), x).real)
+ETA = W1500(lambda s: mp.altzeta(s))
+BERN = W1500(lambda n: mp.bernoulli(2 * int(n)))
+
 RANGES = [
+    ("li2",      "li2", LI2, [(-3, 1, False)]),
+    ("li2_s",    "li2", LI2, [(-300, -1, True)]),
+    ("li2_neg",  "li2", LI2, [(-1e6, -1, False)]),
+    ("li2_1",    "li2", LI2, [(0.999, 1, False)]),
+    ("plog",     "plog", PLOG, [("int", 0, 12), (-1, 1, False)]),
+    ("plog_1",   "plog", PLOG, [("int", 3, 70), (0.99, 1, False)]),
+    ("plog_n",   "plog", PLOG, [("int", 3, 70), (-1, -0.5, False)]),
+    ("eta",      "eta", ETA, [(-30, 40, False)]),
+    ("eta_1",    "eta", ETA, [(0.999, 1.001, False)]),
+    ("eta_neg",  "eta", ETA, [(-3000, -30, False)]),
+    ("bern",     "bern", BERN, [("int", 1, 400)]),
     ("fs",       "fs", FS, [(-20, 4, True)]),
     ("fs_mid",   "fs", FS, [(-20, 20, False)]),
     ("fs_big",   "fs", FS, [(4, 200, True)]),

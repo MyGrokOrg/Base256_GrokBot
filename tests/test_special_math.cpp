@@ -83,6 +83,10 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "fs") return fresnel_s(P(a));
     if (op == "fc") return fresnel_c(P(a));
     if (op == "daw") return dawson(P(a));
+    if (op == "li2") return dilog(P(a));
+    if (op == "plog") return polylog(static_cast<unsigned>(std::stoul(a)), P(b));
+    if (op == "eta") return dirichlet_eta(P(a));
+    if (op == "bern") return bernoulli_b2n(static_cast<unsigned>(std::stoul(a)));
     if (op == "her") return hermite(static_cast<unsigned>(std::stoul(a)), P(b));
     std::cerr << "unknown op " << op << "\n";
     return float256::qnan();
@@ -238,6 +242,21 @@ const Ref kRefs[] = {
     {"daw", "0.5", "", "", "0x1b29f73897eab23135a51ff9710e5cc6b566d0d1a47abd79e6dcff42d9edp-238"},
     {"daw", "-9.5", "", "", "-0x1b196619d1140bdf0a6d79977b96787170a53c7ee6e1dcf6e50a38cdd621p-241"},
     {"daw", "100", "", "", "0x147b246620768b70369eb99051ac69b6af1920aebefbe8b7a2ffcb71d161p-244"},
+    {"li2", "0.25", "", "", "0x11213888e31971b0fac2539ef3c6d0be6ba8fb15752381ba4a7ecceb0619p-238"},
+    {"li2", "-1", "", "", "-0x1a51a6625307d3230e7b1224401759cbd6b911b55022c5b1666b0580634cp-237"},
+    {"li2", "0.875", "", "", "0x13cf5a916b9bc978eb7ab1c57cceaa003e44b872d7fb235fc20235c7f816p-236"},
+    {"li2", "-1e8", "", "", "-0x1569c813fc32147543b480746aee29c9cc6cfe735642f252200132746970p-229"},
+    {"plog", "3", "0.5", "", "0x1130d9b930d707f1f043ccac66c426527b458d25b5ae464b0e7fe0a7ac98p-237"},
+    {"plog", "5", "-0.75", "", "-0x177c2c3f57e538ebb000b19f83d2ab2d122dd2f4af462a0cf91fe676d752p-237"},
+    {"plog", "3", "1", "", "0x133ba004f0062138371715c59e6907f1b180b7db17493405dd149c7ab12dp-236"},
+    {"plog", "1", "-3", "", "-0x162e42fefa39ef35793c7673007e5ed5e81e6864ce5316c5b141a2eb7175p-236"},
+    {"plog", "0", "0.25", "", "0x155555555555555555555555555555555555555555555555555555555555p-238"},
+    {"eta", "1.0000001", "", "", "0x162e43078f729f544b050ca717bc40d109b082cbc1f7b8c8cb242c7bcbb4p-237"},
+    {"eta", "-7.5", "", "", "-0x12e24d83ff52a0760642805222b7e7a62ad44aed7f62fb9f4e4794159bb1p-236"},
+    {"eta", "12", "", "", "0x1ffe03d433c2dad3726ba21c0b480409bb73332616cdbf49c67e86b6b779p-237"},
+    {"bern", "1", "", "", "0x155555555555555555555555555555555555555555555555555555555555p-239"},
+    {"bern", "13", "", "", "0x15c06d2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabp-216"},
+    {"bern", "500", "", "", "-0x1de5585639bd96582dd69a0cecaa6331ca6f6632766d102ac8cec49c99d6p+5642"},
     {"ibetac", "30", "2", "0.0625", "0x1ffffffffffffffffffffffffffffc5c0000000000000000000000000000p-237"},
 };
 
@@ -584,6 +603,21 @@ int main() {
              [](round_mode m) { return m == round_mode::upward ? nextafter(ldexp(float256::one(), -2001), float256::inf(false)) : ldexp(float256::one(), -2001); }, kInx);
     EXPECT_M(fresnel_c(ldexp(one, -400)),
              [](round_mode m) { return down(m) ? nextafter(ldexp(float256::one(), -400), float256::zero()) : ldexp(float256::one(), -400); }, kInx);
+
+    // Polylog, eta, Bernoulli.
+    EXPECT(dilog(float256(1.5)), nan, kInv);
+    EXPECT(dilog(-inf), -inf, 0);
+    EXPECT(dilog(-zero), -zero, 0);
+    EXPECT(polylog(1, one), inf, kDiv);
+    EXPECT(polylog(0, one), inf, kDiv);
+    EXPECT(polylog(3, float256(-2)), nan, kInv);
+    EXPECT(polylog(4, nan), nan, 0);
+    EXPECT(dirichlet_eta(zero), float256::half(), 0);
+    EXPECT(dirichlet_eta(float256(-4)), zero, 0);
+    EXPECT(dirichlet_eta(inf), one, 0);
+    EXPECT(dirichlet_eta(-inf), nan, kInv);
+    EXPECT(bernoulli_b2n(0), one, 0);
+    EXPECT_M(bernoulli_b2n(15000), [](round_mode m) { return (m == round_mode::toward_zero || m == round_mode::upward) ? -float256::max() : -float256::inf(false); }, base256::fe_overflow | kInx);
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;
