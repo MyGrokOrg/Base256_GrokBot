@@ -257,19 +257,39 @@ private:
     static constexpr bool round_bits(detail::u256& sig, int lsb_pos, bool sticky, bool sign,
                                      round_mode mode, bool& inexact) noexcept {
         if (lsb_pos <= 0) { inexact = sticky; return false; }
-        const bool g = sig.bit(lsb_pos - 1);
-        bool rs = sticky;
-        if (!rs && lsb_pos > 1) {
-            if (lsb_pos - 1 < 64) {  // (1ULL << 64) would be UB
-                rs = (sig.d[0] & ((1ULL << (lsb_pos - 1)) - 1ULL)) != 0;
-            } else {
-                for (int i = 0; i <= lsb_pos - 2 && i < 256; ++i) {
-                    if (sig.bit(i)) { rs = true; break; }
-                }
+        if (lsb_pos >= 256) {
+            const bool g = sig.bit(lsb_pos - 1);
+            bool rs = sticky;
+            for (int i = 0; i < 4 && !rs; ++i) {
+                std::uint64_t w = sig.d[i];
+                if (lsb_pos == 256 && i == 3) w &= ~(1ULL << 63);  // exclude the guard bit
+                rs = w != 0;
             }
+            if (lsb_pos > 256) rs = rs || g;  // all of sig is below the guard
+            const bool gg = lsb_pos == 256 ? g : false;
+            inexact = gg || rs;
+            bool inc = false;
+            switch (mode) {
+                case round_mode::to_nearest_even: inc = gg && rs; break;
+                case round_mode::to_nearest_away: inc = gg; break;
+                case round_mode::toward_zero:     inc = false; break;
+                case round_mode::upward:          inc = inexact && !sign; break;
+                case round_mode::downward:        inc = inexact && sign; break;
+            }
+            sig = {};
+            return inc;
+        }
+        // Word/bit position of the result lsb and of the guard bit.
+        const int w = lsb_pos >> 6, b = lsb_pos & 63;
+        const int gp = lsb_pos - 1, gw = gp >> 6, gb = gp & 63;
+        const bool g = ((sig.d[gw] >> gb) & 1ULL) != 0;
+        bool rs = sticky;
+        if (!rs) {
+            for (int i = 0; i < gw; ++i) rs = rs || sig.d[i] != 0;
+            if (gb) rs = rs || (sig.d[gw] & ((1ULL << gb) - 1ULL)) != 0;
         }
         inexact = g || rs;
-        const bool lsb = sig.bit(lsb_pos);
+        const bool lsb = ((sig.d[w] >> b) & 1ULL) != 0;
         bool inc = false;
         switch (mode) {
             case round_mode::to_nearest_even: inc = g && (rs || lsb); break;
@@ -278,17 +298,18 @@ private:
             case round_mode::upward:          inc = inexact && !sign; break;
             case round_mode::downward:        inc = inexact && sign; break;
         }
-        if (lsb_pos >= 256) {
-            sig = {};
-            return inc;
-        }
-        sig = (sig >> lsb_pos) << lsb_pos;
+        // Clear the bits below lsb_pos.
+        for (int i = 0; i < w; ++i) sig.d[i] = 0;
+        if (b) sig.d[w] &= ~((1ULL << b) - 1ULL);
         if (!inc) return false;
-        detail::u256 one{};
-        one.set_bit(lsb_pos);
-        std::uint64_t carry = 0;
-        sig = detail::add_u256(sig, one, carry);
-        return carry != 0;
+        std::uint64_t add = 1ULL << b;
+        for (int i = w; i < 4; ++i) {
+            const std::uint64_t t = sig.d[i] + add;
+            add = t < sig.d[i] ? 1ULL : 0ULL;
+            sig.d[i] = t;
+            if (!add) break;
+        }
+        return add != 0;
     }
 
     static constexpr bool round_ne(detail::u256& sig, int lsb_pos, bool sticky) noexcept {
