@@ -999,10 +999,17 @@ namespace zeta {
 // B_2k/(2k)! (s)_{2k−1} w^{−s−2k+1} is below 2^-506 of the reference
 // 2^-ref_lg · w^{1−s}, estimated in double; −1 if none is.
 [[nodiscard]] inline int em_plan(double s, double w, double ref_lg) {
-    const double l2pw = std::log2(6.283185307179586 * w), lgs = std::lgamma(s), il2 = 1.4426950408889634;
+    // log2 |(s)_{2k−1}| accumulated factor by factor (any real s; a zero factor
+    // at a non-positive integer s makes every later term vanish).
+    const double l2pw = std::log2(6.283185307179586 * w);
+    double lp = 0;
     for (int k = 1; k <= detail_dd::tables::kBernFactN; ++k) {
-        const double f = 1 + (std::lgamma(s + 2 * k - 1) - lgs) * il2 - 2 * k * l2pw + ref_lg;
-        if (f < -506) return k;
+        for (int i = (k == 1 ? 0 : 2 * k - 3); i <= 2 * k - 2; ++i) {
+            const double f = std::fabs(s + i);
+            if (f == 0) return k;
+            lp += std::log2(f);
+        }
+        if (1 + lp - 2 * k * l2pw + ref_lg < -506) return k;
     }
     return -1;
 }
@@ -1065,10 +1072,11 @@ namespace zeta {
 [[nodiscard]] inline SD hurwitz(const dd& s, const dd& sm1, float256 a) {
     const dd one{float256::one()};
     const double sd = s.hi.to_double(), ad = a.to_double();
-    const double lsm1 = std::log2(sm1.hi.to_double());
+    const double lsm1 = std::log2(std::fabs(sm1.hi.to_double()));
+    const bool neg = s.hi.signbit();  // s < 0: terms grow with n; scale by w^{-s} instead of a^{-s}
     // Option 1: direct sum of nd terms (rest < 2^-506 relative): s log2(1 + nd/a) >= 506 + log2(1 + (a+nd)/(s−1)).
     long nd = -1;
-    {
+    if (sm1.hi > float256::zero()) {
         long lo = 1;
         while (lo < (1L << 40)) {
             const double n = double(lo);
@@ -1105,23 +1113,80 @@ namespace zeta {
         const dd v = br + em_corr(s, A, bestK, br);
         return mul(exp_sd(-(sm1 * la)), v);
     }
-    // Relative to a^{−s}: Σ_{n<N} ((n+a)/a)^{−s} [+ EM tail at w].
+    // Relative to c^{−s}, c = a (s > 0) or c = w = N + a (s < 0), so every
+    // term is <= 1: Σ_{n<N} ((n+a)/c)^{−s} [+ EM tail at w].
     const long Nt = bestN > 0 ? bestN : nd;
+    const dd W = D(static_cast<int>(bestN > 0 ? bestN : 0)) + A;
+    const dd C = neg ? W : A;
+    const dd lc = neg ? detail_dd::log(C) : la;
     dd sum{float256::zero()};
-    for (long n = Nt - 1; n >= 1; --n) {
-        const dd r = (dd(float256::from_int(static_cast<int>(n))) + A) / A;
+    for (long n = Nt - 1; n >= 0; --n) {
+        if (n == 0 && !neg) { sum = sum + one; break; }
+        const dd r = (dd(float256::from_int(static_cast<int>(n))) + A) / C;
         sum = sum + detail_dd::exp(-(s * detail_dd::log(r)));
     }
-    sum = sum + one;
     if (bestN > 0) {
-        const dd W = D(bestN) + A;
-        const dd lr = detail_dd::log(W / A);
-        // (w/a)^{−s} · w · (1/(s−1) + 1/(2w) + corrections)
-        const dd f = detail_dd::exp(-(s * lr)) * W;
+        // (w/c)^{−s} · w · (1/(s−1) + 1/(2w) + corrections)
+        const dd f = neg ? W : detail_dd::exp(-(s * detail_dd::log(W / A))) * W;
         const dd br = one / sm1 + one / (W * float256::two());
         sum = sum + f * (br + em_corr(s, W, bestK, br));
     }
-    return mul(exp_sd(-(s * la)), sum);
+    return mul(exp_sd(-(s * lc)), sum);
+}
+
+// ζ(s, a) for s <= −kReflS (σ = 1 − s >= 1 + kReflS), a > 0, where the
+// Euler–Maclaurin sum would cancel more than ~e^{|s|}. Hurwitz's formula for
+// 0 < b <= 1:
+//   ζ(s, b) = 2 Γ(σ) (2π)^{−σ} Σ_{n>=1} cos(πσ/2 − 2πnb) n^{−σ}
+// (n^{−σ} < 2^-506 beyond n = 49; cos/sin(2πnb) by rotation), and for a > 1
+// the shift ζ(s, a) = ζ(s, b) − Σ_{j<m} (b+j)^{−s}, b = a − m ∈ (0, 1], all
+// combined in the log domain. The result has an absolute error ~2^-470 of
+// its largest part, so values near a zero in a lose relative accuracy.
+inline constexpr int kReflS = 89;
+[[nodiscard]] inline SD hurwitz_refl(float256 s, float256 a) {
+    const dd one{float256::one()};
+    const float256 sig = float256::one() - s;  // exact (|s| >= 89)
+    float256 m = ceil(a) - float256::one();
+    if (m.signbit()) m = float256::zero();
+    const float256 b = a - m;  // exact, in (0, 1]
+    // S = Σ cos(πσ/2 − 2πnb) n^{−σ} = Σ [cos(πσ/2) cos(2πnb) + sin(πσ/2) sin(2πnb)] n^{−σ}
+    dd sa, ca, st, ct;
+    sincos_pi(ldexp(sig, -1), sa, ca);
+    sincos_pi(b + b, st, ct);
+    dd cn = ct, sn = st, S{float256::zero()};
+    const dd Sg{sig};
+    dd pw[50];
+    int pi = 0;
+    for (int n = 1; n < 50; ++n) {
+        if (n == 1) pw[1] = one;
+        else {
+            int p = 2;
+            while (p * p <= n && n % p) ++p;
+            if (p * p > n) pw[n] = detail_dd::exp(-(Sg * detail_dd::dd_from_words(detail_dd::tables::kLnPrime64[pi++])));
+            else pw[n] = pw[p] * pw[n / p];
+        }
+        S = S + (ca * cn + sa * sn) * pw[n];
+        if (ilogb(pw[n].hi) < -506) break;
+        const dd c2 = cn * ct - sn * st, s2 = sn * ct + cn * st;
+        cn = c2; sn = s2;
+    }
+    // log magnitude of the reflection part: ln 2 + lnΓ(σ) − σ ln 2π + ln|S|
+    const dd lg = detail_dd::ln2() + lgam(Sg) - Sg * detail_dd::log(detail_dd::pi() * float256::two());
+    if (S.hi.iszero()) return SD{dd(float256::zero()), 0};
+    const long mi = static_cast<long>(m.to_double());
+    if (mi == 0) return mul(exp_sd(lg), S);
+    // minus Σ_{j<m} (b+j)^{|s|}: log terms −s ln(b+j); the largest is j = m−1.
+    const dd neg_s{-s};
+    const dd lmax = neg_s * detail_dd::log(dd(b) + D(static_cast<int>(mi - 1)));
+    const dd lsS = lg + detail_dd::log(dabs(S));
+    const dd M = lmax.hi > lsS.hi ? lmax : lsS;
+    dd tot = (S.hi.signbit() ? -one : one) * detail_dd::exp(lsS - M);
+    for (long j = mi - 1; j >= 0; --j) {
+        const dd e = neg_s * detail_dd::log(dd(b) + D(static_cast<int>(j))) - M;
+        if (e.hi < float256(-400)) break;
+        tot = tot - detail_dd::exp(e);
+    }
+    return mul(exp_sd(M), tot);
 }
 
 } // namespace zeta
@@ -1163,22 +1228,33 @@ namespace zeta {
     return detail_sf::out(env, r);
 }
 
-/// Hurwitz zeta function ζ(s, a) = Σ_{n>=0} (n + a)^{−s} for s > 1, a > 0
-/// (GSL's hzeta domain). s = 1 is a pole (+∞, divide-by-zero); s < 1 or a <= 0
-/// is a domain error. ζ(s, 1) = ζ(s).
+/// Hurwitz zeta function ζ(s, a) = Σ_{n>=0} (n + a)^{−s} for real s ≠ 1 and
+/// a > 0 (analytic continuation for s < 1). s = 1 is a pole (+∞,
+/// divide-by-zero); a <= 0 and s = −∞ are domain errors. ζ(s, 1) = ζ(s),
+/// ζ(0, a) = 1/2 − a. For s < 1 the error is absolute relative to the
+/// largest part of the sum, so results near a zero in a (e.g. ζ(0, 1/2))
+/// lose relative accuracy; see README.
 [[nodiscard]] inline float256 hurwitz_zeta(float256 s, float256 a) {
     detail_dd::FnEnv env;
     using detail_dd::dd;
     const float256 one = float256::one();
     if (s.isnan() || a.isnan()) return env.nan2(s, a);
-    if (s < one || a.signbit() || a.iszero()) return env.invalid();
+    if (a.signbit() || a.iszero()) return env.invalid();
     if (s == one) return env.pole(false);
-    if (a.isinf()) return env.exact(float256::zero());
-    if (s.isinf()) {  // lim: a^{−s} dominates
-        if (a < one) return env.exact(float256::inf(false));
+    if (s.isinf()) {
+        if (s.signbit()) return env.invalid();
+        if (a < one) return env.exact(float256::inf(false));  // a^{−s} dominates
         return env.exact(a == one ? one : float256::zero());
     }
+    if (a.isinf()) return env.exact(s > one ? float256::zero() : -float256::inf(false));  // s < 1: ~ a^{1−s}/(s−1) → −∞
     if (a == one) return riemann_zeta(s);
+    if (s.iszero()) {  // ζ(0, a) = 1/2 − a, rounded once (exact when representable)
+        const dd q = detail_dd::two_sum(float256::half(), -a);
+        return env.round(q.hi, q.lo, 0, q.lo.iszero() ? 0 : 2);
+    }
+    if (s <= float256(-detail_sf::zeta::kReflS) &&
+        !(a > one && detail_sf::zeta::em_plan(s.to_double(), a.to_double(), -std::log2(1 - s.to_double())) > 0))  // EM at N = 0 (no cancellation) when it converges
+        return detail_sf::out(env, detail_sf::zeta::hurwitz_refl(s, a));
     return detail_sf::out(env, detail_sf::zeta::hurwitz(dd(s), detail_dd::two_sum(s, -one), a));
 }
 

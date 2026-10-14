@@ -83,6 +83,11 @@ const Ref kRefs[] = {
     {"gq", "300", "350", "", "0x17b8e00a4441008a1596f3bf6ae9ae24c900ab8231b361aa3792efbc23a6p-245"},
     {"gl", "40", "1e-3", "", "0x1082a1f50a644df2710567db8f103c38ac8bb24aa1d60ef8a08972dc95f7p-640"},
     {"gq", "3", "600", "", "0x1cbfa6e535e8ea450cf2cea46fb57375e624e40f4e180faed273e6e07950p-1085"},
+    {"hz", "-3.5", "0.25", "", "0x1066bd23470e8b6a49b0162660f5727dd241d6e9eac70c1cd72cfcdf38ccp-244"},
+    {"hz", "0.5", "2", "", "-0x13aece583f39ff71bf41a72115e5abcd114c72921c6311823a213afbdd41p-235"},
+    {"hz", "-150", "0.75", "", "0x165f1b587cc51c6028f34199c413c12d530aee7c6b4b5b6d6470b30e1916p237"},
+    {"hz", "-200", "50", "", "-0x1f3e4645f20d7fd7d7034e0d99f1a96c38fb05a2c2d0f2e598bf8ee98125p886"},
+    {"hz", "-30.25", "7", "", "-0x12640fe4f56f40ce745ed2456c5e0aa014c17f110581ae7f88eb4cd0d5d4p-158"},
     {"hz", "2", "0.5", "", "0x13bd3cc9be45de5a4adc4d9b30118358e10acd47fc1a14450cd044204a79p-234"},
     {"hz", "3.5", "7", "", "0x1e2990b2b49fd69410e6ef47c4bb75901c4f69b1ccf60197ddf67e7ca5a3p-245"},
     {"hz", "1.0001", "3", "", "0x138789e393be41f4190c79dd336dab164b8ae96e45d591432f2554333d85p-223"},
@@ -265,7 +270,9 @@ int main() {
     EXPECT(riemann_zeta(inf), one, 0);
     EXPECT(riemann_zeta(-inf), nan, kInv);
     EXPECT(hurwitz_zeta(one, float256(2)), inf, kDiv);
-    EXPECT(hurwitz_zeta(float256(0.5), float256(2)), nan, kInv);
+    EXPECT(hurwitz_zeta(zero, float256(0.25)), float256(0.25), 0);
+    EXPECT(hurwitz_zeta(-inf, float256(2)), nan, kInv);
+    EXPECT(hurwitz_zeta(float256(0.5), inf), -inf, 0);
     EXPECT(hurwitz_zeta(float256(2), zero), nan, kInv);
     EXPECT(hurwitz_zeta(float256(2), inf), zero, 0);
     EXPECT(hurwitz_zeta(inf, float256(0.5)), inf, 0);
