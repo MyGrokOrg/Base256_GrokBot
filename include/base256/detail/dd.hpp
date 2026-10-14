@@ -13,6 +13,7 @@
 #include "../float256.hpp"
 #include "bigint.hpp"
 #include "two_over_pi.hpp"
+#include "tables.hpp"
 
 namespace base256::detail_dd {
 
@@ -297,31 +298,53 @@ struct Scaled { dd m; int k; };
 /// Natural log of a positive finite dd, via one Newton step on exp from a
 /// float256 starting value: y = y0 + log1p(m e^{-y0} - 1).
 // float256 log of m in [0.7, 1.42] (atanh series), a few ulps.
-[[nodiscard]] inline float256 log_seed(float256 m) {
-    const float256 f = m - float256::one();
-    if (f.iszero()) return f;
-    const float256 z = f / (m + float256::one());
-    const float256 z2 = z * z;
-    float256 term = z, sum = z;
-    for (int n = 1; n <= 200; ++n) {
-        term = term * z2;
-        const float256 next = sum + term / float256::from_int(2 * n + 1);
-        if (next == sum) break;
-        sum = next;
-    }
-    return sum + sum;
+[[nodiscard]] inline dd dd_from_words(const std::uint64_t* w) {
+    return {float256::from_bits(w[0], w[1], w[2], w[3]), float256::from_bits(w[4], w[5], w[6], w[7])};
 }
+// 1/(2n+1) for n = 0..kMaxOddInv as dd (computed once).
+inline constexpr int kMaxOddInv = 64;
+[[nodiscard]] inline const std::array<dd, kMaxOddInv + 1>& inv_odd() {
+    static const std::array<dd, kMaxOddInv + 1> t = [] {
+        const fenv::scoped_default_env g;
+        std::array<dd, kMaxOddInv + 1> a{};
+        for (int n = 0; n <= kMaxOddInv; ++n)
+            a[static_cast<std::size_t>(n)] = dd(float256::one()) / float256::from_int(2 * n + 1);
+        return a;
+    }();
+    return t;
+}
+/// log of a positive finite dd. Two table reductions (MPFR-generated, see
+/// tools/gen_tables.c): m in [0.75, 1.5) is multiplied by a 20-bit 1/c_j
+/// (c_j = 1 + j/128) and then by a 40-bit 1/c_k (c_k = 1 + k/2^15), leaving
+/// |r - 1| < 2^-15; log r = 2 atanh((r-1)/(r+1)) by Horner in t^2 (~16 terms).
+/// The tables hold -log(1/c) as dd; c_0 = 1 exactly, so no cancellation near 1.
 [[nodiscard]] inline dd log(const dd& a) {
     int e = 0;
     (void)base256::frexp(a.hi, &e);
     dd m = ldexp(a, -e);  // [0.5, 1)
-    if (m.hi < float256(0.70710678118654752440)) { m = m + m; --e; }
-    const float256 y0 = log_seed(m.round());
-    const dd t = m * exp(dd(-y0)) - dd(float256::one());
-    // log1p(t) = t - t^2/2 + t^3/3, |t| ~ 2^-230
-    const dd t2 = t * t;
-    const dd l1p = t - ldexp(t2, -1) + t2 * t / float256::from_int(3);
-    dd y = dd(y0) + l1p;
+    if (m.hi < float256(0.75)) { m = ldexp(m, 1); --e; }
+    namespace T = tables;
+    int j = static_cast<int>(std::lround((m.hi.to_double() - 1.0) * 128.0));
+    j = std::clamp(j, T::kLog1Lo, T::kLog1Hi);
+    const dd r1 = j == 0 ? m : m * float256(T::kLog1Inv[j - T::kLog1Lo]);
+    int k = static_cast<int>(std::lround((r1.hi.to_double() - 1.0) * 32768.0));
+    k = std::clamp(k, T::kLog2Lo, T::kLog2Hi);
+    const dd r2 = k == 0 ? r1 : r1 * float256(T::kLog2Inv[k - T::kLog2Lo]);
+    const dd u = r2 - dd(float256::one());
+    dd y{float256::zero()};
+    if (!u.hi.iszero()) {
+        const dd t = u / (u + dd(float256::two()));
+        const dd t2 = t * t;
+        const int et = -2 * (base256::ilogb(t.hi) + 1);  // t^2 < 2^-et
+        int n = et > 0 ? (505 + et - 1) / et : kMaxOddInv;
+        n = std::min(n, kMaxOddInv);
+        const auto& c = inv_odd();
+        dd p = c[static_cast<std::size_t>(n)];
+        for (int i = n - 1; i >= 0; --i) p = p * t2 + c[static_cast<std::size_t>(i)];
+        y = ldexp(p * t, 1);
+    }
+    if (j != 0) y = dd_from_words(T::kLog1Val[j - T::kLog1Lo]) + y;
+    if (k != 0) y = dd_from_words(T::kLog2Val[k - T::kLog2Lo]) + y;
     if (e != 0) y = k_ln2(float256::from_int(e)) + y;
     return y;
 }
