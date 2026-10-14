@@ -70,6 +70,24 @@ int main(int argc, char** argv) {
         {"erfc", [](float256 x, float256) { return erfc(x); }, -1, 20},
         {"tgamma", [](float256 x, float256) { return tgamma(x); }, 0.1, 50},
         {"lgamma", [](float256 x, float256) { return lgamma(x); }, 0.1, 1000},
+        // Special functions (special_math.hpp): order/parameter from x, argument from y.
+        {"cyl_bessel_j", [](float256 x, float256 y) { return cyl_bessel_j(x * float256(0.2), y); }, 0.1, 50},
+        {"cyl_neumann", [](float256 x, float256 y) { return cyl_neumann(x * float256(0.2), y); }, 0.1, 50},
+        {"cyl_bessel_i", [](float256 x, float256 y) { return cyl_bessel_i(x * float256(0.2), y); }, 0.1, 50},
+        {"cyl_bessel_k", [](float256 x, float256 y) { return cyl_bessel_k(x * float256(0.2), y); }, 0.1, 50},
+        {"jn", [](float256 x, float256 y) { return jn(static_cast<int>(x.to_double() * 0.2), y); }, 0.1, 50},
+        {"sph_bessel", [](float256 x, float256 y) { return sph_bessel(static_cast<unsigned>(x.to_double() * 0.2), y); }, 0.1, 50},
+        {"beta", [](float256 x, float256 y) { return beta(x, y); }, 0.1, 50},
+        {"ibeta", [](float256 x, float256 y) { return ibeta(x, y, float256(0.4)); }, 0.1, 50},
+        {"riemann_zeta", [](float256 x, float256) { return riemann_zeta(x); }, -20, 40},
+        {"gamma_p", [](float256 x, float256 y) { return gamma_p(x, y); }, 0.1, 50},
+        {"gamma_q", [](float256 x, float256 y) { return gamma_q(x, y); }, 0.1, 50},
+        {"comp_ellint_1", [](float256 x, float256) { return comp_ellint_1(x); }, -0.99, 0.99},
+        {"comp_ellint_2", [](float256 x, float256) { return comp_ellint_2(x); }, -0.99, 0.99},
+        {"comp_ellint_3", [](float256 x, float256 y) { return comp_ellint_3(x, y * float256(0.9)); }, -0.99, 0.99},
+        {"ellint_1", [](float256 x, float256 y) { return ellint_1(x, y * float256(3)); }, -0.99, 0.99},
+        {"ellint_2", [](float256 x, float256 y) { return ellint_2(x, y * float256(3)); }, -0.99, 0.99},
+        {"ellint_3", [](float256 x, float256 y) { return ellint_3(x, y * float256(0.5), y * float256(1.5)); }, -0.99, 0.99},
     };
     std::printf("%-12s %14s\n", "function", "ns/call");
     for (const Item& it : items) {

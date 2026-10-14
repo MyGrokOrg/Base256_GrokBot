@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.17.0
+
+- **New `special_math.hpp`** (included by `base256.hpp`), using the C++17 special-math names. Every function evaluates in double-float256, rounds once in the current mode and raises IEEE flags.
+  - **Bessel:** `cyl_bessel_j`, `cyl_neumann`, `cyl_bessel_i`, `cyl_bessel_k` (real ν ≥ 0, x ≥ 0), `sph_bessel`, `sph_neumann`, and `jn`/`yn` (any integer n; `jn` takes any real x). Methods: power series, Temme series, Steed's CF1/CF2, and Hankel/large-x expansions with stable recurrences.
+  - **`beta`, plus `ibeta`/`ibetac`:** the regularized incomplete beta, by continued fraction.
+  - **`riemann_zeta`:** all real x. Euler–Maclaurin for x ≥ 0 and the functional equation for x < 0. ζ(1) is a pole, ζ(0) = −1/2 and ζ(−2n) = +0 exactly.
+  - **Incomplete gamma:** `tgamma_lower`, `tgamma_upper`, `gamma_p`, `gamma_q`.
+  - **Elliptic:** `comp_ellint_1/2/3`, `ellint_1/2/3`. AGM for K and E, Carlson R_F, R_D and R_J for the rest, in the C++17 sign convention for Π.
+- **Accuracy.** No result was misrounded in any check.
+  - Against MPFR, 1500 cases × 5 modes each, with exact flags: `jn`, `yn`, `cyl_bessel_j`/`cyl_neumann` at integer orders, `beta`, `riemann_zeta` (including around 1 and down to −2^14) and all four incomplete-gamma functions.
+  - Against mpmath (`tools/sf_check.py`, 200 cases per range over 63 ranges, round-to-nearest): every function, including non-integer orders, ν ≥ x, ν near integers, huge or tiny x, and the elliptic integrals. All results were within 0.5 ulp.
+  - Domain limits and costs are listed in README "Special functions".
+- **New tests:**
+  - ctest `special_math`: mpmath reference values in all modes, special arguments, poles, domain errors, overflow/underflow and parity.
+  - `mpfr_ulp` adds `jn yn cyl_j cyl_y beta zeta zeta1 zetab1 zetan tgamma_lower tgamma_upper gamma_p gamma_q`; these run in CI.
+  - New tools: `sf_eval` (built by CMake), `tools/sf_check.py` and `tools/sf_refgen.py`.
+- **`tools/gen_tables.c`** now also emits Euler's γ and the z³ Taylor coefficient of 1/Γ(1+z) (for Temme's series).
+- **README:** the `fma` benchmark note now says plainly that the 104–121 ns spread is noise. It also lists the Stirling table as 140 coefficients.
+- **Header size and compile time:** `include/` grows from 528 KB to 580 KB (`special_math.hpp` is 51 KB). Compiling a TU that includes `base256.hpp` takes the same time as before: g++ -O0 1.25 s, -O2 2.70 s; clang++ -O0 1.22 s, -O2 2.06 s.
+
 ## 4.16.0
 
 - **`tgamma` 1.3×, `lgamma` 1.6× faster** (71.6 → 54.5 µs, 32.3 → 20.7 µs).

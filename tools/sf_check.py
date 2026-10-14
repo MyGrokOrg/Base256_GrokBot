@@ -75,8 +75,11 @@ def SJ(n, x): return mp.sqrt(mp.pi / (2 * x)) * mp.besselj(n + mp.mpf(1) / 2, x)
 def SY(n, x): return mp.sqrt(mp.pi / (2 * x)) * mp.bessely(n + mp.mpf(1) / 2, x)
 
 def BETA(a, b): return mp.beta(a, b)
-def IB(a, b, x): return mp.betainc(a, b, 0, x, regularized=True)
-def IBC(a, b, x): return mp.betainc(a, b, x, 1, regularized=True)
+# mpmath's betainc can lose bits to cancellation; evaluate it at 2000 bits.
+def IB(a, b, x):
+    with mp.workprec(2000): return mp.betainc(a, b, 0, x, regularized=True)
+def IBC(a, b, x):
+    with mp.workprec(2000): return mp.betainc(a, b, x, 1, regularized=True)
 
 def ZETA(x): return mp.zeta(x)
 
