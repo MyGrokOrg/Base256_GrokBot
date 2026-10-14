@@ -56,6 +56,10 @@ int main() {
         else if (f == "lbeta") r = lbeta(P(a), P(b));
         else if (f == "gr") r = tgamma_ratio(P(a), P(b));
         else if (f == "gdr") r = tgamma_delta_ratio(P(a), P(b));
+        else if (f == "ai") r = airy_ai(P(a));
+        else if (f == "aip") r = airy_ai_prime(P(a));
+        else if (f == "bi") r = airy_bi(P(a));
+        else if (f == "bip") r = airy_bi_prime(P(a));
 #ifdef SF_MORE
         SF_MORE
 #endif

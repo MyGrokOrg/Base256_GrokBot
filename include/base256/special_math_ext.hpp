@@ -728,4 +728,194 @@ inline constexpr int kAsymW = 60;  // asymptotic series at w >= 60: the k = 140 
     return detail_sf::out(env, detail_sf::psi::gamma_ratio(dd(a), b));
 }
 
+namespace detail_sf {
+namespace airy {
+
+struct Consts { dd c1, c2, sqrt3, rpi, rsqrtpi; };
+// c1 = Ai(0) = 3^{-2/3}/Γ(2/3), c2 = −Ai'(0) = 3^{-1/3}/Γ(1/3).
+inline const Consts& consts() {
+    static const Consts c = [] {
+        Consts r;
+        const dd one{float256::one()}, three{float256(3)};
+        const dd third = one / float256(3);
+        const dd l3 = detail_dd::log(three);
+        const SD g1 = gamma_sd(third), g2 = gamma_sd(one - third);
+        r.c2 = detail_dd::exp(-(l3 * third)) / detail_dd::ldexp(g1.m, g1.k);
+        r.c1 = detail_dd::exp(-(l3 * (one - third))) / detail_dd::ldexp(g2.m, g2.k);
+        r.sqrt3 = detail_dd::sqrt(three);
+        r.rpi = one / detail_dd::pi();
+        r.rsqrtpi = detail_dd::sqrt(r.rpi);
+        return r;
+    }();
+    return c;
+}
+
+// Maclaurin series: f = Σ x^{3k} 3^k (1/3)_k/(3k)!, g = Σ x^{3k+1} 3^k (2/3)_k/(3k+1)! and
+// their derivatives; Ai = c1 f − c2 g, Bi = √3 (c1 f + c2 g).
+inline void series(float256 x, dd& f, dd& g, dd& fp, dd& gp) {
+    const dd x3 = detail_dd::two_prod(x, x) * x;
+    const dd one{float256::one()};
+    dd a = one, b{x}, ap = detail_dd::ldexp(detail_dd::two_prod(x, x), -1), bp = one;
+    f = a; g = b; fp = dd(float256::zero()); gp = bp;  // the f' series starts at k = 1
+    for (int k = 1; k < 100000; ++k) {
+        const float256 K3 = float256::from_int(3 * k);
+        if (k > 1) ap = ap * x3 / ((K3 - float256(3)) * (K3 - float256::one()));
+        a = a * x3 / ((K3 - float256::one()) * K3);
+        b = b * x3 / (K3 * (K3 + float256::one()));
+        bp = bp * x3 / ((K3 - float256::two()) * K3);
+        f = f + a; g = g + b; fp = fp + ap; gp = gp + bp;
+        if (k > 2 && small_rel(a, f) && small_rel(b, g) && small_rel(ap, fp) && small_rel(bp, gp)) break;
+    }
+}
+
+// K_{1/3}(z), K_{2/3}(z) for a dd z >= 2 (Steed's CF2 with μ = −1/3, as in
+// bessel::steed_k), as m·2^kexp with a shared exponent.
+inline void steed_k13(const dd& X, dd& k13, dd& k23, int& kexp) {
+    const dd one{float256::one()};
+    const dd mu = -(one / float256(3));
+    const dd mu2 = mu * mu;
+    dd b = (one + X) * float256::two();
+    dd d = one / b;
+    dd h = d, delh = d;
+    dd q1{float256::zero()}, q2 = one;
+    const dd a1 = dd(float256(0.25)) - mu2;
+    dd q = a1, c = a1, a = -a1;
+    dd s = one + q * delh;
+    for (int i = 1; i < 1000000; ++i) {
+        a = a - D(2 * i);
+        c = -a * c / float256::from_int(i + 1);
+        const dd qnew = (q1 - b * q2) / a;
+        q1 = q2; q2 = qnew;
+        q = q + c * qnew;
+        b = b + D(2);
+        d = one / (b + a * d);
+        delh = (b * d - one) * delh;
+        h = h + delh;
+        const dd dels = q * delh;
+        s = s + dels;
+        if (small_rel(dels, s) && small_rel(delh, h)) break;
+    }
+    h = a1 * h;
+    const SD ex = exp_sd(-X);
+    const dd pre = detail_dd::sqrt(detail_dd::pi() / (X * float256::two())) * ex.m / s;
+    k13 = pre;
+    k23 = pre * (mu + X + dd(float256::half()) - h) / X;
+    kexp = ex.k;
+}
+
+// Asymptotic sums Σ (±1)^k w_k ζ^{-k} split into even and odd k, w = u (deriv
+// false) or v; u_k = u_{k−1}(6k−5)(6k−3)(6k−1)/((2k−1)·216k), v_k = −u_k(6k+1)/(6k−1).
+// sign: 0 all +, 1 (−1)^k, 2 (−1)^{⌊k/2⌋}. Stops at 2^-490 or at the smallest term.
+inline void asym_sums(const dd& zeta, bool deriv, int sign, dd& ev, dd& od) {
+    const dd one{float256::one()};
+    const dd iz = one / zeta;
+    dd u = one, p = one;
+    ev = one; od = dd(float256::zero());
+    float256 prev = float256::inf(false);
+    for (int k = 1; k < 100000; ++k) {
+        const float256 a = float256::from_int(6 * k - 5) * float256::from_int(6 * k - 3) * float256::from_int(6 * k - 1);
+        u = u * a / (float256::from_int(2 * k - 1) * float256::from_int(216 * k));
+        p = p * iz;
+        dd t = u * p;
+        if (deriv) t = -(t * float256::from_int(6 * k + 1) / float256::from_int(6 * k - 1));
+        if ((sign == 1 && (k & 1)) || (sign == 2 && (k & 2))) t = -t;
+        const float256 at = abs(t.hi);
+        if (at > prev) break;  // past the smallest term
+        prev = at;
+        if (k & 1) od = od + t; else ev = ev + t;
+        if (small_rel(t, ev)) break;
+    }
+}
+
+inline constexpr int kSerPos = 60;    // x > 0: Ai series while ζ < 60 (cancels ~2.9ζ bits)
+inline constexpr int kAsym = 104;     // asymptotic for ζ >= 104 (smallest term ~e^{-2ζ} < 2^-300)
+inline constexpr int kSerNeg = 110;   // x < 0: series while ζ < 110 (cancels ~1.44ζ bits)
+
+// which: 0 Ai, 1 Ai', 2 Bi, 3 Bi'. Finite x.
+[[nodiscard]] inline SD eval(float256 x, int which) {
+    const Consts& C = consts();
+    const dd one{float256::one()};
+    const bool deriv = which & 1, bi = which >= 2;
+    const float256 t = abs(x);
+    const dd sq = detail_dd::sqrt(dd(t));
+    const dd zeta = sq * t * float256(2) / float256(3);
+    const float256 zh = zeta.hi;
+    const bool neg = x.signbit();
+    const bool use_series = neg ? zh < float256(kSerNeg) : (bi ? zh < float256(kAsym) : zh < float256(kSerPos));
+    if (use_series) {
+        dd f, g, fp, gp;
+        series(x, f, g, fp, gp);
+        dd r;
+        if (!deriv) r = bi ? C.sqrt3 * (C.c1 * f + C.c2 * g) : C.c1 * f - C.c2 * g;
+        else r = bi ? C.sqrt3 * (C.c1 * fp + C.c2 * gp) : C.c1 * fp - C.c2 * gp;
+        return norm({r, 0});
+    }
+    const dd q4 = detail_dd::sqrt(sq);  // |x|^{1/4}
+    if (!neg) {
+        if (!bi && zh < float256(kAsym)) {
+            // Ai = (1/π)√(x/3) K_{1/3}(ζ), Ai' = −(x/(π√3)) K_{2/3}(ζ)
+            dd k13, k23;
+            int ke;
+            steed_k13(zeta, k13, k23, ke);
+            const dd r = deriv ? -(dd(x) * C.rpi / C.sqrt3 * k23) : C.rpi * sq / C.sqrt3 * k13;
+            return norm({r, ke});
+        }
+        dd ev, od;
+        asym_sums(zeta, deriv, bi ? 0 : 1, ev, od);
+        const dd s = ev + od;
+        const SD e = exp_sd(bi ? zeta : -zeta);
+        dd pre = deriv ? q4 * C.rsqrtpi : C.rsqrtpi / q4;
+        if (!bi) pre = detail_dd::ldexp(pre, -1);
+        if (deriv && !bi) pre = -pre;
+        return mul(e, pre * s);
+    }
+    // x < 0, oscillatory: θ = ζ − π/4.
+    dd ev, od;
+    asym_sums(zeta, deriv, 2, ev, od);  // ev = Σ(−1)^k w_{2k}ζ^{-2k}, od = Σ(−1)^k w_{2k+1}ζ^{-2k−1}
+    dd s1, c1, s2, c2;
+    sincos_x(zeta.hi, s1, c1);
+    sincos_x(zeta.lo, s2, c2);
+    const dd sz = s1 * c2 + c1 * s2, cz = c1 * c2 - s1 * s2;
+    const dd r2 = detail_dd::sqrt(dd(float256::half()));
+    const dd st = (sz - cz) * r2, ct = (cz + sz) * r2;  // sin θ, cos θ
+    dd r;
+    switch (which) {
+        case 0: r = (ct * ev + st * od) * C.rsqrtpi / q4; break;
+        case 2: r = (ct * od - st * ev) * C.rsqrtpi / q4; break;
+        case 1: r = (st * ev - ct * od) * C.rsqrtpi * q4; break;
+        default: r = (ct * ev + st * od) * C.rsqrtpi * q4; break;
+    }
+    return norm({r, 0});
+}
+
+[[nodiscard]] inline float256 pub(float256 x, int which) {
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) {
+        if (!x.signbit()) {
+            if (which == 0) return env.exact(float256::zero());
+            if (which == 1) return env.exact(-float256::zero());
+            return env.exact(x);
+        }
+        return (which & 1) ? env.invalid() : env.exact(float256::zero());  // Ai', Bi' grow like |x|^{1/4}
+    }
+    if (!x.signbit() && x > float256(6000)) {  // ζ > 3e5: beyond the range
+        return which >= 2 ? env.overflow(false) : env.underflow(which == 1);
+    }
+    return out(env, eval(x, which));
+}
+
+} // namespace airy
+} // namespace detail_sf
+
+/// Airy functions Ai(x), Bi(x) and their derivatives, any real x. For x < 0
+/// they oscillate; for x below about −2^110 the phase ζ = (2/3)|x|^{3/2} is only
+/// known to ~2^-474·ζ and the results lose accuracy. Ai, Ai' underflow and Bi,
+/// Bi' overflow above x ≈ 4960 / 4960. Ai(±∞) = +0, Bi(+∞) = +∞, Bi(−∞) = +0;
+/// Ai'(−∞), Bi'(−∞) are domain errors.
+[[nodiscard]] inline float256 airy_ai(float256 x) { return detail_sf::airy::pub(x, 0); }
+[[nodiscard]] inline float256 airy_ai_prime(float256 x) { return detail_sf::airy::pub(x, 1); }
+[[nodiscard]] inline float256 airy_bi(float256 x) { return detail_sf::airy::pub(x, 2); }
+[[nodiscard]] inline float256 airy_bi_prime(float256 x) { return detail_sf::airy::pub(x, 3); }
+
 } // namespace base256

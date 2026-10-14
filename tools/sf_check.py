@@ -160,7 +160,28 @@ LBETA = W1500(lambda a, b: mp.log(mp.beta(a, b)))
 GR = W1500(lambda a, b: mp.exp(mp.loggamma(a) - mp.loggamma(b)))
 GDR = W1500(lambda a, d: mp.exp(mp.loggamma(a) - mp.loggamma(a + d)))
 
+AI = W1500(lambda x: mp.airyai(x)); AIP = W1500(lambda x: mp.airyai(x, 1))
+BI = W1500(lambda x: mp.airybi(x)); BIP = W1500(lambda x: mp.airybi(x, 1))
+
 RANGES = [
+    ("ai",       "ai", AI, [(-20, 5, True)]),
+    ("ai_pos",   "ai", AI, [(0, 60, False)]),
+    ("ai_neg",   "ai", AI, [(-60, 0, False)]),
+    ("ai_far",   "ai", AI, [(6, 100, True)]),
+    ("ai_big",   "ai", AI, [(60, 4900, False)]),
+    ("aip_pos",  "aip", AIP, [(0, 60, False)]),
+    ("aip_neg",  "aip", AIP, [(-60, 0, False)]),
+    ("aip_far",  "aip", AIP, [(6, 100, True)]),
+    ("bi_pos",   "bi", BI, [(0, 60, False)]),
+    ("bi_neg",   "bi", BI, [(-60, 0, False)]),
+    ("bi_far",   "bi", BI, [(6, 12, True)]),
+    ("bip_pos",  "bip", BIP, [(0, 60, False)]),
+    ("bip_neg",  "bip", BIP, [(-60, 0, False)]),
+    ("bip_far",  "bip", BIP, [(6, 12, True)]),
+    ("ai_nfar",  "ai", AI, [(-10000, -60, False)]),
+    ("bi_nfar",  "bi", BI, [(-10000, -60, False)]),
+    ("aip_nfar", "aip", AIP, [(-10000, -60, False)]),
+    ("bip_nfar", "bip", BIP, [(-1e30, -60, False)]),
     ("psi",      "psi", PSI, [(-20, 10, True)]),
     ("psi_mid",  "psi", PSI, [(0, 100, False)]),
     ("psi_neg",  "psi", PSI, [(-60, 0, False)]),

@@ -358,6 +358,8 @@ int main(int argc, char** argv) {
         {"ei_big", [](float256 x){return expint(x);}, mpfr_eint, 9, 17.5, true, true, 1, 0},
         {"e1",     [](float256 x){return expint(1u, x);}, mpfr_e1, -20, 8, true, false, 1, 0},
         {"digamma",[](float256 x){return digamma(x);}, mpfr_digamma, -20, 12, true, true, 1, 0},
+        {"airy_ai",[](float256 x){return airy_ai(x);}, mpfr_ai, -20, 6, true, true, 1, 0},
+        {"airy_ai_lin",[](float256 x){return airy_ai(x);}, mpfr_ai, -60, 60, false, false, 1, 0},
         {"logint", [](float256 x){return logint(x);}, mpfr_li, -40, 40, true, false, 1, 0},
         {"logint1",[](float256 x){return logint(x);}, mpfr_li, -236, -1, true, false, 1, 0, 3},
     };

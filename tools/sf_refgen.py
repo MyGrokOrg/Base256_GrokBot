@@ -40,6 +40,7 @@ F = {
     "si": mp.si, "ci": mp.ci, "shi": mp.shi, "chi": mp.chi, "li": mp.li,
     "psi": mp.digamma, "pg": lambda n, x: mp.polygamma(int(n), x), "lbeta": lambda a, b: mp.log(mp.beta(a, b)),
     "gr": lambda a, b: mp.gamma(a) / mp.gamma(b), "gdr": lambda a, d: mp.gamma(a) / mp.gamma(a + d),
+    "ai": mp.airyai, "aip": lambda x: mp.airyai(x, 1), "bi": mp.airybi, "bip": lambda x: mp.airybi(x, 1),
     "ei": mp.ei, "en": lambda n, x: mp.expint(int(n), x),
     "leg": LEG, "aleg": ALEG, "sleg": SLEG, "lag": LAG, "alag": ALAG, "her": HER,
 }
@@ -92,6 +93,8 @@ CASES = [
     ("psi", "1.5"), ("psi", "-3.25"), ("psi", "1e-30"), ("psi", "1e10"), ("pg", "1", "0.5"), 
     ("pg", "3", "17.25"), ("pg", "60", "2.5"), ("lbeta", "2.5", "3.5"), ("lbeta", "1e6", "3e5"),
     ("gr", "7.5", "3.25"), ("gdr", "100.5", "1e-20"),
+    ("ai", "0"), ("ai", "-7.5"), ("ai", "14"), ("ai", "200"), ("ai", "-500.25"), ("aip", "2.5"), ("aip", "-31"),
+    ("bi", "-2"), ("bi", "50"), ("bip", "0"), ("bip", "-1000"),
     ("en", "1", "45.5"), ("en", "3", "0.125"), ("en", "40", "12"), ("en", "1000", "2"), ("en", "0", "3"),
 ]
 

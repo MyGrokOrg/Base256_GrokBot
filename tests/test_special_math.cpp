@@ -72,6 +72,10 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "lbeta") return lbeta(P(a), P(b));
     if (op == "gr") return tgamma_ratio(P(a), P(b));
     if (op == "gdr") return tgamma_delta_ratio(P(a), P(b));
+    if (op == "ai") return airy_ai(P(a));
+    if (op == "aip") return airy_ai_prime(P(a));
+    if (op == "bi") return airy_bi(P(a));
+    if (op == "bip") return airy_bi_prime(P(a));
     if (op == "her") return hermite(static_cast<unsigned>(std::stoul(a)), P(b));
     std::cerr << "unknown op " << op << "\n";
     return float256::qnan();
@@ -196,6 +200,17 @@ const Ref kRefs[] = {
     {"lbeta", "1e6", "3e5", "", "-0x156e7d4810d583b00e57792e5da0ab8be26928e005780d85d47f16c9ef14p-217"},
     {"gr", "7.5", "3.25", "", "0x16f05017023fda00515b1ef457e4121e756720c926c72b9428b44d679102p-227"},
     {"gdr", "100.5", "1e-20", "", "0x1fffffffffffffffe4d0db767be128760f587c065d58eb2ff99707602844p-237"},
+    {"ai", "0", "", "", "0x16b8c7962715b85ea5b5eec13993db6a5eac401ac9be7ad90848cce50883p-238"},
+    {"ai", "-7.5", "", "", "0x1497f92ca01e60b5223eca905d80e5e373ed7fa7c50c9b1b85b55c6d47f3p-238"},
+    {"ai", "14", "", "", "0x1c97d1d62adb7c5d3bcc897107b6ce5b277ea6ebe70e00a0caaf0b420376p-290"},
+    {"ai", "200", "", "", "0x1daddbd7c2cbf200815f32de0314780f5f7c7946fc74d22b803f947dd342p-2961"},
+    {"ai", "-500.25", "", "", "0x1dc628dc955a40a4814e4b70c8b8411731938197a52e23f54c8e61e00edfp-240"},
+    {"aip", "2.5", "", "", "-0x1ae182ce295c4087fb88a9ad46d6e1c1f1a10786ca842cae032b1be7bee1p-242"},
+    {"aip", "-31", "", "", "0x13bc9894e5ad575a7eaa85cce3d5245bfbdd9946339fce1a0ebdf8f56f54p-236"},
+    {"bi", "-2", "", "", "-0x1a632a64d50c9d88029fcd9d7fd3c4d8c34402deb4eabb22a3ce4c84f45fp-238"},
+    {"bi", "50", "", "", "0x1c0e2147632ee9a8c05376a3ad09e3ba2e730be017253b3c259177d32228p+101"},
+    {"bip", "0", "", "", "0x1cb0c1a680c8a08b085fbf122266921eb46ceaee6d2e3db957f854cd2e96p-238"},
+    {"bip", "-1000", "", "", "0x1c51c7ce3eaffd99757b6e366519025cb962731180150b18864d6b2dc157p-236"},
     {"ibetac", "30", "2", "0.0625", "0x1ffffffffffffffffffffffffffffc5c0000000000000000000000000000p-237"},
 };
 
@@ -496,6 +511,20 @@ int main() {
     EXPECT(tgamma_ratio(zero, one), inf, kDiv);
     EXPECT(tgamma_delta_ratio(float256(3), zero), one, 0);
     EXPECT(tgamma_delta_ratio(float256(3), float256(-4)), nan, kInv);
+
+    // Airy.
+    EXPECT(airy_ai(inf), zero, 0);
+    EXPECT(airy_ai(-inf), zero, 0);
+    EXPECT(airy_ai_prime(inf), -zero, 0);
+    EXPECT(airy_ai_prime(-inf), nan, kInv);
+    EXPECT(airy_bi(inf), inf, 0);
+    EXPECT(airy_bi_prime(-inf), nan, kInv);
+    EXPECT(airy_ai(nan), nan, 0);
+    EXPECT_M(airy_bi(float256(5000)),
+             [](round_mode m) { return down(m) ? float256::max() : float256::inf(false); }, base256::fe_overflow | kInx);
+    EXPECT_M(airy_ai(float256(5000)),
+             [](round_mode m) { return m == round_mode::upward ? float256::denorm_min() : float256::zero(); },
+             base256::fe_underflow | kInx);
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;
