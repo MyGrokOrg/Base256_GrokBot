@@ -1125,4 +1125,196 @@ namespace inv {
     return detail_sf::inv::lambert(x, true).out(env);
 }
 
+namespace detail_sf {
+namespace fres {
+
+// sin(πt), cos(πt) for t = x²/2 given exactly as a dd (exact reduction of both parts).
+inline void sincos_half_x2(float256 x, dd& s, dd& c) {
+    const dd t = detail_dd::ldexp(detail_dd::two_prod(x, x), -1);
+    dd s1, c1, s2, c2;
+    sincos_pi(t.hi, s1, c1);
+    sincos_pi(t.lo, s2, c2);
+    s = s1 * c2 + c1 * s2;
+    c = c1 * c2 - s1 * s2;
+}
+
+// Series: with z = πx²/2, T_n = x z^n/n!: C = Σ_{n even} (−1)^{n/2} T_n/(2n+1),
+// S = Σ_{n odd} (−1)^{(n−1)/2} T_n/(2n+1). Cancels about 2.27x² bits.
+inline void series(float256 x, dd& C, dd& S) {
+    const dd z = detail_dd::two_prod(x, x) * detail_dd::pio2();
+    dd T{x};
+    C = T; S = dd(float256::zero());
+    for (int n = 1; n < 100000; ++n) {
+        T = T * z / float256::from_int(n);
+        dd t = T / float256::from_int(2 * n + 1);
+        if (n & 2) t = -t;
+        if (n & 1) S = S + t; else C = C + t;
+        if (n > 4 && small_rel(t, (n & 1) ? S : C) && float256::from_int(n) > z.hi) {
+            // one more term of the other sum
+            T = T * z / float256::from_int(n + 1);
+            dd u = T / float256::from_int(2 * n + 3);
+            if ((n + 1) & 2) u = -u;
+            if ((n + 1) & 1) S = S + u; else C = C + u;
+            break;
+        }
+    }
+}
+
+// Complex Laplace continued fraction of erfc(w), w = √π (1 − i) x/2:
+//   C + iS = (1+i)/2 (1 − e^{−w²}/(√π K)), K = w + (1/2)/(w + 1/(w + (3/2)/(w + …))),
+// e^{−w²} = e^{iπx²/2}. Wallis recurrences A_n = w A_{n−1} + (n/2) A_{n−2}.
+inline void cf(float256 x, dd& C, dd& S) {
+    const dd zero{float256::zero()}, one{float256::one()};
+    const auto& cs = detail_dd::consts();
+    const dd sqpi{cs.sqrtpi[0], cs.sqrtpi[1]};
+    const dd wr = sqpi * x * float256::half(), wi = -wr;
+    dd Ar0 = one, Ai0 = zero, Br0 = zero, Bi0 = zero;  // A_{-1} = 1, B_{-1} = 0
+    dd Ar1 = wr, Ai1 = wi, Br1 = one, Bi1 = zero;      // A_0 = w, B_0 = 1
+    dd hr = zero, hi = zero, pr = one, pi = zero;      // h = B/A
+    for (int n = 1; n < 10000000; ++n) {
+        const float256 a = float256::from_int(n) * float256::half();
+        const dd Ar2 = wr * Ar1 - wi * Ai1 + Ar0 * a, Ai2 = wr * Ai1 + wi * Ar1 + Ai0 * a;
+        const dd Br2 = wr * Br1 - wi * Bi1 + Br0 * a, Bi2 = wr * Bi1 + wi * Br1 + Bi0 * a;
+        Ar0 = Ar1; Ai0 = Ai1; Br0 = Br1; Bi0 = Bi1;
+        Ar1 = Ar2; Ai1 = Ai2; Br1 = Br2; Bi1 = Bi2;
+        if ((n & 7) == 0) {
+            const float256 big = abs(Ar1.hi) > abs(Ai1.hi) ? abs(Ar1.hi) : abs(Ai1.hi);
+            const int e = ilogb(big);
+            if (e > 1000 || e < -1000)
+                for (dd* v : {&Ar0, &Ai0, &Br0, &Bi0, &Ar1, &Ai1, &Br1, &Bi1}) *v = detail_dd::ldexp(*v, -e);
+            const dd d = Ar1 * Ar1 + Ai1 * Ai1;
+            hr = (Br1 * Ar1 + Bi1 * Ai1) / d;
+            hi = (Bi1 * Ar1 - Br1 * Ai1) / d;
+            const dd dr = hr - pr, di = hi - pi;
+            const float256 m = abs(dr.hi) > abs(di.hi) ? abs(dr.hi) : abs(di.hi);
+            const float256 sz = abs(hr.hi) > abs(hi.hi) ? abs(hr.hi) : abs(hi.hi);
+            if (m.iszero() || ilogb(m) < ilogb(sz) - 468) break;
+            pr = hr; pi = hi;
+        }
+    }
+    dd s, c;
+    sincos_half_x2(x, s, c);
+    // Q = e^{iπx²/2} h / √π
+    const dd qr = (c * hr - s * hi) / sqpi, qi = (c * hi + s * hr) / sqpi;
+    const dd u = one - qr, v = -qi;
+    C = detail_dd::ldexp(u - v, -1);
+    S = detail_dd::ldexp(u + v, -1);
+}
+
+// x >= kAsym: C = 1/2 + f sin(πx²/2) − g cos, S = 1/2 − f cos − g sin,
+// f = (1/(πx)) Σ (−1)^k (4k−1)!!/(πx²)^{2k}, g = (1/(π²x³)) Σ (−1)^k (4k+1)!!/(πx²)^{2k}.
+inline void asym(float256 x, dd& C, dd& S) {
+    const dd one{float256::one()};
+    const dd pix = detail_dd::pi() * x;
+    const dd y = one / (pix * x);   // 1/(πx²)
+    const dd y2 = y * y;
+    dd F = one, G = one, tf = one, tg = one;
+    float256 prev = float256::inf(false);
+    for (int k = 1; k < 100000 && ilogb(x) < 1000; ++k) {
+        tf = -(tf * y2 * float256::from_int(4 * k - 3) * float256::from_int(4 * k - 1));
+        tg = -(tg * y2 * float256::from_int(4 * k - 1) * float256::from_int(4 * k + 1));
+        if (abs(tf.hi) > prev) break;
+        prev = abs(tf.hi);
+        F = F + tf; G = G + tg;
+        if (small_rel(tf, F) && small_rel(tg, G)) break;
+    }
+    const dd f = F / pix, g = G * y / pix;
+    dd s, c;
+    sincos_half_x2(x, s, c);
+    const dd h{float256::half()};
+    C = h + f * s - g * c;
+    S = h - f * c - g * s;
+}
+
+inline constexpr double kSeriesX = 4.5, kAsymX = 12;
+
+inline float256 pub(float256 x, bool sine) {
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x);
+    if (x.isinf()) return env.exact(copysign(float256::half(), x));
+    const bool neg = x.signbit();
+    const float256 a = abs(x);
+    if (a < ldexp(float256::one(), -100)) {
+        if (!sine) return env.round(x, float256::zero(), 0, neg ? 1 : -1);  // x − π²x⁵/40
+        const int e = ilogb(a);
+        const dd m{ldexp(a, -e)};
+        SD v = norm({m * m * m * detail_dd::pi() / float256(6), 3 * e});  // πx³/6 − …
+        if (neg) v.m = -v.m;
+        return out(env, v, neg ? 1 : -1);
+    }
+    dd C, S;
+    if (a < float256(kSeriesX)) series(a, C, S);
+    else if (a < float256(kAsymX)) cf(a, C, S);
+    else asym(a, C, S);
+    dd r = sine ? S : C;
+    if (neg) r = -r;
+    return r.out(env);
+}
+
+// Dawson F(x) = e^{−x²} Σ x^{2k+1}/(k!(2k+1)) (positive terms) for |x| < 16;
+// asymptotically (1/(2x)) Σ (2k−1)!!/(2x²)^k.
+[[nodiscard]] inline SD dawson_sd(float256 a) {
+    const dd one{float256::one()};
+    if (a < float256(16)) {
+        const dd x2 = detail_dd::two_prod(a, a);
+        dd t{a}, sum{a};
+        int k = 1;
+        for (;; ++k) {
+            t = t * x2 / float256::from_int(k);
+            const dd ad = t / float256::from_int(2 * k + 1);
+            sum = sum + ad;
+            if (float256::from_int(k) > x2.hi && f256_tail(ad, sum)) break;
+        }
+        float256 tf = t.hi, st{};
+        for (++k;; ++k) {
+            tf = tf * x2.hi / float256::from_int(k);
+            const float256 ad = tf / float256::from_int(2 * k + 1);
+            st = st + ad;
+            if (small_rel(dd(ad), sum)) break;
+        }
+        sum = sum + dd(st);
+        return mul(exp_sd(-x2), sum);
+    }
+    const int e = ilogb(a);
+    const dd m{ldexp(a, -e)};
+    dd sum = one;
+    if (e < 1000) {
+        const dd y = one / (detail_dd::two_prod(a, a) * float256::two());
+        dd t = one;
+        float256 prev = float256::inf(false);
+        for (int k = 1; k < 100000; ++k) {
+            t = t * y * float256::from_int(2 * k - 1);
+            if (abs(t.hi) > prev) break;
+            prev = abs(t.hi);
+            sum = sum + t;
+            if (small_rel(t, sum)) break;
+        }
+    }
+    return norm({sum / m, -e - 1});
+}
+
+} // namespace fres
+} // namespace detail_sf
+
+/// Fresnel integrals S(x) = ∫_0^x sin(πt²/2) dt and C(x) = ∫_0^x cos(πt²/2) dt,
+/// any real x (odd; S(±∞) = C(±∞) = ±1/2).
+[[nodiscard]] inline float256 fresnel_s(float256 x) { return detail_sf::fres::pub(x, true); }
+[[nodiscard]] inline float256 fresnel_c(float256 x) { return detail_sf::fres::pub(x, false); }
+
+/// Dawson's integral F(x) = e^{−x²} ∫_0^x e^{t²} dt, any real x (odd; F(±∞) = ±0).
+[[nodiscard]] inline float256 dawson(float256 x) {
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x);
+    if (x.isinf()) return env.exact(copysign(float256::zero(), x));
+    const bool neg = x.signbit();
+    const float256 a = abs(x);
+    if (a < ldexp(float256::one(), -300)) return env.round(x, float256::zero(), 0, neg ? 1 : -1);  // x − 2x³/3
+    detail_sf::SD v = detail_sf::fres::dawson_sd(a);
+    if (neg) v.m = -v.m;
+    // above 2^1000 the sum is 1 + (below 2^-2000): the true value is just above 1/(2x) in magnitude
+    return detail_sf::out(env, v, ilogb(a) >= 1000 ? (neg ? -1 : 1) : 2);
+}
+
 } // namespace base256

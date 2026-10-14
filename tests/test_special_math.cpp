@@ -80,6 +80,9 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "erfcinv") return erfc_inv(P(a));
     if (op == "w0") return lambert_w0(P(a));
     if (op == "wm1") return lambert_wm1(P(a));
+    if (op == "fs") return fresnel_s(P(a));
+    if (op == "fc") return fresnel_c(P(a));
+    if (op == "daw") return dawson(P(a));
     if (op == "her") return hermite(static_cast<unsigned>(std::stoul(a)), P(b));
     std::cerr << "unknown op " << op << "\n";
     return float256::qnan();
@@ -226,6 +229,15 @@ const Ref kRefs[] = {
     {"w0", "-0.3678794411", "", "", "-0x1fffd6ab7ab60d10d5f3455f727191814b86b2d2fe85fd9d995680c6d093p-237"},
     {"wm1", "-0.1", "", "", "-0x1c9e01e6bc1fba36c39c9e06cd54f7943f66d7c3d8cb54e20f13fa257405p-235"},
     {"wm1", "-1e-200", "", "", "-0x1d2a9a1cd86abeaad9cfc1c8fdfd42197f84155cf10da623c3951edba293p-228"},
+    {"fs", "0.75", "", "", "0x1abc7c34d0aedf20c73d8e1135c5d7aeb24a5c7491a92f44a03c6e6a762cp-239"},
+    {"fs", "-7.25", "", "", "-0x1e3457a82951bea04db5c3347b451e29d919a8aaeebc9fa0727750db83cep-238"},
+    {"fs", "30.5", "", "", "0x104eff8766ba0fe762cb38ca896514f98d95e37820696a53d7759caf2515p-237"},
+    {"fc", "2", "", "", "0x1f3f8b36d044c05bf528af74531e3f45264f0e4e6a7b79eb843f211dda07p-238"},
+    {"fc", "11.75", "", "", "0x1fd583b58aa5a457c41f2c965795a1e379aff48bdcfdc307700472174f82p-238"},
+    {"fc", "1e10", "", "", "0x1fffffffffffffffffffffffff7c7a42f3e6ac924bd2bc5609e45e5e835fp-238"},
+    {"daw", "0.5", "", "", "0x1b29f73897eab23135a51ff9710e5cc6b566d0d1a47abd79e6dcff42d9edp-238"},
+    {"daw", "-9.5", "", "", "-0x1b196619d1140bdf0a6d79977b96787170a53c7ee6e1dcf6e50a38cdd621p-241"},
+    {"daw", "100", "", "", "0x147b246620768b70369eb99051ac69b6af1920aebefbe8b7a2ffcb71d161p-244"},
     {"ibetac", "30", "2", "0.0625", "0x1ffffffffffffffffffffffffffffc5c0000000000000000000000000000p-237"},
 };
 
@@ -559,6 +571,19 @@ int main() {
     EXPECT_M(lambert_w0(ldexp(one, -400)),
              [](round_mode m) { return down(m) ? nextafter(ldexp(float256::one(), -400), float256::zero()) : ldexp(float256::one(), -400); }, kInx);
     for (double xv : {0.3, 0.999, 1e-9}) CHECK(abs(erf(erf_inv(float256(xv))) - float256(xv)) <= ldexp(one, -234));
+
+    // Fresnel and Dawson.
+    EXPECT(fresnel_s(inf), float256::half(), 0);
+    EXPECT(fresnel_c(-inf), -float256::half(), 0);
+    EXPECT(fresnel_s(-zero), -zero, 0);
+    EXPECT(fresnel_c(nan), nan, 0);
+    EXPECT(dawson(inf), zero, 0);
+    EXPECT(dawson(-inf), -zero, 0);
+    EXPECT(dawson(-zero), -zero, 0);
+    EXPECT_M(dawson(ldexp(one, 2000)),
+             [](round_mode m) { return m == round_mode::upward ? nextafter(ldexp(float256::one(), -2001), float256::inf(false)) : ldexp(float256::one(), -2001); }, kInx);
+    EXPECT_M(fresnel_c(ldexp(one, -400)),
+             [](round_mode m) { return down(m) ? nextafter(ldexp(float256::one(), -400), float256::zero()) : ldexp(float256::one(), -400); }, kInx);
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;

@@ -4,7 +4,7 @@ tests/test_special_math.cpp: {"op", "a", "b", "c", "result"} lines."""
 import sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 import mpmath as mp
-from sf_check import to_hex, ERFINV, ERFCINV, LEG, ALEG, SLEG, LAG, ALAG, HER
+from sf_check import to_hex, DAW, ERFINV, ERFCINV, LEG, ALEG, SLEG, LAG, ALAG, HER
 mp.mp.prec = 700
 
 def r256(v):
@@ -42,6 +42,7 @@ F = {
     "gr": lambda a, b: mp.gamma(a) / mp.gamma(b), "gdr": lambda a, d: mp.gamma(a) / mp.gamma(a + d),
     "ai": mp.airyai, "aip": lambda x: mp.airyai(x, 1), "bi": mp.airybi, "bip": lambda x: mp.airybi(x, 1),
     "erfinv": ERFINV, "erfcinv": ERFCINV, "w0": lambda x: mp.lambertw(x).real, "wm1": lambda x: mp.lambertw(x, -1).real,
+    "fs": mp.fresnels, "fc": mp.fresnelc, "daw": DAW,
     "ei": mp.ei, "en": lambda n, x: mp.expint(int(n), x),
     "leg": LEG, "aleg": ALEG, "sleg": SLEG, "lag": LAG, "alag": ALAG, "her": HER,
 }
@@ -98,6 +99,8 @@ CASES = [
     ("bi", "-2"), ("bi", "50"), ("bip", "0"), ("bip", "-1000"),
     ("erfinv", "0.25"), ("erfinv", "-0.999999"), ("erfcinv", "1e-3000"), ("erfcinv", "1.5"), ("erfcinv", "0.75"),
     ("w0", "1"), ("w0", "-0.25"), ("w0", "1e100"), ("w0", "-0.3678794411"), ("wm1", "-0.1"), ("wm1", "-1e-200"),
+    ("fs", "0.75"), ("fs", "-7.25"), ("fs", "30.5"), ("fc", "2"), ("fc", "11.75"), ("fc", "1e10"),
+    ("daw", "0.5"), ("daw", "-9.5"), ("daw", "100"),
     ("en", "1", "45.5"), ("en", "3", "0.125"), ("en", "40", "12"), ("en", "1000", "2"), ("en", "0", "3"),
 ]
 

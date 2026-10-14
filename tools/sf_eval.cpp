@@ -64,6 +64,9 @@ int main() {
         else if (f == "erfcinv") r = erfc_inv(P(a));
         else if (f == "w0") r = lambert_w0(P(a));
         else if (f == "wm1") r = lambert_wm1(P(a));
+        else if (f == "fs") r = fresnel_s(P(a));
+        else if (f == "fc") r = fresnel_c(P(a));
+        else if (f == "daw") r = dawson(P(a));
 #ifdef SF_MORE
         SF_MORE
 #endif

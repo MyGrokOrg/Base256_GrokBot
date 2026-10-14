@@ -172,7 +172,26 @@ def ERFCINV(y):
 W0 = W1500(lambda x: mp.lambertw(x).real)
 WM1 = W1500(lambda x: mp.lambertw(x, -1).real)
 
+FS = W1500(mp.fresnels); FC = W1500(mp.fresnelc)
+def DAW(x):
+    with mp.workprec(1500):
+        if abs(x) < 40: return mp.sqrt(mp.pi) / 2 * mp.exp(-x * x) * mp.erfi(x)
+        s, t, k = mp.mpf(1), mp.mpf(1), 1
+        while abs(t) > mp.mpf(2)**-1400:
+            t *= (2 * k - 1) / (2 * x * x); s += t; k += 1
+        return s / (2 * x)
+
 RANGES = [
+    ("fs",       "fs", FS, [(-20, 4, True)]),
+    ("fs_mid",   "fs", FS, [(-20, 20, False)]),
+    ("fs_big",   "fs", FS, [(4, 200, True)]),
+    ("fs_tiny",  "fs", FS, [(-3000, -20, True)]),
+    ("fc",       "fc", FC, [(-20, 4, True)]),
+    ("fc_mid",   "fc", FC, [(-20, 20, False)]),
+    ("fc_big",   "fc", FC, [(4, 200, True)]),
+    ("daw",      "daw", DAW, [(-20, 5, True)]),
+    ("daw_mid",  "daw", DAW, [(-30, 30, False)]),
+    ("daw_big",  "daw", DAW, [(5, 262000, True)]),
     ("erfinv",   "erfinv", ERFINV, [(-1, 1, False)]),
     ("erfinv_s", "erfinv", ERFINV, [(-300, -2, True)]),
     ("erfinv_1", "erfinv", ERFINV, [(0.999999, 1, False)]),
