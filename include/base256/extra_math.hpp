@@ -22,33 +22,66 @@ namespace base256 {
 
 
 namespace detail_spec {
-// erf(a) for 0 < a < 4 in dd: 2/√π e^{-a²} Σ 2^n a^{2n+1} / (1·3·…·(2n+1)).
-// All terms are positive, so the sum has no cancellation.
+// c_n = 2^n / (1·3·…·(2n+1)) for the erf series, as dd (computed once).
+inline constexpr int kErfTerms = 400;
+[[nodiscard]] inline const std::array<detail_dd::dd, kErfTerms>& erf_coefs() {
+    static const std::array<detail_dd::dd, kErfTerms> t = [] {
+        const fenv::scoped_default_env g;
+        std::array<detail_dd::dd, kErfTerms> c{};
+        c[0] = detail_dd::dd(float256::one());
+        for (int n = 1; n < kErfTerms; ++n)
+            c[static_cast<std::size_t>(n)] =
+                detail_dd::ldexp(c[static_cast<std::size_t>(n - 1)], 1) / float256::from_int(2 * n + 1);
+        return c;
+    }();
+    return t;
+}
+
+// erf(a) for 0 < a < 6 in dd: 2/√π e^{-a²} a Σ c_n a^{2n}, by Horner on the
+// precomputed c_n. All terms are positive, so the sum has no cancellation.
 [[nodiscard]] inline detail_dd::dd erf_series_dd(float256 a) {
     using detail_dd::dd;
     const dd x2 = detail_dd::two_prod(a, a);
-    const dd two_x2 = detail_dd::ldexp(x2, 1);
-    dd term{a}, sum{a};
-    const float256 rel = ldexp(float256::one(), -490);
-    for (int n = 1; n <= 2000; ++n) {
-        term = term * two_x2 / float256::from_int(2 * n + 1);
-        sum = sum + term;
-        if (term.hi < abs(sum.hi) * rel) break;
+    // Number of terms: c_n a^{2n} < 2^-496 (the sum is >= 1).
+    const double l2 = std::log2(x2.hi.to_double());
+    double lc = 0;
+    int n = 1;
+    for (; n < kErfTerms - 1; ++n) {
+        lc += 1.0 - std::log2(2.0 * n + 1.0);
+        if (lc + n * l2 < -496.0) break;
     }
-    const auto& c = detail_dd::consts();
-    const dd two_over_sqrtpi = dd(float256::two()) / dd(c.sqrtpi[0], c.sqrtpi[1]);
-    return sum * detail_dd::exp(-x2) * two_over_sqrtpi;
+    const auto& c = erf_coefs();
+    dd p = c[static_cast<std::size_t>(n)];
+    for (int k = n - 1; k >= 0; --k) p = p * x2 + c[static_cast<std::size_t>(k)];
+    const auto& cs = detail_dd::consts();
+    const dd two_over_sqrtpi = dd(float256::two()) / dd(cs.sqrtpi[0], cs.sqrtpi[1]);
+    return p * a * detail_dd::exp(-x2) * two_over_sqrtpi;
 }
 
-// erfc(a) for a >= 4 as m·2^k: e^{-a²} / (√π · K(a)), with the Laplace
-// continued fraction K = a + (1/2)/(a + 1/(a + (3/2)/(a + …))) evaluated
-// backward from a fixed depth (chosen so the truncation error is < 2^-260).
+// erfc(a) for a >= 6 (any a >= 4 works) as m·2^k: e^{-a²} / (√π · K(a)), with the Laplace
+// continued fraction K = a + (1/2)/(a + 1/(a + (3/2)/(a + …))) truncated at a
+// depth chosen from a, evaluated by the forward
+// convergent recurrence P_n = a P_{n-1} + (n/2) P_{n-2} (likewise Q): all
+// terms are positive, and only one division is needed.
 [[nodiscard]] inline detail_dd::Scaled erfc_cf_dd(float256 a) {
     using detail_dd::dd;
-    const int depth = a < float256(6) ? 400 : a < float256(8) ? 250 : a < float256(10) ? 200
-                    : a < float256(20) ? 120 : 80;
-    dd f{a};
-    for (int n = depth; n >= 1; --n) f = dd(a) + dd(float256::from_int(n) * float256::half()) / f;
+    // depth ~ 6400/a² + 50 keeps the truncation error below 2^-300 (measured
+    // against depth 3000 for a = 4 … 40).
+    const double ad = a.to_double();
+    const int depth = static_cast<int>(6400.0 / (ad * ad)) + 50;
+    dd p2{float256::one()}, p1{a}, q2{float256::zero()}, q1{float256::one()};
+    for (int n = 1; n <= depth; ++n) {
+        const float256 bn = float256::from_int(n) * float256::half();
+        const dd p = p1 * a + p2 * bn;
+        const dd q = q1 * a + (q2.hi.iszero() ? q2 : q2 * bn);
+        p2 = p1; p1 = p; q2 = q1; q1 = q;
+        if ((n & 31) == 0) {  // keep the convergents in range
+            const int e = ilogb(q1.hi);
+            p1 = detail_dd::ldexp(p1, -e); p2 = detail_dd::ldexp(p2, -e);
+            q1 = detail_dd::ldexp(q1, -e); q2 = detail_dd::ldexp(q2, -e);
+        }
+    }
+    const dd f = p1 / q1;
     const auto& c = detail_dd::consts();
     detail_dd::Scaled e = detail_dd::exp_scaled(-detail_dd::two_prod(a, a));
     e.m = e.m / (f * dd(c.sqrtpi[0], c.sqrtpi[1]));
@@ -71,7 +104,7 @@ namespace detail_spec {
         const auto& c = detail_dd::consts();
         y = dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1]);
         tail = -s;
-    } else if (a < float256(4)) {
+    } else if (a < float256(6)) {
         y = detail_spec::erf_series_dd(a);
     } else if (a > float256(16)) {
         y = dd(float256::one());  // erfc(16) < 2^-370
@@ -97,13 +130,14 @@ namespace detail_spec {
         if (a > float256(16)) return env.round(float256::two(), float256::zero(), 0, -1);
         if (detail_math::is_tiny(a))
             return (dd(float256::one()) + dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1])).out(env, 0, -1);
-        if (a < float256(4)) return (dd(float256::one()) + detail_spec::erf_series_dd(a)).out(env);
+        if (a < float256(6)) return (dd(float256::one()) + detail_spec::erf_series_dd(a)).out(env);
         const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
         return (dd(float256::two()) - detail_dd::ldexp(e.m, e.k)).out(env);
     }
     if (detail_math::is_tiny(a))
         return (dd(float256::one()) - dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1])).out(env, 0, +1);
-    if (a < float256(4)) return (dd(float256::one()) - detail_spec::erf_series_dd(a)).out(env);
+    // 1 - erf(a) loses at most a² log2(e) < 52 bits for a < 6 (of ~474).
+    if (a < float256(6)) return (dd(float256::one()) - detail_spec::erf_series_dd(a)).out(env);
     if (a > float256(520)) return env.underflow(false);  // erfc(520) < 2^-390000
     const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
     return e.m.out(env, e.k);
