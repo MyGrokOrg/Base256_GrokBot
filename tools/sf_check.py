@@ -100,6 +100,8 @@ RANGES = [
     ("ell_K1",   "K", EK, [(0.999, 1, False)]),
     ("ell_E",    "E", EE, [(-1, 1, False)]),
     ("ell_Pi",   "Pi", EPI, [(-1, 1, False), (-10, 1, False)]),
+    ("ell_Pi1",  "Pi", EPI, [(0.999, 1, False), (0.999, 1, False)]),
+    ("ell_Pibig","Pi", EPI, [(-1, 1, False), (-1e6, -10, False)]),
     ("ell_F",    "F1", EF, [(-1, 1, False), (-1.57, 1.57, False)]),
     ("ell_Fbig", "F1", EF, [(-1, 1, False), (-100, 100, False)]),
     ("ell_E2",   "E2", EE2, [(-1, 1, False), (-1.57, 1.57, False)]),

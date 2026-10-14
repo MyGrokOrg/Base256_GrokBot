@@ -1137,14 +1137,68 @@ namespace detail_sf {
 namespace ell {
 
 using detail_dd::sqrt;
-// max |A − v|/|A| below 2^-90: the degree-5 Taylor tails below are then < 2^-500.
+// max |A − v|/|A| below 2^-41 (|Z_i| < 2^-40): the degree-12 tails of
+// carlson_tail are then < 2^-500.
 [[nodiscard]] inline bool close(const dd& A, const dd& a, const dd& b, const dd& c, const dd& d) {
-    const int ea = ilogb(A.hi) - 90;
+    const int ea = ilogb(A.hi) - 41;
     for (const dd* v : {&a, &b, &c, &d}) {
         const dd e = A - *v;
         if (!e.hi.iszero() && ilogb(e.hi) >= ea) return false;
     }
     return true;
+}
+
+// Carlson's R_{−a}(b; z) after duplication, from its Taylor series about the
+// weighted mean A (DLMF 19.19.7, 19.36): A^{−a} Σ_N (a)_N/(c)_N T_N, with
+// T_N = [t^N] Π_i (1 − Z_i t)^{−b_i}, Z_i = 1 − z_i/A, c = Σ b_i. This returns
+// the sum (without A^{−a}) through degree kTailDeg; with max |Z_i| < 2^-40
+// (`close`) the dropped terms are below 2^-500. Degrees >= 7 (< 2^-280) run in
+// float256. Arguments are doubled: b2[i] = 2 b_i, a2 = 2a, c2 = 2c.
+inline constexpr int kTailDeg = 12;
+inline constexpr int kTailDD = 6;
+[[nodiscard]] inline dd carlson_tail(const dd* Z, const int* b2, int nv, int a2, int c2) {
+    constexpr int D = kTailDeg;
+    dd prod[D + 1];
+    float256 prodf[D + 1];
+    for (int i = 0; i < nv; ++i) {
+        // (1 − Z t)^{−b}: s_k = s_{k−1} Z (2b + 2k − 2)/(2k)
+        dd ser[D + 1];
+        ser[0] = dd(float256::one());
+        for (int k = 1; k <= D; ++k) {
+            if (k <= kTailDD) ser[k] = ser[k - 1] * Z[i] * float256::from_int(b2[i] + 2 * k - 2) / float256::from_int(2 * k);
+            else ser[k] = dd(ser[k - 1].hi * Z[i].hi * float256::from_int(b2[i] + 2 * k - 2) / float256::from_int(2 * k));
+        }
+        if (i == 0) {
+            for (int k = 0; k <= D; ++k) { prod[k] = ser[k]; prodf[k] = ser[k].hi; }
+            continue;
+        }
+        for (int n = D; n >= 0; --n) {
+            if (n <= kTailDD) {
+                dd acc = prod[n];
+                for (int k = 1; k <= n; ++k) acc = acc + prod[n - k] * ser[k];
+                prod[n] = acc;
+                prodf[n] = acc.hi;
+            } else {
+                float256 acc = prodf[n];
+                for (int k = 1; k <= n; ++k) acc = acc + prodf[n - k] * ser[k].hi;
+                prodf[n] = acc;
+            }
+        }
+    }
+    // Σ r_N T_N, r_N = (a)_N/(c)_N
+    float256 rf = float256::one(), tailf{};
+    dd r{float256::one()}, sum = prod[0];
+    for (int n = 1; n <= D; ++n) {
+        if (n <= kTailDD) {
+            r = r * float256::from_int(a2 + 2 * n - 2) / float256::from_int(c2 + 2 * n - 2);
+            rf = r.hi;
+            if (n >= 2) sum = sum + r * prod[n];  // T_1 = Σ b_i Z_i = 0
+        } else {
+            rf = rf * float256::from_int(a2 + 2 * n - 2) / float256::from_int(c2 + 2 * n - 2);
+            tailf = tailf + rf * prodf[n];
+        }
+    }
+    return sum + dd(tailf);
 }
 
 // R_F(x, y, z), x, y, z >= 0, at most one zero.
@@ -1157,10 +1211,10 @@ using detail_dd::sqrt;
         x = detail_dd::ldexp(x + lam, -2); y = detail_dd::ldexp(y + lam, -2); z = detail_dd::ldexp(z + lam, -2);
         A = detail_dd::ldexp(A + lam, -2);
     }
-    const dd X = one - x / A, Y = one - y / A, Z = -(X + Y);
-    const dd E2 = X * Y - Z * Z, E3 = X * Y * Z;
-    const dd poly = one - E2 / float256(10) + E3 / float256(14) + E2 * E2 / float256(24) - E2 * E3 * float256(3) / float256(44);
-    return poly / sqrt(A);
+    const dd iA = one / A;
+    const dd Zs[3] = {one - x * iA, one - y * iA, one - z * iA};
+    const int b2[3] = {1, 1, 1};
+    return carlson_tail(Zs, b2, 3, 1, 3) / sqrt(A);
 }
 
 // R_D(x, y, z), x, y >= 0 (at most one zero), z > 0.
@@ -1176,12 +1230,10 @@ using detail_dd::sqrt;
         x = detail_dd::ldexp(x + lam, -2); y = detail_dd::ldexp(y + lam, -2); z = detail_dd::ldexp(z + lam, -2);
         A = detail_dd::ldexp(A + lam, -2);
     }
-    const dd X = one - x / A, Y = one - y / A, Z = -(X + Y) / float256(3);
-    const dd XY = X * Y, Z2 = Z * Z;
-    const dd E2 = XY - Z2 * float256(6), E3 = (XY * float256(3) - Z2 * float256(8)) * Z;
-    const dd E4 = (XY - Z2) * Z2 * float256(3), E5 = XY * Z2 * Z;
-    const dd poly = one - E2 * float256(3) / float256(14) + E3 / float256(6) + E2 * E2 * float256(9) / float256(88) -
-                    E4 * float256(3) / float256(22) - E2 * E3 * float256(9) / float256(52) + E5 * float256(3) / float256(26);
+    const dd iA = one / A;
+    const dd Zs[3] = {one - x * iA, one - y * iA, one - z * iA};
+    const int b2[3] = {1, 1, 3};
+    const dd poly = carlson_tail(Zs, b2, 3, 3, 5);
     return sum * float256(3) + detail_dd::ldexp(poly / (A * sqrt(A)), -2 * m);
 }
 
@@ -1192,10 +1244,21 @@ using detail_dd::sqrt;
     const dd t = (y - x) / x;  // R_C = atan(√t)/√t / √x  (atanh form for t < 0)
     dd g;
     if (t.hi.iszero() || ilogb(t.hi) < -8) {
+        // Σ (−t)^n/(2n+1): terms below 2^-492 dropped, those below 2^-245 in float256.
         const auto& io = detail_dd::inv_odd();
-        dd p = io[detail_dd::kMaxOddInv];
-        for (int n = detail_dd::kMaxOddInv - 1; n >= 0; --n) p = io[static_cast<std::size_t>(n)] - t * p;
-        g = p;
+        if (t.hi.iszero()) {
+            g = one;
+        } else {
+            const int lt = -(ilogb(t.hi) + 1);  // |t| < 2^-lt, lt >= 8
+            int n = 492 / lt + 1, nf = 245 / lt + 1;
+            if (n > detail_dd::kMaxOddInv) n = detail_dd::kMaxOddInv;
+            if (nf > n) nf = n;
+            float256 pf{};
+            for (int j = n; j > nf; --j) pf = io[static_cast<std::size_t>(j)].hi - t.hi * pf;
+            dd p{pf};
+            for (int j = nf; j >= 0; --j) p = io[static_cast<std::size_t>(j)] - t * p;
+            g = p;
+        }
     } else if (!t.hi.signbit()) {
         const dd st = sqrt(t);
         g = detail_math::atan_dd(st) / st;
@@ -1222,16 +1285,10 @@ using detail_dd::sqrt;
         z = detail_dd::ldexp(z + lam, -2); p = detail_dd::ldexp(p + lam, -2);
         A = detail_dd::ldexp(A + lam, -2);
     }
-    const dd X = one - x / A, Y = one - y / A, Z = one - z / A;
-    const dd P = -(X + Y + Z) / float256(2);
-    const dd P2 = P * P;
-    const dd E2 = X * Y + X * Z + Y * Z - P2 * float256(3);
-    const dd XYZ = X * Y * Z;
-    const dd E3 = XYZ + E2 * P * float256(2) + P2 * P * float256(4);
-    const dd E4 = (XYZ * float256(2) + E2 * P + P2 * P * float256(3)) * P;
-    const dd E5 = XYZ * P2;
-    const dd poly = one - E2 * float256(3) / float256(14) + E3 / float256(6) + E2 * E2 * float256(9) / float256(88) -
-                    E4 * float256(3) / float256(22) - E2 * E3 * float256(9) / float256(52) + E5 * float256(3) / float256(26);
+    const dd iA = one / A;
+    const dd Zs[4] = {one - x * iA, one - y * iA, one - z * iA, one - p * iA};
+    const int b2[4] = {1, 1, 1, 2};
+    const dd poly = carlson_tail(Zs, b2, 4, 3, 5);
     return sum * float256(3) + detail_dd::ldexp(poly / (A * sqrt(A)), -2 * m);
 }
 
@@ -1254,6 +1311,33 @@ inline void agm_ke(float256 k, dd& K, dd* E) {
     }
     K = detail_dd::pio2() / a;
     if (E) *E = K * (dd(float256::one()) - csum);
+}
+
+// Bulirsch's cel(k_c, p, 1, 1) = Π(1 − p, k) for p > 0 (quadratically
+// convergent Gauss transformation; NR's cel with a = b = 1). Stops when
+// |g − q_c| <= 2^-240 g, after which the error is ~2^-480.
+[[nodiscard]] inline dd cel(const dd& kc2v, const dd& p0) {
+    const dd one{float256::one()};
+    dd qc = sqrt(kc2v);
+    dd a = one, p = sqrt(p0);
+    dd b = one / p;
+    dd e = qc, em = one;
+    for (int it = 0; it < 100; ++it) {
+        const dd f = a;
+        a = a + b / p;
+        dd g = e / p;
+        b = b + f * g;
+        b = b + b;
+        p = g + p;
+        g = em;
+        em = em + qc;
+        const dd d = g - qc;
+        if (d.hi.iszero() || ilogb(d.hi) < ilogb(g.hi) - 240) break;
+        qc = sqrt(e);
+        qc = qc + qc;
+        e = qc * em;
+    }
+    return detail_dd::pio2() * (b + a * em) / (em * (em + p));
 }
 
 } // namespace ell
@@ -1288,13 +1372,8 @@ inline void agm_ke(float256 k, dd& K, dd* E) {
     if (abs(k) > float256::one() || nu > float256::one()) return env.invalid();
     if (nu.isinf()) return env.exact(float256::zero());  // ν → −∞: Π → 0
     if (abs(k) == float256::one() || nu == float256::one()) return env.pole(false);
-    const dd one{float256::one()};
-    const dd kc = detail_sf::ell::kc2(k);
-    const dd p = detail_dd::two_sum(float256::one(), -nu);
     if (nu.iszero()) { dd K; detail_sf::ell::agm_ke(k, K, nullptr); return K.out(env); }
-    const dd v = detail_sf::ell::rf(dd(float256::zero()), kc, one) +
-                 dd(nu) * detail_sf::ell::rj(dd(float256::zero()), kc, one, p) / float256(3);
-    return v.out(env);
+    return detail_sf::ell::cel(detail_sf::ell::kc2(k), detail_dd::two_sum(float256::one(), -nu)).out(env);
 }
 
 namespace detail_sf {
@@ -1352,9 +1431,7 @@ namespace ell {
             else { dd K; agm_ke(k, K, &full); }
         } else {
             if (abs(k) == one || nu >= one) return nu > one ? env.invalid() : env.pole(phi.signbit());
-            const dd kc = kc2(k);
-            full = rf(dd(float256::zero()), kc, one_d) +
-                   dd(nu) * rj(dd(float256::zero()), kc, one_d, detail_dd::two_sum(one, -nu)) / float256(3);
+            full = cel(kc2(k), detail_dd::two_sum(one, -nu));
         }
         part = part + full * (mf + mf);
     }
