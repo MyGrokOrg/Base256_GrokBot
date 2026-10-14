@@ -210,7 +210,7 @@ Domain and limits:
 
 ### More special functions (4.20.0)
 
-`special_math_ext.hpp` (also included by `base256.hpp`) adds the rest of C++17 special math and the common extras. They work the same way: dd evaluation, one rounding in the current mode, IEEE flags, NaN propagation, domain errors give NaN with `invalid`, poles give ±∞ with `divbyzero`. In `sf_check` against mpmath at 1500–2000 bits, every function below rounded correctly in round-to-nearest (max 0.5 ulp, 0 misroundings, 60–300 cases per range). Where MPFR has the function, `mpfr_ulp` also checked all five modes: ≤ 1 ulp directed, correct direction, exact flags. Cost is ns/call from `base256_bench` over the range shown.
+`special_math_ext.hpp` (also included by `base256.hpp`) adds the rest of C++17 special math and the common extras. They work the same way: dd evaluation, one rounding in the current mode, IEEE flags, NaN propagation, domain errors give NaN with `invalid`, poles give ±∞ with `divbyzero`. In `sf_check` against mpmath at 1500–2000 bits, every function below rounded correctly in round-to-nearest (max 0.5 ulp, 0 misroundings, 60–300 cases per range). Since 4.21.0, `sf_check … modes` also evaluates every case in all five modes and compares with the correctly rounded 2000-bit mpmath value in that mode, including inexact/overflow/underflow flags (tininess after rounding). All the functions in both special-function tables pass it: ≤ 1 ulp directed, 0 misroundings, 0 flag errors (40 cases per range, every range). MPFR-backed functions are also checked by `mpfr_ulp`. Cost is ns/call from `base256_bench` over the range shown.
 
 | Function | Domain / limits | Method | Reference | Cost |
 |---|---|---|---|---:|
@@ -223,7 +223,7 @@ Domain and limits:
 | `polygamma(n, x)`, `trigamma(x)` | x > 0 for n ≥ 1 (x ≤ 0 is not provided) | (−1)^{n+1} n! ζ(n+1, x) | mpmath | 1.2–1.3 ms |
 | `lbeta(a, b)` | a, b > 0 | ln of the scaled B; lnΓ sums above 65536 | ln of MPFR lngamma at 3000 bits, all modes | 127 µs |
 | `tgamma_ratio(a, b)`, `tgamma_delta_ratio(a, δ)` | a, b (a + δ) > 0; correctly rounded while lnΓ < ~2^200 | scaled Γ quotient below 2^20, exp(lnΓ − lnΓ) above | mpmath | 73 µs |
-| `airy_ai`, `airy_bi`, `airy_ai_prime`, `airy_bi_prime` | any x; Ai, Ai' underflow and Bi, Bi' overflow near x ≈ 4960; below about −2^110 the phase is only good to ~2^-474·ζ | Maclaurin series; Steed K_{1/3} (dd argument) for Ai with x in 11–16; asymptotic from ζ = 104 (x > 0) and 110 (x < 0) | MPFR `ai`, all modes; mpmath | 590–730 µs |
+| `airy_ai`, `airy_bi`, `airy_ai_prime`, `airy_bi_prime` | any x; Ai, Ai' underflow and Bi, Bi' overflow near x ≈ 4205; below about −2^110 the phase is only good to ~2^-474·ζ | Maclaurin series; Steed K_{1/3} (dd argument) for Ai with x in 11–16; asymptotic from ζ = 104 (x > 0) and 110 (x < 0) | MPFR `ai`, all modes; mpmath | 590–730 µs |
 | `lambert_w0`, `lambert_wm1` | W0: x ≥ −1/e; W−1: −1/e ≤ x < 0 (−0 → −∞ pole) | branch-point series or log guess; Halley / Newton in dd | mpmath | 91 µs, 104 µs |
 | `erf_inv`, `erfc_inv` | (−1, 1) and (0, 2); ±1 / 0, 2 are poles; erfc_inv down to the smallest subnormal | second-order Newton steps on the exact-argument dd erf/erfc | mpmath | 120 µs |
 | `dawson(x)` | any x | positive erfi series below 16, asymptotic above | mpmath | 290 µs |

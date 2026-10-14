@@ -1,20 +1,17 @@
 // Reads "<func> <a> [<b> [<c>]]" lines (decimal or hex float256 literals) and
 // prints the binary256 result as a hex float. Used by tools/sf_check.py.
+// With SF_MODES set in the environment, each line is evaluated in all five
+// rounding modes (RNE, RNA, RZ, RU, RD) and printed as "hex flags" pairs.
 #include <base256/base256.hpp>
 #include <cstdio>
+#include <cstdlib>
 #include <format>
 #include <iostream>
 #include <sstream>
 #include <string>
 using namespace base256;
 static float256 P(const std::string& s) { return float256::parse(s).value(); }
-int main() {
-    std::string line;
-    while (std::getline(std::cin, line)) {
-        std::istringstream is(line);
-        std::string f, a, b, c;
-        is >> f >> a >> b >> c;
-        float256 r;
+static bool eval(const std::string& f, const std::string& a, const std::string& b, const std::string& c, float256& r) {
         if (f == "j") r = cyl_bessel_j(P(a), P(b));
         else if (f == "y") r = cyl_neumann(P(a), P(b));
         else if (f == "i") r = cyl_bessel_i(P(a), P(b));
@@ -74,7 +71,34 @@ int main() {
 #ifdef SF_MORE
         SF_MORE
 #endif
-        else { std::printf("?\n"); continue; }
-        std::cout << std::format("{:a}", r) << "\n";
+        else return false;
+        return true;
+}
+int main() {
+    const bool modes = std::getenv("SF_MODES") != nullptr;
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        std::istringstream is(line);
+        std::string f, a, b, c;
+        is >> f >> a >> b >> c;
+        float256 r;
+        if (!modes) {
+            if (!eval(f, a, b, c, r)) { std::printf("?\n"); continue; }
+            std::cout << std::format("{:a}", r) << "\n";
+            continue;
+        }
+        std::string out;
+        bool ok = true;
+        for (round_mode m : {round_mode::to_nearest_even, round_mode::to_nearest_away, round_mode::toward_zero,
+                             round_mode::upward, round_mode::downward}) {
+            fenv::set_round(m);
+            fenv::clear_flags();
+            ok = eval(f, a, b, c, r);
+            const unsigned fl = fenv::test_flags();
+            fenv::set_round(round_mode::to_nearest_even);
+            if (!ok) break;
+            out += std::format("{:a} {} ", r, fl);
+        }
+        std::cout << (ok ? out : std::string("?")) << "\n";
     }
 }

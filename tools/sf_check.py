@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Accuracy check of the special functions against mpmath (independent reference).
 
-usage: sf_check.py EVAL_BINARY [cases_per_range] [seed] [filter]
+usage: sf_check.py EVAL_BINARY [cases_per_range] [seed] [filter] [modes]
+
+With "modes" as the fifth argument, every case is evaluated in all five
+rounding modes (SF_MODES=1) and checked against the correctly rounded value
+of a 2000-bit reference in that mode, including the IEEE flags
+(inexact, overflow, underflow with tininess after rounding).
 
 Each range draws random binary256 arguments, evaluates them with EVAL_BINARY
 (tools/sf_eval.cpp, round-to-nearest) and compares with mpmath at 700 bits.
@@ -143,13 +148,14 @@ def selftest():
     print("selftest ok")
 
 def EI(x):
-    with mp.workprec(1500): return mp.ei(x)
+    with mp.workprec(REFPREC[0]): return mp.ei(x)
 def EN(n, x):
-    with mp.workprec(1500): return mp.expint(int(n), x)
+    with mp.workprec(REFPREC[0]): return mp.expint(int(n), x)
 
+REFPREC = [1500]
 def W1500(f):
     def g(*a):
-        with mp.workprec(1500): return f(*a)
+        with mp.workprec(REFPREC[0]): return f(*a)
     return g
 SI, CI, SHI, CHI = W1500(mp.si), W1500(mp.ci), W1500(mp.shi), W1500(mp.chi)
 LI = W1500(lambda x: mp.li(x))
@@ -164,9 +170,9 @@ AI = W1500(lambda x: mp.airyai(x)); AIP = W1500(lambda x: mp.airyai(x, 1))
 BI = W1500(lambda x: mp.airybi(x)); BIP = W1500(lambda x: mp.airybi(x, 1))
 
 def ERFINV(x):
-    with mp.workprec(1500): return mp.erfinv(x)
+    with mp.workprec(REFPREC[0]): return mp.erfinv(x)
 def ERFCINV(y):
-    with mp.workprec(1500):
+    with mp.workprec(REFPREC[0]):
         if y < 1: return mp.findroot(lambda w: mp.log(mp.erfc(w)) - mp.log(y), mp.sqrt(-mp.log(y)) if y < 0.1 else mp.erfinv(1 - y))
         return -mp.erfinv(y - 1) if y != 1 else mp.mpf(0)
 W0 = W1500(lambda x: mp.lambertw(x).real)
@@ -174,7 +180,7 @@ WM1 = W1500(lambda x: mp.lambertw(x, -1).real)
 
 FS = W1500(mp.fresnels); FC = W1500(mp.fresnelc)
 def DAW(x):
-    with mp.workprec(1500):
+    with mp.workprec(REFPREC[0]):
         if abs(x) < 40: return mp.sqrt(mp.pi) / 2 * mp.exp(-x * x) * mp.erfi(x)
         s, t, k = mp.mpf(1), mp.mpf(1), 1
         while abs(t) > mp.mpf(2)**-1400:
@@ -235,6 +241,10 @@ RANGES = [
     ("bip_neg",  "bip", BIP, [(-60, 0, False)]),
     ("bip_far",  "bip", BIP, [(6, 12, True)]),
     ("ai_nfar",  "ai", AI, [(-10000, -60, False)]),
+    ("ai_unf",   "ai", AI, [(4180, 4230, False)]),
+    ("aip_unf",  "aip", AIP, [(4180, 4230, False)]),
+    ("bi_ovf",   "bi", BI, [(4180, 4230, False)]),
+    ("bip_ovf",  "bip", BIP, [(4180, 4230, False)]),
     ("bi_nfar",  "bi", BI, [(-10000, -60, False)]),
     ("aip_nfar", "aip", AIP, [(-10000, -60, False)]),
     ("bip_nfar", "bip", BIP, [(-1e30, -60, False)]),
@@ -375,6 +385,94 @@ RANGES = [
     ("sph_y",   "sy", SY, [("int", 0, 20), (0, 50, False)]),
 ]
 
+EMAX = 262143
+MODES = ("RNE", "RNA", "RZ", "RU", "RD")
+F_INV, F_DIV, F_OVF, F_UNF, F_INX = 1, 2, 4, 8, 16
+
+def _rnd(a, s, e, mode):
+    """|a| rounded to 237 bits at exponent floor e (as integer q·2^(e−236)); sign s."""
+    q = mp.ldexp(a, P - 1 - e)
+    fl = int(mp.floor(q)); frac = q - fl
+    if frac == 0: return fl, True
+    up = {"RNE": frac > 0.5 or (frac == 0.5 and fl & 1), "RNA": frac >= 0.5, "RZ": False,
+          "RU": s > 0, "RD": s < 0}[mode]
+    return fl + (1 if up else 0), False
+
+def round_b256(v, mode):
+    """Correctly rounded binary256 value of v in mode, and the flags it raises."""
+    if mp.isnan(v): return mp.nan, 0
+    if mp.isinf(v): return v, 0
+    if v == 0: return v, 0
+    s = 1 if v > 0 else -1
+    a = abs(v)
+    e = int(mp.frexp(a)[1]) - 1
+    # tininess after rounding with an unbounded exponent
+    qu, _ = _rnd(a, s, e, mode)
+    tiny = mp.ldexp(qu, e - (P - 1)) < mp.ldexp(1, EMIN)
+    e2 = max(e, EMIN)
+    q, exact = _rnd(a, s, e2, mode)
+    r = mp.ldexp(q, e2 - (P - 1))
+    flags = 0 if exact else F_INX
+    if tiny and not exact: flags |= F_UNF
+    if r >= mp.ldexp(1, EMAX + 1):
+        flags |= F_OVF | F_INX
+        to_inf = mode in ("RNE", "RNA") or (mode == "RU" and s > 0) or (mode == "RD" and s < 0)
+        r = mp.inf if to_inf else mp.ldexp((1 << P) - 1, EMAX - (P - 1))
+    return s * r, flags
+
+def check_modes(exe, rng, n, flt):
+    import os
+    REFPREC[0] = 2000
+    mp.mp.prec = 2000
+    env = dict(os.environ, SF_MODES="1")
+    bad_total = 0
+    for name, op, ref, args in RANGES:
+        if flt and flt not in name.split(",") and not any(name.startswith(f) for f in flt.split(",")):
+            continue
+        cases = gen_cases(args, rng, n)
+        inp = "".join(f"{op} {' '.join(h)}\n" for h, _ in cases)
+        res = subprocess.run([exe], input=inp, capture_output=True, text=True, check=True, env=env).stdout.split("\n")
+        worst = [0.0] * 5
+        mis = flagerr = 0
+        first = None
+        for (hs, vs), r in zip(cases, res):
+            parts = r.split()
+            want = ref(*vs)
+            for i, m in enumerate(MODES):
+                got = parse_hex(parts[2 * i]); gf = int(parts[2 * i + 1])
+                exp_v, exp_f = round_b256(want, m)
+                err = ulp_err(got, want)
+                if not (mp.isinf(got) and mp.isinf(exp_v)) and err > worst[i]: worst[i] = err
+                same = (got == exp_v) or (mp.isnan(got) and mp.isnan(exp_v))
+                if not same: mis += 1
+                if (gf & 0x1F) != exp_f and same: flagerr += 1
+                if (not same or (gf & 0x1F) != exp_f) and first is None:
+                    first = (m, hs, parts[2 * i], gf, to_hex(exp_v) if not mp.isinf(exp_v) else str(exp_v), exp_f)
+        bad = mis + flagerr
+        bad_total += bad
+        print(f"{name:10s} n={n} max ulp " + " ".join(f"{m} {w:.3g}" for m, w in zip(MODES, worst)) +
+              f" | misrounded {mis}, flag errors {flagerr}" + (f"  first {first}" if bad else ""), flush=True)
+    sys.exit(1 if bad_total else 0)
+
+def gen_cases(args, rng, n):
+    cases = []
+    for _ in range(n):
+        hs, vs = [], []
+        for a in args:
+            if a[0] == "nearnegeven":
+                v = -2 * mp.mpf(rng.randint(a[1], a[2])) + mp.ldexp(rng.choice([-1, 1]), -rng.randint(20, 200))
+                h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
+            elif a[0] == "nearint":
+                v = mp.mpf(rng.randint(a[1], a[2])) + mp.ldexp(rng.choice([-1, 1]), -rng.randint(20, 200))
+                if v < 0: v = -v
+                h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
+            elif a[0] == "int":
+                k = rng.randint(a[1], a[2]); hs.append(str(k)); vs.append(mp.mpf(k))
+            else:
+                h, v = rnd256(a[0], a[1], a[2], rng); hs.append(h); vs.append(v)
+        cases.append((hs, vs))
+    return cases
+
 def main():
     if sys.argv[1] == "--selftest":
         selftest(); return
@@ -382,6 +480,8 @@ def main():
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 200
     rng = random.Random(int(sys.argv[3]) if len(sys.argv) > 3 else 1)
     flt = sys.argv[4] if len(sys.argv) > 4 else ""
+    if len(sys.argv) > 5 and sys.argv[5] == "modes":
+        check_modes(exe, rng, n, flt); return
     bad_total = 0
     for name, op, ref, args in RANGES:
         if flt and flt not in name:

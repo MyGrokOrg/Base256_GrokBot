@@ -619,6 +619,24 @@ int main() {
     EXPECT(bernoulli_b2n(0), one, 0);
     EXPECT_M(bernoulli_b2n(15000), [](round_mode m) { return (m == round_mode::toward_zero || m == round_mode::upward) ? -float256::max() : -float256::inf(false); }, base256::fe_overflow | kInx);
 
+    // Functions that forward to another public function keep its mode and flags.
+    for (round_mode m : {round_mode::upward, round_mode::downward}) {
+        fenv::set_round(m);
+        fenv::clear_flags();
+        const float256 a = polylog(2, float256(0.375));
+        const unsigned fa = fenv::test_flags();
+        fenv::clear_flags();
+        const float256 b = dilog(float256(0.375));
+        CHECK(same(a, b) && fa == kInx && fenv::test_flags() == kInx);
+        fenv::clear_flags();
+        const float256 c = hurwitz_zeta(float256(2.5), one);
+        const unsigned fc = fenv::test_flags();
+        fenv::clear_flags();
+        CHECK(same(c, riemann_zeta(float256(2.5))) && fc == kInx);
+        fenv::set_round(round_mode::to_nearest_even);
+    }
+    fenv::clear_flags();
+
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;
 }

@@ -1235,6 +1235,7 @@ inline constexpr int kReflS = 89;
 /// largest part of the sum, so results near a zero in a (e.g. ζ(0, 1/2))
 /// lose relative accuracy; see README.
 [[nodiscard]] inline float256 hurwitz_zeta(float256 s, float256 a) {
+    if (a == float256::one()) return riemann_zeta(s);  // before FnEnv: it keeps its own mode and flags
     detail_dd::FnEnv env;
     using detail_dd::dd;
     const float256 one = float256::one();
@@ -1247,7 +1248,6 @@ inline constexpr int kReflS = 89;
         return env.exact(a == one ? one : float256::zero());
     }
     if (a.isinf()) return env.exact(s > one ? float256::zero() : -float256::inf(false));  // s < 1: ~ a^{1−s}/(s−1) → −∞
-    if (a == one) return riemann_zeta(s);
     if (s.iszero()) {  // ζ(0, a) = 1/2 − a, rounded once (exact when representable)
         const dd q = detail_dd::two_sum(float256::half(), -a);
         return env.round(q.hi, q.lo, 0, q.lo.iszero() ? 0 : 2);

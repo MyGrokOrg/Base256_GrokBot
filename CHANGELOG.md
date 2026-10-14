@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.21.0
+
+- **Directed modes and flags checked against mpmath.** `tools/sf_check.py EVAL n seed filter modes` (with `SF_MODES=1` in `sf_eval`) evaluates every case in RNE, RNA, RZ, RU and RD. It compares each result with the correctly rounded value of a 2000-bit mpmath reference in that mode and checks the flags (inexact, overflow, underflow with tininess after rounding). Run over every range of polygamma/trigamma, Airy Ai/Bi/Ai'/Bi' (new overflow/underflow ranges near x = 4205), Lambert W0/W−1, erf_inv/erfc_inv, Fresnel, Dawson, dilog/polylog, all Bessel functions, the elliptic integrals and hurwitz_zeta: 0 misroundings and 0 flag errors (40 cases per range).
+- **Fixed:** `polylog(2, x)` and `hurwitz_zeta(s, 1)` forwarded to `dilog`/`riemann_zeta` inside their own rounding environment. The result was then computed in round-to-nearest and the inexact flag was dropped. Both now forward before taking the environment, and a unit test covers it.
+- Airy overflow/underflow threshold corrected in the docs: x ≈ 4205, not 4960.
+
 ## 4.20.0
 
 - **New header `special_math_ext.hpp`** (included by `base256.hpp`), with the rest of C++17 special math and common extras:

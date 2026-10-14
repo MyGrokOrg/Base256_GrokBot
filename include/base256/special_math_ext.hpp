@@ -914,7 +914,7 @@ inline constexpr int kSerNeg = 110;   // x < 0: series while ζ < 110 (cancels ~
 /// Airy functions Ai(x), Bi(x) and their derivatives, any real x. For x < 0
 /// they oscillate; for x below about −2^110 the phase ζ = (2/3)|x|^{3/2} is only
 /// known to ~2^-474·ζ and the results lose accuracy. Ai, Ai' underflow and Bi,
-/// Bi' overflow above x ≈ 4960 / 4960. Ai(±∞) = +0, Bi(+∞) = +∞, Bi(−∞) = +0;
+/// Bi' overflow above x ≈ 4205. Ai(±∞) = +0, Bi(+∞) = +∞, Bi(−∞) = +0;
 /// Ai'(−∞), Bi'(−∞) are domain errors.
 [[nodiscard]] inline float256 airy_ai(float256 x) { return detail_sf::airy::pub(x, 0); }
 [[nodiscard]] inline float256 airy_ai_prime(float256 x) { return detail_sf::airy::pub(x, 1); }
@@ -1445,9 +1445,9 @@ inline const std::array<dd, kZetaN + 1>& zeta_int() {
 /// any x < 1 (x/(1−x), −ln(1−x)), n = 2 as dilog, n >= 3 for −1 <= x <= 1
 /// (|x| > 1 is not supported: domain error). Li_n(1) = ζ(n) (n >= 2; n <= 1 pole).
 [[nodiscard]] inline float256 polylog(unsigned n, float256 x) {
+    if (n == 2) return dilog(x);  // before FnEnv: dilog keeps its own mode and flags
     detail_dd::FnEnv env;
     using detail_dd::dd;
-    if (n == 2) return dilog(x);
     if (x.isnan()) return env.nan(x);
     if (x.iszero()) return env.exact(x);
     const float256 one = float256::one();
