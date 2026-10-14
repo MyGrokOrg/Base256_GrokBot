@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.13.0
+
+- **Speed: elementary functions 10–21× faster, `/` 14×, `sqrt` 5×** with no accuracy change: the full `mpfr_ulp` suite in all five modes still shows 0 misrounded results and 0 flag errors.
+  - `divmod_512_256`: Knuth algorithm D on 64-bit limbs; `isqrt_512`: a 64-bit seed plus Newton steps. The bitwise versions remain as the fallback when `__int128` is missing.
+  - `round_bits` works on whole limbs.
+  - dd `two_sum`/`two_prod` work directly on the 512-bit significands and give results identical to the float formulas. dd `+`/`*` accumulate in a 512-bit window and round once, which is also slightly more accurate (about 2^-505).
+  - The Taylor series for `expm1` and `sin`/`cos` use Horner on a precomputed 1/n! table, with the number of terms chosen from the exponent. Division by small integers uses `dd / float256`.
+- New `base256_bench` target. See the README section "Performance" for the table (e.g. `sin` 450 µs → 23 µs, `exp` 328 µs → 16 µs).
+
 ## 4.12.0
 
 - **Elementary functions honor the rounding mode and raise IEEE flags.** All of `math.hpp` and `extra_math.hpp` round their ~474-bit dd result once in the current mode (new `float256::round_dd(hi, lo, k, mode, tail)`, with a tail hint for results such as `tanh → ±1` or `expm1 → -1` where the correction is below the dd precision). Before, they always rounded to nearest and raised no flags.

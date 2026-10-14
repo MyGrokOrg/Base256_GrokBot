@@ -160,6 +160,46 @@ Exceptions and limits:
 - Since 4.12.0 every case is checked in all five rounding modes against MPFR rounded in that mode (237-bit, subnormalized, binary256 exponent range), with the flags: inexact iff the result is inexact, overflow iff MPFR overflows, underflow iff tiny after rounding and inexact, never invalid/divbyzero for these arguments. Overflow and gradual-underflow ranges of `exp`, `exp2`, `expm1`, `sinh`, `cosh` are included. Over 53 checks × 1000 cases × 5 modes (265k evaluations), 0 results differed from MPFR's correctly rounded value and 0 flag mismatches. `tests/test_math_flags.cpp` covers exact cases, poles, domain errors, sNaN, overflow/underflow per mode and flag hygiene.
 
 
+## Performance
+
+`base256_bench [seconds] [filter]` (built with the tests) prints ns/call. GCC 13 `-O2`, one x86-64 core:
+
+| Function | 4.12.0 | 4.13.0 | Speedup |
+|---|---:|---:|---:|
+| `add` | 72 ns | 62 ns | 1.2× |
+| `mul` | 66 ns | 55 ns | 1.2× |
+| `div` | 2.0 µs | 140 ns | 14.0× |
+| `fma` | 118 ns | 107 ns | 1.1× |
+| `sqrt` | 2.1 µs | 397 ns | 5.4× |
+| `exp` | 328.5 µs | 16.0 µs | 20.5× |
+| `exp2` | 325.3 µs | 16.5 µs | 19.7× |
+| `expm1` | 326.1 µs | 15.5 µs | 21.1× |
+| `log` | 436.5 µs | 27.4 µs | 16.0× |
+| `log2` | 447.6 µs | 29.1 µs | 15.4× |
+| `log10` | 446.9 µs | 28.4 µs | 15.7× |
+| `log1p` | 434.5 µs | 27.1 µs | 16.1× |
+| `pow` | 751.0 µs | 43.8 µs | 17.1× |
+| `cbrt` | 13.6 µs | 3.5 µs | 3.9× |
+| `sin` | 450.4 µs | 22.7 µs | 19.9× |
+| `cos` | 447.0 µs | 24.8 µs | 18.0× |
+| `tan` | 463.6 µs | 25.2 µs | 18.4× |
+| `sin_1e30` | 466.8 µs | 27.7 µs | 16.9× |
+| `sin_1e9999` | 469.0 µs | 28.3 µs | 16.6× |
+| `atan` | 600.3 µs | 45.6 µs | 13.2× |
+| `asin` | 631.9 µs | 47.6 µs | 13.3× |
+| `acos` | 639.2 µs | 47.4 µs | 13.5× |
+| `atan2` | 521.9 µs | 38.4 µs | 13.6× |
+| `sinh` | 338.0 µs | 18.7 µs | 18.1× |
+| `cosh` | 334.3 µs | 18.8 µs | 17.7× |
+| `tanh` | 335.0 µs | 18.6 µs | 18.0× |
+| `asinh` | 427.5 µs | 30.2 µs | 14.2× |
+| `acosh` | 445.8 µs | 30.2 µs | 14.8× |
+| `atanh` | 856.8 µs | 55.2 µs | 15.5× |
+| `erf` | 1616.6 µs | 143.8 µs | 11.2× |
+| `erfc` | 2485.1 µs | 265.6 µs | 9.4× |
+| `tgamma` | 1427.9 µs | 128.6 µs | 11.1× |
+| `lgamma` | 602.7 µs | 56.3 µs | 10.7× |
+
 ## Notes on specific functions
 
 `round` is half away from zero, matching C `round`. `to_string()` prints the shortest scientific string that round-trips. `to_string(n)` gives `n` significant digits. Use `format`, `to_chars` or `std::format("{:.40f}", x)` for fixed, general or hex output. `hypot` is scaled, so `hypot(2^200000, 2^200000)` stays finite, and `hypot(∞, NaN)` is `+∞`. `fmin` / `fmax` follow IEEE 754 signed-zero rules (`fmin(+0, −0) = −0`). `pow(−0, odd)` keeps the sign of zero. `exp2` on integers and `log2` on powers of two are exact. `tanh` of a huge finite value is `±1` (it does not overflow into NaN). `log1p` of tiny arguments is not flushed. The IEEE special cases `pow(NaN, 0) = 1`, `pow(1, NaN) = 1`, and `pow(−1, ±∞) = 1` hold. Integer `pow` uses dd squaring, so it is exact whenever the power is representable. For accuracy, see [Elementary function accuracy](#elementary-function-accuracy).
