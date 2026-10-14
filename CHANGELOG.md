@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Re-ran sf_check range `hz_vneg` (s ∈ [−600, −89], a ∈ [0, 4]) against 4.22.0: round-to-nearest 20 cases, seed 1, max 0.492 ulp, 0 misrounded; `modes` 20 cases, seed 2, 0 misrounded, 0 flag errors (max RNE 0.5, RNA 0.5, RZ 0.961, RU 0.857, RD 0.961 ulp).
 - sf_check: new Airy ranges `ai_deep`, `aip_deep`, `bi_deep`, `bip_deep` (x = −2^[12000, 175000], up to the 2/π-table design limit), with an mpmath reference built from the DLMF 9.7.9–9.7.12 asymptotic series and ζ reduced mod 2π at 1.5·log2|x| + 900 bits (mpmath's `airyai` takes more than 10 minutes per point at −2^20000). The reference agrees with `mp.airyai` to about 2^-897 relative in 16 spot checks at −2^95…−2^3000. Round-to-nearest 40 cases each, seed 1, max 0.5 / 0.481 / 0.493 / 0.467 ulp, 0 misrounded; `modes` 20 cases each, seed 2, 0 misrounded, 0 flag errors (max directed 0.932 / 0.992 / 0.996 / 1 ulp).
 - Known limit: past about −2^175000 the Airy results are wrong (4 spot checks at −2^175200…−2^262000 had relative errors of 2^1 to 2^2.6), because the 2/π table runs out.
 
