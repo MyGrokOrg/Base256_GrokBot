@@ -1,6 +1,6 @@
 #pragma once
 /// Special functions (C++17 <cmath> special-math names): Bessel functions,
-/// beta and the regularized incomplete beta.
+/// beta and the regularized incomplete beta, Riemann zeta.
 /// Every function evaluates in double-float256 (~474 bits) and rounds once in
 /// the caller's rounding mode, raising IEEE flags like the elementary
 /// functions. See README "Special functions" for measured accuracy and limits.
@@ -75,20 +75,20 @@ struct SD {
 }
 // sin(π t) and cos(π t) for any finite float256 t (exact reduction mod 2).
 inline void sincos_pi(float256 t, dd& s, dd& c) {
-    float256 r = fmod(t, float256::two());  // exact, |r| < 2
-    if (r.signbit()) r = r + float256::two();  // exact for |r| >= 2^-236·...; tiny r handled by sign
-    // r in [0, 2): quadrant q = floor(2r), f = r - q/2 in [0, 1/2)
+    const bool neg = t.signbit();
+    const float256 r = fmod(abs(t), float256::two());  // exact, r in [0, 2)
+    // quadrant q = floor(2r), f = r − q/2 in [0, 1/2) (exact)
     const float256 q = floor(r + r);
     const float256 f = r - q * float256::half();
     dd sf, cf;
     detail_dd::sincos_reduced(detail_dd::pi() * f, sf, cf);
-    const int qi = static_cast<int>(q.to_double()) & 3;
-    switch (qi) {
+    switch (static_cast<int>(q.to_double()) & 3) {
         case 0: s = sf; c = cf; break;
         case 1: s = cf; c = -sf; break;
         case 2: s = -sf; c = -cf; break;
         default: s = -cf; c = sf; break;
     }
+    if (neg) s = -s;
 }
 [[nodiscard]] inline dd sinpi(float256 t) { dd s, c; sincos_pi(t, s, c); return s; }
 
@@ -770,5 +770,99 @@ namespace detail_sf {
 } // namespace detail_sf
 [[nodiscard]] inline float256 ibeta(float256 a, float256 b, float256 x) { return detail_sf::ibeta_impl(a, b, x, false); }
 [[nodiscard]] inline float256 ibetac(float256 a, float256 b, float256 x) { return detail_sf::ibeta_impl(a, b, x, true); }
+
+namespace detail_sf {
+namespace zeta {
+
+inline constexpr int kN = 128;  // Euler–Maclaurin split point
+// n^{-s} for n = 1 .. kN−1 (products of prime powers; one exp per prime).
+inline void inv_powers(const dd& s, dd* out) {
+    out[1] = dd(float256::one());
+    for (int n = 2; n < kN; ++n) out[n] = dd(float256::zero());
+    for (int n = 2; n < kN; ++n) {
+        int p = 2;
+        while (p * p <= n && n % p) ++p;
+        if (p * p > n) {  // prime
+            out[n] = detail_dd::exp(-(s * detail_dd::log(D(n))));
+        } else {
+            out[n] = out[p] * out[n / p];
+        }
+    }
+}
+
+// ζ(s) for a dd s >= 0, s ≠ 1, given sm1 = s − 1 exactly.
+[[nodiscard]] inline dd pos(const dd& s, const dd& sm1) {
+    const dd one{float256::one()};
+    if (s.hi >= float256(240)) {
+        // 1 + 2^-s + 3^-s + …, terms below 2^-500 dropped
+        dd sum = one;
+        for (int n = 2; n < 1000; ++n) {
+            const dd t = detail_dd::exp(-(s * detail_dd::log(D(n))));
+            if (ilogb(t.hi) < -500) break;
+            sum = sum + t;
+        }
+        return sum;
+    }
+    static thread_local dd pw[kN];
+    inv_powers(s, pw);
+    dd sum{float256::zero()};
+    for (int n = kN - 1; n >= 1; --n) sum = sum + pw[n];
+    // N^{-s}
+    const dd lnN = detail_dd::log(D(kN));
+    const dd Ns = detail_dd::exp(-(s * lnN));
+    sum = sum + Ns * float256(kN) / sm1 + detail_dd::ldexp(Ns, -1);
+    // Σ_k B_2k/(2k)! · s(s+1)…(s+2k−2) · N^{-s-2k+1}
+    const auto& f = detail_dd::inv_factorials();
+    const dd invN = one / D(kN);
+    const dd invN2 = invN * invN;
+    dd t = s * Ns * invN;  // (s)_1 N^{-s-1}
+    for (int k = 1; k <= 61; ++k) {
+        const dd b = detail_gamma::stirling_coef(k - 1) * f[static_cast<std::size_t>(2 * k - 2)];
+        const dd term = b * t;
+        sum = sum + term;
+        if (small_rel(term, sum)) break;
+        t = t * (s + D(2 * k - 1)) * (s + D(2 * k)) * invN2;
+    }
+    return sum;
+}
+
+} // namespace zeta
+} // namespace detail_sf
+
+/// Riemann zeta function ζ(x) for all real x: Euler–Maclaurin for x >= 0 and
+/// the functional equation ζ(x) = 2^x π^{x−1} sin(πx/2) Γ(1−x) ζ(1−x) for x < 0.
+/// ζ(1) is a pole (+∞, divide-by-zero); ζ(−2n) = +0 exactly; ζ(0) = −1/2.
+[[nodiscard]] inline float256 riemann_zeta(float256 x) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    const float256 one = float256::one();
+    if (x.isnan()) return env.nan(x);
+    if (x.isinf()) return x.signbit() ? env.invalid() : env.exact(one);
+    if (x == one) return env.pole(false);
+    if (x.iszero()) return env.exact(-float256::half());
+    if (!x.signbit()) {
+        if (x > float256(600)) return env.round(one, float256::zero(), 0, +1);  // 1 + 2^-x, x > 600
+        const dd v = detail_sf::zeta::pos(dd(x), detail_dd::two_sum(x, -one));
+        return v.out(env);
+    }
+    // x < 0
+    const float256 h = ldexp(x, -1);
+    if (trunc(h) == h) return env.exact(float256::zero());  // trivial zero
+    if (x < float256(-30000)) {
+        // |ζ(x)| ~ 2Γ(1−x)/(2π)^{1−x} > 2^262144; sign of sin(πx/2)
+        dd s, c;
+        detail_sf::sincos_pi(h, s, c);
+        return env.overflow(s.hi.signbit());
+    }
+    const dd oms = detail_dd::two_sum(one, -x);  // 1 − x, exact
+    dd s, c;
+    detail_sf::sincos_pi(h, s, c);
+    const dd z = detail_sf::zeta::pos(oms, dd(-x));
+    const detail_sf::SD g = detail_sf::gamma_sd(oms);
+    const dd L = dd(x) * detail_dd::ln2() + (dd(x) - dd(one)) * detail_dd::log(detail_dd::pi());
+    detail_sf::SD r = detail_sf::mul(detail_sf::exp_sd(L), g);
+    r = detail_sf::mul(r, s * z);
+    return detail_sf::out(env, r);
+}
 
 } // namespace base256

@@ -315,6 +315,10 @@ int main(int argc, char** argv) {
         {"tgamman",[](float256 x){return tgamma(x);},mpfr_gamma, -10, 10, true, false, 1, 1000, 4},
         {"lgamman",[](float256 x){return lgamma(x);},mpfr_lngamma_abs, -10, 20, true, false, 1, 0, 4},
         {"lgamma1",[](float256 x){return lgamma(x);},mpfr_lngamma, -236, -1, true, false, 1, 0, 3},
+        {"zeta",   [](float256 x){return riemann_zeta(x);}, mpfr_zeta, -120, 8, true, true, 1, 0},
+        {"zeta1",  [](float256 x){return riemann_zeta(x);}, mpfr_zeta, -236, -1, true, false, 1, 0, 3},
+        {"zetab1", [](float256 x){return riemann_zeta(x);}, mpfr_zeta, -236, -1, true, false, 1, 0, 2},
+        {"zetan",  [](float256 x){return riemann_zeta(x);}, mpfr_zeta, 8, 14, true, false, 1, 0, 4},
         {"lgamma2",[](float256 x){return lgamma(x);},mpfr_lngamma_abs, -236, -1, true, true, 1, 0, 5},
         {"lgamma",[](float256 x){return lgamma(x);},mpfr_lngamma,-10, 20, true, false, 1, 0},
     };

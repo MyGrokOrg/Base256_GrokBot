@@ -78,7 +78,14 @@ def BETA(a, b): return mp.beta(a, b)
 def IB(a, b, x): return mp.betainc(a, b, 0, x, regularized=True)
 def IBC(a, b, x): return mp.betainc(a, b, x, 1, regularized=True)
 
+def ZETA(x): return mp.zeta(x)
+
 RANGES = [
+    ("zeta",     "zeta", ZETA, [(-60, 300, False)]),
+    ("zeta_neg", "zeta", ZETA, [(-3000, -60, False)]),
+    ("zeta_01",  "zeta", ZETA, [(-1, 1, False)]),
+    ("zeta_tz",  "zeta", ZETA, [("nearnegeven", 1, 500)]),
+    ("zeta_tiny","zeta", ZETA, [(-300, -2, True)]),
     ("beta",     "beta", BETA, [(-20, 12, True), (-20, 12, True)]),
     ("beta_mix", "beta", BETA, [(-200, -20, True), (0, 40, True)]),
     ("beta_big", "beta", BETA, [(20, 60, True), (-10, 60, True)]),
@@ -131,7 +138,10 @@ def main():
         for _ in range(n):
             hs, vs = [], []
             for a in args:
-                if a[0] == "nearint":
+                if a[0] == "nearnegeven":
+                    v = -2 * mp.mpf(rng.randint(a[1], a[2])) + mp.ldexp(rng.choice([-1, 1]), -rng.randint(20, 200))
+                    h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
+                elif a[0] == "nearint":
                     v = mp.mpf(rng.randint(a[1], a[2])) + mp.ldexp(rng.choice([-1, 1]), -rng.randint(20, 200))
                     if v < 0: v = -v
                     h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)

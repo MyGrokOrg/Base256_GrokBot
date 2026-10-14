@@ -41,6 +41,7 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "jn") return jn(std::stoi(a), P(b));
     if (op == "yn") return yn(std::stoi(a), P(b));
     if (op == "beta") return beta(P(a), P(b));
+    if (op == "zeta") return riemann_zeta(P(a));
     if (op == "ibeta") return ibeta(P(a), P(b), P(c));
     if (op == "ibetac") return ibetac(P(a), P(b), P(c));
     std::cerr << "unknown op " << op << "\n";
@@ -49,6 +50,15 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
 
 struct Ref { const char *op, *a, *b, *c, *want; };
 const Ref kRefs[] = {
+    {"zeta", "2", "", "", "0x1a51a6625307d3230e7b1224401759cbd6b911b55022c5b1666b0580634cp-236"},
+    {"zeta", "3", "", "", "0x133ba004f0062138371715c59e6907f1b180b7db17493405dd149c7ab12dp-236"},
+    {"zeta", "0.5", "", "", "-0x175d9cb07e73fee37e834e422bcb579a2298e52438c62304744275f7ba82p-236"},
+    {"zeta", "-7.5", "", "", "0x1ac7ac41b77b834642801c7330bec3ba10c3bf96bed43e46ad4714af8a9dp-245"},
+    {"zeta", "1.0001", "", "", "0x138849e27106b9a5f068fccd023e52200dd513ab9ec545d11ce35a15e6efp-223"},
+    {"zeta", "-1", "", "", "-0x155555555555555555555555555555555555555555555555555555555555p-240"},
+    {"zeta", "1e-30", "", "", "-0x10000000000000000000000002546cda64479c22ce59de10db702f81474ep-237"},
+    {"zeta", "-201.25", "", "", "-0x17b04db2778f8414b485cfd202b78c4fdfbc423df7b8738a2ac32af5c960p+483"},
+    {"zeta", "250", "", "", "0x100000000000000000000000000000000000000000000000000000000000p-236"},
     {"j", "0", "1", "", "0x187c7fdbd7b8ef839e3530c22b34cedc3cbaf7ccbfde50538b5581f88245p-237"},
     {"j", "0.5", "3", "", "0x10a460536e4369cdeea10a105e02c4d339d175bb19b68ab3bad4748baf03p-240"},
     {"j", "2.25", "17.5", "", "0x11e90ccdd217718c7f58e6dc5dcebfdb9d0294d3d9976efae66fade762bfp-239"},
@@ -206,6 +216,21 @@ int main() {
         const float256 x(xv), a(2.75), b(4.5);
         CHECK(abs(ibeta(a, b, x) - ibetac(b, a, float256::one() - x)) <= ldexp(one, -236));
     }
+
+    // Riemann zeta: special arguments.
+    EXPECT(riemann_zeta(one), inf, kDiv);
+    EXPECT(riemann_zeta(zero), -float256::half(), 0);
+    EXPECT(riemann_zeta(-zero), -float256::half(), 0);
+    EXPECT(riemann_zeta(float256(-2)), zero, 0);
+    EXPECT(riemann_zeta(float256(-1000)), zero, 0);
+    EXPECT(riemann_zeta(inf), one, 0);
+    EXPECT(riemann_zeta(-inf), nan, kInv);
+    EXPECT(riemann_zeta(nan), nan, 0);
+    EXPECT_M(riemann_zeta(float256(700)),
+             [](round_mode m) { return m == round_mode::upward ? nextafter(float256::one(), float256::inf(false)) : float256::one(); }, kInx);
+    EXPECT_M(riemann_zeta(float256(-30001.5)),
+             [](round_mode m) { return (m == round_mode::toward_zero || m == round_mode::upward) ? -float256::max() : -float256::inf(false); },
+             base256::fe_overflow | kInx);
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;

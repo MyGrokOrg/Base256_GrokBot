@@ -26,6 +26,7 @@ int main() {
         else if (f == "beta") r = beta(P(a), P(b));
         else if (f == "ibeta") r = ibeta(P(a), P(b), P(c));
         else if (f == "ibetac") r = ibetac(P(a), P(b), P(c));
+        else if (f == "zeta") r = riemann_zeta(P(a));
 #ifdef SF_MORE
         SF_MORE
 #endif

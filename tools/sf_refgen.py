@@ -28,11 +28,13 @@ F = {
     "j": mp.besselj, "y": mp.bessely, "i": mp.besseli, "k": mp.besselk,
     "sj": lambda n, x: sph(mp.besselj, n, x), "sy": lambda n, x: sph(mp.bessely, n, x),
     "jn": mp.besselj, "yn": mp.bessely,
-    "beta": mp.beta,
+    "beta": mp.beta, "zeta": mp.zeta,
     "ibeta": lambda a, b, x: mp.betainc(a, b, 0, x, regularized=True),
     "ibetac": lambda a, b, x: mp.betainc(a, b, x, 1, regularized=True),
 }
 CASES = [
+    ("zeta", "2"), ("zeta", "3"), ("zeta", "0.5"), ("zeta", "-7.5"), ("zeta", "1.0001"), ("zeta", "-1"),
+    ("zeta", "1e-30"), ("zeta", "-201.25"), ("zeta", "250"),
     ("j", "0", "1"),
     ("j", "0.5", "3"),
     ("j", "2.25", "17.5"),
