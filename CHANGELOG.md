@@ -3,9 +3,9 @@
 ## 4.22.0
 
 - New `detail/mp.hpp`: small BigInt-mantissa multiprecision (exp, log, sqrt, sincos, π, ln 2, Bernoulli numbers, Stirling lgamma) used as a fallback where the dd evaluation cancels.
-- `lgamma` is correctly rounded next to its non-trivial negative zeros (was absolute error ~2^-460). sf_check `lg_negz`: max 0.496 ulp, all five modes clean.
-- `hurwitz_zeta(s, a)`, s < 1: correctly rounded next to zeros in a, via a cancellation estimate and a multiprecision Euler–Maclaurin / Hurwitz-formula fallback; ζ(−2n, ½) = 0 exactly. sf_check `hz_nz`: max 0.497 ulp, all modes clean.
-- Airy Ai, Ai', Bi, Bi' for x < −2^93: exact multiprecision reduction of the phase ζ = (2/3)|x|^{3/2} modulo π/2. Correctly rounded down to about −2^175000 (sf_check `*_huge` to −2^3000 and `ai_vhuge` to −2^12000, all modes clean); below that the 2/π table runs out.
+- `lgamma` is correctly rounded next to its non-trivial negative zeros (was absolute error ~2^-460). sf_check range `lg_negz`: round-to-nearest 100 cases, seed 1, max 0.496 ulp, 0 misrounded; `modes` 40 cases, seed 1, 0 misrounded, 0 flag errors (max RNE 0.485, RZ 0.991, RU 0.991, RD 0.949 ulp).
+- `hurwitz_zeta(s, a)`, s < 1: correctly rounded next to zeros in a, via a cancellation estimate and a multiprecision Euler–Maclaurin / Hurwitz-formula fallback; ζ(−2n, ½) = 0 exactly. sf_check range `hz_nz` (15 zeros, s ∈ {−1, −3, −0.5, 0.5, −2.5, −7.25, −30.75, −100.5}): round-to-nearest 30 cases, seed 1, max 0.497 ulp, 0 misrounded; 40 cases, seed 3, max 0.494 ulp, 0 misrounded; `modes` 15 cases, seed 2, 0 misrounded, 0 flag errors (max RNE 0.498, RZ 0.958, RU 0.73, RD 0.958 ulp).
+- Airy Ai, Ai', Bi, Bi' for x < −2^93: exact multiprecision reduction of the phase ζ = (2/3)|x|^{3/2} modulo π/2. Correctly rounded down to about −2^175000; below that the 2/π table runs out. sf_check ranges `ai_huge`, `aip_huge`, `bi_huge`, `bip_huge` (x = −2^[94, 3000]): round-to-nearest 20 cases each, seed 1, max 0.453 / 0.484 / 0.463 / 0.5 ulp, 0 misrounded; `modes` 8 cases each, seed 5, 0 misrounded, 0 flag errors (max directed 0.997 / 0.976 / 0.965 / 0.831 ulp). `ai_vhuge` (x = −2^[3000, 12000]): round-to-nearest 4 cases, seed 4, max 0.494 ulp, 0 misrounded.
 
 ## 4.21.0
 
