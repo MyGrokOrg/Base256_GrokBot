@@ -220,52 +220,84 @@ namespace bessel {
     return norm({v1, k});
 }
 
-// gam1 = (1/Γ(1−μ) − 1/Γ(1+μ))/(2μ), gam2 = (1/Γ(1−μ) + 1/Γ(1+μ))/2, plus 1/Γ(1±μ); |μ| <= 1/2.
+// 1/Γ(1+μ) = E(μ²) + μ O(μ²) from the MPFR Taylor table (|μ| <= 1/2), so
+// gam1 = (1/Γ(1−μ) − 1/Γ(1+μ))/(2μ) = −O and gam2 = (1/Γ(1−μ) + 1/Γ(1+μ))/2 = E.
 inline void temme_gammas(float256 mu, dd& gam1, dd& gam2, dd& gampl, dd& gammi) {
     const dd one{float256::one()};
     if (mu.iszero()) { gam1 = -euler_gamma(); gam2 = one; gampl = gammi = one; return; }
-    const SD a = rgamma_sd(detail_dd::two_sum(float256::one(), mu));
-    const SD b = rgamma_sd(detail_dd::two_sum(float256::one(), -mu));
-    gampl = detail_dd::ldexp(a.m, a.k);
-    gammi = detail_dd::ldexp(b.m, b.k);
-    gam2 = detail_dd::ldexp(gammi + gampl, -1);
-    if (ilogb(mu) < -100) {
-        const dd c3 = detail_dd::dd_from_words(detail_dd::tables::kInvGammaC3);
-        gam1 = -(euler_gamma() + c3 * detail_dd::two_prod(mu, mu));
-    } else {
-        gam1 = (gammi - gampl) / (dd(mu) * float256::two());
+    // Drop trailing terms with |a_k| |μ|^k < 2^-492.
+    const int lm = ilogb(mu);
+    int n = detail_dd::tables::kRGamma1pN - 1;
+    while (n > 2) {
+        const float256 c = detail_dd::dd_from_words(detail_dd::tables::kRGamma1p[n]).hi;
+        if (c.iszero() || ilogb(c) + n * lm >= -492) break;
+        --n;
     }
+    const dd m2 = detail_dd::two_prod(mu, mu);
+    dd E{float256::zero()}, O{float256::zero()};
+    for (int k = n | 1; k >= 1; k -= 2) {
+        O = O * m2 + detail_dd::dd_from_words(detail_dd::tables::kRGamma1p[k]);
+        E = E * m2 + detail_dd::dd_from_words(detail_dd::tables::kRGamma1p[k - 1]);
+    }
+    const dd mo = O * mu;
+    gampl = E + mo;
+    gammi = E - mo;
+    gam2 = E;
+    gam1 = -O;
 }
 
-// Y_μ(x), Y_{μ+1}(x) for 0 < x < 2, |μ| <= 1/2 (Temme's series).
-inline void temme_y(float256 mu, float256 x, dd& ymu, dd& y1) {
+// Shared setup for Temme's series at |μ| <= 1/2, 0 < x: fact·(gam1 cosh e + gam2 d sinh(e)/e)
+// with d = −ln(x/2), e = μd, and E = e^e; also sin(πμ/2)/(πμ/2).
+struct TemmeSetup {
+    dd gam1, gam2, gampl, gammi, ff0, E, fact3;
+};
+inline TemmeSetup temme_setup(float256 mu, float256 x) {
     const dd one{float256::one()};
     const dd pi = detail_dd::pi();
-    dd gam1, gam2, gampl, gammi;
-    temme_gammas(mu, gam1, gam2, gampl, gammi);
-    const float256 x2 = ldexp(x, -1);
-    const dd fact = mu.iszero() ? one : pi * abs(mu) / detail_gamma::sin_pi_dd(abs(mu));
-    const dd d = -detail_dd::log(dd(x2));
+    TemmeSetup t;
+    temme_gammas(mu, t.gam1, t.gam2, t.gampl, t.gammi);
+    const dd d = -detail_dd::log(dd(ldexp(x, -1)));
     const dd e = d * mu;
     dd ch, shc;
     cosh_sinhc(e, ch, shc);
-    dd ff = fact * (gam1 * ch + gam2 * shc * d) * float256::two() / pi;
-    const dd E = detail_dd::exp(e);
-    dd p = E / (gampl * pi);
-    dd q = one / (E * pi * gammi);
-    const float256 hm = ldexp(abs(mu), -1);
-    const dd fact3 = mu.iszero() ? one : detail_gamma::sin_pi_dd(hm) / (pi * hm);
-    const dd r_s = pi * pi * ldexp(mu, -1) * fact3 * fact3;  // π·(πμ/2)·(sin(πμ/2)/(πμ/2))²
+    t.E = abs(e.hi) < float256(0.5) ? ch + e * shc : detail_dd::exp(e);
+    dd fact = one;
+    t.fact3 = one;
+    if (!mu.iszero()) {
+        // sin(π|μ|) = 2 sin(π|μ|/2) cos(π|μ|/2): one reduced sincos for both factors.
+        const float256 hm = ldexp(abs(mu), -1);
+        const dd a = pi * hm;
+        dd sh, chh;
+        detail_dd::sincos_reduced(a, sh, chh);
+        fact = a / (sh * chh);   // π|μ| / sin(π|μ|)
+        t.fact3 = sh / a;        // sin(π|μ|/2)/(π|μ|/2)
+    }
+    t.ff0 = fact * (t.gam1 * ch + t.gam2 * shc * d);
+    return t;
+}
+
+// Y_μ(x), Y_{μ+1}(x) for 0 < x, |μ| <= 1/2 (Temme's series; cancellation ~e^x).
+inline void temme_y(float256 mu, float256 x, dd& ymu, dd& y1) {
+    const dd one{float256::one()};
+    const dd pi = detail_dd::pi();
+    const TemmeSetup t = temme_setup(mu, x);
+    const float256 x2 = ldexp(x, -1);
+    dd ff = t.ff0 * float256::two() / pi;
+    dd p = t.E / (t.gampl * pi);
+    dd q = one / (t.E * pi * t.gammi);
+    const dd r_s = pi * pi * ldexp(mu, -1) * t.fact3 * t.fact3;  // π·(πμ/2)·(sin(πμ/2)/(πμ/2))²
     dd c = one;
     const dd dq = -detail_dd::two_prod(x2, x2);
     dd sum = ff + r_s * q, sum1 = p;
     const dd mu2 = detail_dd::two_prod(mu, mu);
+    const dd M{mu};
     for (int i = 1; i < 100000; ++i) {
         const dd di = D(i);
-        ff = (di * ff + p + q) / (D(i) * D(i) - mu2);
-        c = c * dq / di;
-        p = p / (di - dd(mu));
-        q = q / (di + dd(mu));
+        const dd r = one / (di * di - mu2);  // 1/(i−μ) = (i+μ)r, 1/(i+μ) = (i−μ)r
+        ff = (di * ff + p + q) * r;
+        c = c * dq / float256::from_int(i);
+        p = p * (di + M) * r;
+        q = q * (di - M) * r;
         const dd del = c * (ff + r_s * q);
         sum = sum + del;
         const dd del1 = c * p - di * del;
@@ -276,33 +308,27 @@ inline void temme_y(float256 mu, float256 x, dd& ymu, dd& y1) {
     y1 = -sum1 * float256::two() / dd(x);
 }
 
-// K_μ(x), K_{μ+1}(x) for 0 < x < 2, |μ| <= 1/2 (Temme's series).
+// K_μ(x), K_{μ+1}(x) for 0 < x, |μ| <= 1/2 (Temme's series; cancellation ~e^{2x}).
 inline void temme_k(float256 mu, float256 x, dd& kmu, dd& k1) {
     const dd one{float256::one()};
-    const dd pi = detail_dd::pi();
-    dd gam1, gam2, gampl, gammi;
-    temme_gammas(mu, gam1, gam2, gampl, gammi);
+    const TemmeSetup t = temme_setup(mu, x);
     const float256 x2 = ldexp(x, -1);
-    const dd fact = mu.iszero() ? one : pi * abs(mu) / detail_gamma::sin_pi_dd(abs(mu));
-    const dd d = -detail_dd::log(dd(x2));
-    const dd e = d * mu;
-    dd ch, shc;
-    cosh_sinhc(e, ch, shc);
-    dd ff = fact * (gam1 * ch + gam2 * shc * d);
+    dd ff = t.ff0;
     dd sum = ff;
-    const dd E = detail_dd::exp(e);
-    dd p = detail_dd::ldexp(E / gampl, -1);
-    dd q = detail_dd::ldexp(one / (E * gammi), -1);
+    dd p = detail_dd::ldexp(t.E / t.gampl, -1);
+    dd q = detail_dd::ldexp(one / (t.E * t.gammi), -1);
     dd c = one;
     const dd dq = detail_dd::two_prod(x2, x2);
     dd sum1 = p;
     const dd mu2 = detail_dd::two_prod(mu, mu);
+    const dd M{mu};
     for (int i = 1; i < 100000; ++i) {
         const dd di = D(i);
-        ff = (di * ff + p + q) / (di * di - mu2);
-        c = c * dq / di;
-        p = p / (di - dd(mu));
-        q = q / (di + dd(mu));
+        const dd r = one / (di * di - mu2);
+        ff = (di * ff + p + q) * r;
+        c = c * dq / float256::from_int(i);
+        p = p * (di + M) * r;
+        q = q * (di - M) * r;
         const dd del = c * ff;
         sum = sum + del;
         const dd del1 = c * (p - di * ff);
@@ -483,7 +509,11 @@ inline void split(float256 nu, int& n, float256& mu) {
 }
 
 inline constexpr int kAsymX = 120;  // Hankel / large-x expansions from here
-inline constexpr int kTemmeX = 40;  // Temme series below (cancellation < 2^116), Steed CF2 above
+// Temme's series below these x, Steed's CF2 above: the series cancels ~e^x (Y) and
+// ~e^{2x} (K), leaving > 2^-330 relative error at the switch points (measured vs
+// the CF2), and is faster than the slowly converging CF2 up to there.
+inline constexpr int kTemmeYX = 100;
+inline constexpr int kTemmeKX = 60;
 
 // J_ν(x), ν >= 0, x > 0 finite.
 [[nodiscard]] inline SD j(float256 nu, float256 x) {
@@ -511,7 +541,7 @@ inline constexpr int kTemmeX = 40;  // Temme series below (cancellation < 2^116)
     int n; float256 mu;
     split(nu, n, mu);
     dd y0, y1;
-    if (x < float256(kTemmeX)) temme_y(mu, x, y0, y1);
+    if (x < float256(kTemmeYX)) temme_y(mu, x, y0, y1);
     else if (x < float256(kAsymX)) steed_y(mu, x, y0, y1);
     else {
         dd J0, J1;
@@ -547,7 +577,7 @@ inline constexpr int kTemmeX = 40;  // Temme series below (cancellation < 2^116)
     split(nu, n, mu);
     dd k0, k1;
     int ke = 0;
-    if (x < float256(kTemmeX)) temme_k(mu, x, k0, k1);
+    if (x < float256(kTemmeKX)) temme_k(mu, x, k0, k1);
     else steed_k(mu, x, k0, k1, ke);
     SD r = recur(k0, k1, mu, x, n, +1);
     r.k += ke;

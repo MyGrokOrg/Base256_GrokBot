@@ -135,6 +135,8 @@ RANGES = [
     ("y_small", "y", Y, [(0, 5, False), (-8, 1, True)]),
     ("y_mid",   "y", Y, [(0, 20, False), (0, 100, False)]),
     ("y_big",   "y", Y, [(0, 20, False), (7, 12, True)]),
+    ("y_temme", "y", Y, [(0, 5, False), (40, 120, False)]),
+    ("k_temme", "k", K, [(0, 5, False), (30, 90, False)]),
     ("y_int",   "y", Y, [("int", 0, 30), (0, 60, False)]),
     ("i_small", "i", I, [(0, 5, False), (-8, 1, True)]),
     ("i_mid",   "i", I, [(0, 20, False), (0, 150, False)]),

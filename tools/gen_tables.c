@@ -115,6 +115,26 @@ int main(void) {
         printf("inline constexpr std::uint64_t kInvGammaC3[8] = "); emit_dd(v); printf(";\n");
         mpfr_clears(g, t, u, (mpfr_ptr)0);
     }
+    /* 1/Gamma(1+x) = sum_k a_k x^k, k = 0..111: exp of -lnGamma(1+x) = gamma x - sum_{k>=2} (-1)^k zeta(k)/k x^k
+       via n f_n = sum_{k=1..n} k g_k f_{n-k}. |a_k| 2^-k < 2^-490 for k >= 108. */
+    {
+        enum { NR = 112 };
+        mpfr_t g[NR], f[NR], t; mpfr_init2(t, PREC);
+        for (int k = 0; k < NR; ++k) { mpfr_init2(g[k], PREC); mpfr_init2(f[k], PREC); }
+        mpfr_set_ui(g[0], 0, MPFR_RNDN); mpfr_const_euler(g[1], MPFR_RNDN);
+        for (int k = 2; k < NR; ++k) { mpfr_zeta_ui(g[k], k, MPFR_RNDN); mpfr_div_ui(g[k], g[k], k, MPFR_RNDN); if (k % 2 == 0) mpfr_neg(g[k], g[k], MPFR_RNDN); }
+        mpfr_set_ui(f[0], 1, MPFR_RNDN);
+        for (int n = 1; n < NR; ++n) {
+            mpfr_set_ui(f[n], 0, MPFR_RNDN);
+            for (int k = 1; k <= n; ++k) { mpfr_mul(t, g[k], f[n - k], MPFR_RNDN); mpfr_mul_ui(t, t, k, MPFR_RNDN); mpfr_add(f[n], f[n], t, MPFR_RNDN); }
+            mpfr_div_ui(f[n], f[n], n, MPFR_RNDN);
+        }
+        printf("inline constexpr int kRGamma1pN = %d;\ninline constexpr std::uint64_t kRGamma1p[%d][8] = {\n", NR, NR);
+        for (int k = 0; k < NR; ++k) { emit_dd(f[k]); printf(",\n"); }
+        printf("};\n");
+        for (int k = 0; k < NR; ++k) { mpfr_clear(g[k]); mpfr_clear(f[k]); }
+        mpfr_clear(t);
+    }
     printf("\n} // namespace base256::detail_dd::tables\n");
     mpfr_clears(c, v, inv, (mpfr_ptr)0);
     return 0;
