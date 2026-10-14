@@ -7,6 +7,9 @@
 /// must run under fenv::scoped_default_env. Results are rounded to float256
 /// once, by the final hi + lo addition.
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include "../float256.hpp"
 #include "bigint.hpp"
 #include "two_over_pi.hpp"
@@ -148,6 +151,16 @@ inline float256 dd::out(FnEnv& env, int k, int tail) const { return env.round(hi
     return fast_two_sum(q1, q2) + dd(q3);
 }
 
+/// dd / float256 (used for division by small integers): one fewer correction
+/// step than dd / dd, error about 2^-470 relative.
+[[nodiscard]] inline dd operator/(const dd& a, float256 b) {
+    const float256 q1 = a.hi / b;
+    if (!q1.isfinite() || q1.iszero()) return dd(q1);
+    const dd p = two_prod(q1, b);
+    const float256 r = ((a.hi - p.hi) - p.lo) + a.lo;
+    return fast_two_sum(q1, r / b);
+}
+
 [[nodiscard]] inline dd ldexp(const dd& a, int k) { return {base256::ldexp(a.hi, k), base256::ldexp(a.lo, k)}; }
 
 [[nodiscard]] inline dd sqrt(const dd& a) {
@@ -206,6 +219,31 @@ struct Consts {
 [[nodiscard]] inline dd pi() { const auto& c = consts(); return {c.pi[0], c.pi[1]}; }
 [[nodiscard]] inline dd pio2() { const auto& c = consts(); return {c.pio2[0], c.pio2[1]}; }
 
+// 1/n! for n = 0..kMaxInvFact as dd (computed once, ~2^-465 relative).
+inline constexpr int kMaxInvFact = 120;
+[[nodiscard]] inline const std::array<dd, kMaxInvFact + 1>& inv_factorials() {
+    static const std::array<dd, kMaxInvFact + 1> t = [] {
+        const fenv::scoped_default_env g;
+        std::array<dd, kMaxInvFact + 1> a{};
+        a[0] = dd(float256::one());
+        for (int n = 1; n <= kMaxInvFact; ++n)
+            a[static_cast<std::size_t>(n)] = a[static_cast<std::size_t>(n - 1)] / float256::from_int(n);
+        return a;
+    }();
+    return t;
+}
+// Smallest N with |x|^(N-1) / N! < 2^-bits for |x| < 2^(e+1): the Taylor term
+// of index N relative to the term of index 1.
+[[nodiscard]] inline int series_terms(int e, int bits) {
+    double lf = 0;  // log2(N!)
+    const double m = -1.0 - e;  // |x| < 2^-m
+    for (int n = 1; n < kMaxInvFact; ++n) {
+        lf += std::log2(static_cast<double>(n));
+        if (m * (n - 1) + lf >= bits) return n;
+    }
+    return kMaxInvFact;
+}
+
 // k * ln2 to ~710 bits for an integer k with |k| < 2^30.
 [[nodiscard]] inline dd k_ln2(float256 k) {
     const auto& c = consts();
@@ -217,12 +255,13 @@ struct Consts {
 [[nodiscard]] inline dd expm1_reduced(const dd& r) {
     constexpr int kSq = 12;
     const dd x = ldexp(r, -kSq);
-    dd term = x, sum = x;
-    for (int n = 2; n <= 60; ++n) {
-        term = term * x / dd(float256::from_int(n));
-        sum = sum + term;
-        if (term.hi.iszero() || base256::abs(term.hi) < base256::ldexp(base256::abs(sum.hi), -500)) break;
-    }
+    if (x.hi.iszero()) return x;
+    // Horner on 1/n! (precomputed): expm1(x) = x (1/1! + x (1/2! + x (...))).
+    const int n = series_terms(base256::ilogb(x.hi), 500);
+    const auto& f = inv_factorials();
+    dd p = f[static_cast<std::size_t>(n)];
+    for (int k = n - 1; k >= 1; --k) p = p * x + f[static_cast<std::size_t>(k)];
+    dd sum = p * x;
     for (int i = 0; i < kSq; ++i) sum = sum * (sum + dd(float256::two()));
     return sum;
 }
@@ -281,7 +320,7 @@ struct Scaled { dd m; int k; };
     const dd t = m * exp(dd(-y0)) - dd(float256::one());
     // log1p(t) = t - t^2/2 + t^3/3, |t| ~ 2^-230
     const dd t2 = t * t;
-    const dd l1p = t - ldexp(t2, -1) + t2 * t / dd(float256::from_int(3));
+    const dd l1p = t - ldexp(t2, -1) + t2 * t / float256::from_int(3);
     dd y = dd(y0) + l1p;
     if (e != 0) y = k_ln2(float256::from_int(e)) + y;
     return y;
@@ -376,22 +415,23 @@ inline void sincos_reduced(const dd& r, dd& s, dd& c) {
     if (r.hi.iszero()) { s = r; c = one; return; }
     if (base256::abs(r.hi) < base256::ldexp(float256::one(), -120)) {
         const dd r2 = r * r;
-        s = r - r2 * r / dd(float256::from_int(6));
+        s = r - r2 * r / float256::from_int(6);
         c = one - ldexp(r2, -1);
         return;
     }
     constexpr int kHalf = 8;
     const dd x = ldexp(r, -kHalf);
     const dd x2 = x * x;
-    dd ts = x, ss = x, tc = one, sc = one;
-    const float256 tiny = base256::ldexp(float256::one(), -490);
-    for (int n = 1; n <= 40; ++n) {
-        ts = -(ts * x2 / dd(float256::from_int((2 * n) * (2 * n + 1))));
-        tc = -(tc * x2 / dd(float256::from_int((2 * n - 1) * (2 * n))));
-        ss = ss + ts;
-        sc = sc + tc;
-        if (base256::abs(tc.hi) < tiny) break;
-    }
+    // Horner in x2 on ±1/(2k+1)! and ±1/(2k)! (precomputed).
+    const auto& f = inv_factorials();
+    int n = series_terms(base256::ilogb(x.hi), 495);  // terms of the full series x^n/n!
+    n = std::min(n + 2, kMaxInvFact - 1);
+    const int ks = (n - 1) / 2, kc = n / 2;  // highest k used in sin / cos
+    auto coef = [&](int idx, int k) { const dd c = f[static_cast<std::size_t>(idx)]; return (k & 1) ? -c : c; };
+    dd ps = coef(2 * ks + 1, ks), pc = coef(2 * kc, kc);
+    for (int k = ks - 1; k >= 0; --k) ps = ps * x2 + coef(2 * k + 1, k);
+    for (int k = kc - 1; k >= 0; --k) pc = pc * x2 + coef(2 * k, k);
+    dd ss = ps * x, sc = pc;
     for (int i = 0; i < kHalf; ++i) {
         const dd s2 = ldexp(ss * sc, 1);
         sc = one - ldexp(ss * ss, 1);

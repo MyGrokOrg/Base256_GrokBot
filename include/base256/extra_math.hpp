@@ -31,7 +31,7 @@ namespace detail_spec {
     dd term{a}, sum{a};
     const float256 rel = ldexp(float256::one(), -490);
     for (int n = 1; n <= 2000; ++n) {
-        term = term * two_x2 / dd(float256::from_int(2 * n + 1));
+        term = term * two_x2 / float256::from_int(2 * n + 1);
         sum = sum + term;
         if (term.hi < abs(sum.hi) * rel) break;
     }

@@ -531,7 +531,7 @@ inline void sincos_small(float256 a, detail_dd::dd& s, detail_dd::dd& c) {
     const dd num = Y * c - X * s;
     const dd den = X * c + Y * s;
     const dd t = num / den;
-    return dd(t0) + (t - t * t * t / dd(float256::from_int(3)));
+    return dd(t0) + (t - t * t * t / float256::from_int(3));
 }
 } // namespace detail_math
 

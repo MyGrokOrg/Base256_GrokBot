@@ -315,7 +315,9 @@ int main(int argc, char** argv) {
         {"lgamma1",[](float256 x){return lgamma(x);},mpfr_lngamma, -236, -1, true, false, 1, 0, 3},
         {"lgamma2",[](float256 x){return lgamma(x);},mpfr_lngamma_abs, -236, -1, true, true, 1, 0, 5},
         {"lgamma",[](float256 x){return lgamma(x);},mpfr_lngamma,-10, 20, true, false, 1, 0},
-    };    if (argc > 4) { std::string only = argv[4]; std::erase_if(fns, [&](const Fn& f){ return only.find(f.name) == std::string::npos; }); }
+    };
+    const bool all_fns = argc <= 4 || std::string(argv[4]).empty() || std::string(argv[4]) == "all";
+    if (!all_fns) { std::string only = argv[4]; std::erase_if(fns, [&](const Fn& f){ return only.find(f.name) == std::string::npos; }); }
     mpfr_t xm, r;
     mpfr_inits2(1100, xm, r, (mpfr_ptr)0);
     mpfr_set_emin(mpfr_get_emin_min()); mpfr_set_emax(mpfr_get_emax_max());
@@ -351,7 +353,7 @@ int main(int argc, char** argv) {
         }
         report(f.name, st, f.bound, bad);
     }
-    if (argc <= 4 || std::string(argv[4]).find("pow") != std::string::npos) {
+    if (all_fns || std::string(argv[4]).find("pow") != std::string::npos) {
         // pow(x, y): x log-uniform in [2^-64, 2^64), y in [-2000, 2000] (half integers, half not).
         mpfr_t ym;
         mpfr_init2(ym, 1100);
@@ -368,7 +370,7 @@ int main(int argc, char** argv) {
         report("pow", st, 1.0, bad);
         mpfr_clear(ym);
     }
-    if (argc <= 4 || std::string(argv[4]).find("atan2") != std::string::npos) {
+    if (all_fns || std::string(argv[4]).find("atan2") != std::string::npos) {
         mpfr_t ym;
         mpfr_init2(ym, 1100);
         Stat st;
