@@ -1,6 +1,6 @@
 /* Generates include/base256/detail/tables.hpp with MPFR:
  *   - log reduction tables (two stages) for detail_dd::log
- *   - erf expansion centers c_j = j/8: erf(c_j) and (2/sqrt(pi)) e^{-c_j^2}
+ *   - erf/erfc expansion centers c_j = j/16: erfc(c_j) and (2/sqrt(pi)) e^{-c_j^2}
  * Every value is stored as a double-float256 (hi, lo), hi = RN237(v), lo = RN237(v - hi),
  * encoded as four little-endian uint64 words per float256.
  * Build: cc -O2 tools/gen_tables.c -lmpfr -lgmp -o gen && ./gen > include/base256/detail/tables.hpp */
@@ -66,12 +66,12 @@ int main(void) {
         double d = k == 0 ? 1.0 : short_inv(c, 40); mpfr_set_d(inv, d, MPFR_RNDN); mpfr_log(v, inv, MPFR_RNDN); mpfr_neg(v, v, MPFR_RNDN);
         emit_dd(v); printf(",\n"); }
     printf("};\n");
-    /* erf centers c_j = j/8, j = 0..48 */
-    printf("inline constexpr int kErfCenters = 49;  // c_j = j/8\n");
-    printf("inline constexpr std::uint64_t kErfVal[49][8] = {\n");
-    for (int j = 0; j <= 48; ++j) { mpfr_set_ui(c, j, MPFR_RNDN); mpfr_div_ui(c, c, 8, MPFR_RNDN); mpfr_erf(v, c, MPFR_RNDN); emit_dd(v); printf(",\n"); }
-    printf("};\n// (2/sqrt(pi)) exp(-c_j^2)\ninline constexpr std::uint64_t kErfK[49][8] = {\n");
-    for (int j = 0; j <= 48; ++j) { mpfr_set_ui(c, j, MPFR_RNDN); mpfr_div_ui(c, c, 8, MPFR_RNDN);
+    /* erf/erfc centers c_j = j/16, j = 0..256: erfc(c_j) and (2/sqrt(pi)) e^{-c_j^2} */
+    printf("inline constexpr int kErfCenters = 257;  // c_j = j/16\n");
+    printf("inline constexpr std::uint64_t kErfcVal[257][8] = {\n");
+    for (int j = 0; j <= 256; ++j) { mpfr_set_ui(c, j, MPFR_RNDN); mpfr_div_ui(c, c, 16, MPFR_RNDN); mpfr_erfc(v, c, MPFR_RNDN); emit_dd(v); printf(",\n"); }
+    printf("};\n// (2/sqrt(pi)) exp(-c_j^2)\ninline constexpr std::uint64_t kErfK[257][8] = {\n");
+    for (int j = 0; j <= 256; ++j) { mpfr_set_ui(c, j, MPFR_RNDN); mpfr_div_ui(c, c, 16, MPFR_RNDN);
         mpfr_sqr(v, c, MPFR_RNDN); mpfr_neg(v, v, MPFR_RNDN); mpfr_exp(v, v, MPFR_RNDN);
         mpfr_const_pi(inv, MPFR_RNDN); mpfr_sqrt(inv, inv, MPFR_RNDN); mpfr_div(v, v, inv, MPFR_RNDN); mpfr_mul_ui(v, v, 2, MPFR_RNDN);
         emit_dd(v); printf(",\n"); }

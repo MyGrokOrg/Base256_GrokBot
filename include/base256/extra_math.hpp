@@ -2,6 +2,8 @@
 
 /// Extra elementary functions layered on math.hpp.
 /// Gamma, joint sine/cosine, and IEEE remquo live here.
+#include <mutex>
+#include <vector>
 #include "math.hpp"
 
 namespace base256 {
@@ -37,9 +39,69 @@ inline constexpr int kErfTerms = 400;
     return t;
 }
 
-// erf(a) for 0 < a < 6 in dd: 2/√π e^{-a²} a Σ c_n a^{2n}, by Horner on the
-// precomputed c_n. All terms are positive, so the sum has no cancellation.
+// Taylor expansions of erfc at c_j = j/16, j = 1..256 (MPFR-generated erfc(c_j)
+// and K_j = 2/√π e^{-c_j²}, see tools/gen_tables.c):
+//   erfc(c + h) = erfc(c) - K Σ_{n>=0} b_n h^{n+1},  b_n = a_n / (n+1),
+// where a_n are the Taylor coefficients of e^{-2ch-h²}: a_0 = 1, a_1 = -2c,
+// a_{n+1} = (-2c a_n - 2 a_{n-1}) / (n+1). Coefficients are built on first use
+// of each center (|h| <= 1/32); the evaluation truncates by the actual |h|.
+struct ErfCenter {
+    std::once_flag once;
+    std::vector<detail_dd::dd> b;
+};
+[[nodiscard]] inline const std::vector<detail_dd::dd>& erf_center_coefs(int j) {
+    static ErfCenter centers[detail_dd::tables::kErfCenters];
+    ErfCenter& ce = centers[j];
+    std::call_once(ce.once, [&] {
+        using detail_dd::dd;
+        const fenv::scoped_default_env g;
+        const float256 m2c = -ldexp(float256::from_int(j), -3);  // -2c, exact
+        dd am1{float256::zero()}, a0{float256::one()};
+        const float256 lim = ldexp(float256::one(), -512);  // |b_n| 2^{-5n} below this: done
+        int small = 0;
+        for (int n = 0; n < 400; ++n) {
+            const dd bn = a0 / float256::from_int(n + 1);
+            ce.b.push_back(bn);
+            const bool tiny = bn.hi.iszero() || abs(ldexp(bn.hi, -5 * n)) < lim;
+            small = tiny ? small + 1 : 0;
+            if (small >= 2) break;
+            const dd an1 = (a0 * m2c - detail_dd::ldexp(am1, 1)) / float256::from_int(n + 1);
+            am1 = a0;
+            a0 = an1;
+        }
+    });
+    return ce.b;
+}
+
+// erfc(a) for 1/32 <= a < 16 in dd: the expansion at the nearest c_j = j/16
+// (h = a - c_j is exact, |h| <= 1/32; K e^{...}/erfc stays O(1), so at most a
+// couple of bits cancel).
+[[nodiscard]] inline detail_dd::dd erfc_center_dd(float256 a) {
+    using detail_dd::dd;
+    const int j = static_cast<int>(std::lround(a.to_double() * 16.0));
+    const float256 h = a - ldexp(float256::from_int(j), -4);
+    namespace T = detail_dd::tables;
+    const dd ec = detail_dd::dd_from_words(T::kErfcVal[j]);
+    if (h.iszero()) return ec;
+    const auto& b = erf_center_coefs(j);
+    // Terms: stop once |b_n h^n| < 2^-510 for two consecutive n.
+    std::size_t N = b.size();
+    const int eh = ilogb(h) + 1;  // |h| < 2^eh
+    int small = 0;
+    for (std::size_t n = 0; n < b.size(); ++n) {
+        const bool tiny = b[n].hi.iszero() || ilogb(b[n].hi) + eh * static_cast<int>(n) < -510;
+        small = tiny ? small + 1 : 0;
+        if (small >= 2) { N = n + 1; break; }
+    }
+    dd p = b[N - 1];
+    for (std::size_t n = N - 1; n-- > 0;) p = p * h + b[n];
+    return ec - detail_dd::dd_from_words(T::kErfK[j]) * (p * h);
+}
+
+// erf(a) for 0 < a < 16 in dd. Below 1/32: 2/√π e^{-a²} a Σ c_n a^{2n} by
+// Horner on the precomputed c_n (all terms positive); above, 1 - erfc(a).
 [[nodiscard]] inline detail_dd::dd erf_series_dd(float256 a) {
+    if (a >= ldexp(float256::one(), -5)) return detail_dd::dd(float256::one()) - erfc_center_dd(a);
     using detail_dd::dd;
     const dd x2 = detail_dd::two_prod(a, a);
     // Number of terms: c_n a^{2n} < 2^-496 (the sum is >= 1).
@@ -58,7 +120,7 @@ inline constexpr int kErfTerms = 400;
     return p * a * detail_dd::exp(-x2) * two_over_sqrtpi;
 }
 
-// erfc(a) for a >= 6 (any a >= 4 works) as m·2^k: e^{-a²} / (√π · K(a)), with the Laplace
+// erfc(a) for a >= 16 (any a >= 4 works) as m·2^k: e^{-a²} / (√π · K(a)), with the Laplace
 // continued fraction K = a + (1/2)/(a + 1/(a + (3/2)/(a + …))) truncated at a
 // depth chosen from a, evaluated by the forward
 // convergent recurrence P_n = a P_{n-1} + (n/2) P_{n-2} (likewise Q): all
@@ -104,14 +166,11 @@ inline constexpr int kErfTerms = 400;
         const auto& c = detail_dd::consts();
         y = dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1]);
         tail = -s;
-    } else if (a < float256(6)) {
+    } else if (a < float256(16)) {
         y = detail_spec::erf_series_dd(a);
-    } else if (a > float256(16)) {
+    } else {
         y = dd(float256::one());  // erfc(16) < 2^-370
         tail = -s;
-    } else {
-        const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
-        y = dd(float256::one()) - detail_dd::ldexp(e.m, e.k);
     }
     if (s < 0) y = -y;
     return env.round(y.hi, y.lo, 0, tail);
@@ -130,14 +189,14 @@ inline constexpr int kErfTerms = 400;
         if (a > float256(16)) return env.round(float256::two(), float256::zero(), 0, -1);
         if (detail_math::is_tiny(a))
             return (dd(float256::one()) + dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1])).out(env, 0, -1);
-        if (a < float256(6)) return (dd(float256::one()) + detail_spec::erf_series_dd(a)).out(env);
+        if (a < float256(16)) return (dd(float256::one()) + detail_spec::erf_series_dd(a)).out(env);
         const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
         return (dd(float256::two()) - detail_dd::ldexp(e.m, e.k)).out(env);
     }
     if (detail_math::is_tiny(a))
         return (dd(float256::one()) - dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1])).out(env, 0, +1);
-    // 1 - erf(a) loses at most a² log2(e) < 52 bits for a < 6 (of ~474).
-    if (a < float256(6)) return (dd(float256::one()) - detail_spec::erf_series_dd(a)).out(env);
+    if (a < ldexp(float256::one(), -5)) return (dd(float256::one()) - detail_spec::erf_series_dd(a)).out(env);
+    if (a < float256(16)) return detail_spec::erfc_center_dd(a).out(env);
     if (a > float256(520)) return env.underflow(false);  // erfc(520) < 2^-390000
     const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
     return e.m.out(env, e.k);
