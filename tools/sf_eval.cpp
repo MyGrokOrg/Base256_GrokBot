@@ -46,6 +46,11 @@ int main() {
         else if (f == "her") r = hermite(static_cast<unsigned>(std::stoul(a)), P(b));
         else if (f == "ei") r = expint(P(a));
         else if (f == "en") r = expint(static_cast<unsigned>(std::stoul(a)), P(b));
+        else if (f == "si") r = sinint(P(a));
+        else if (f == "ci") r = cosint(P(a));
+        else if (f == "shi") r = sinhint(P(a));
+        else if (f == "chi") r = coshint(P(a));
+        else if (f == "li") r = logint(P(a));
 #ifdef SF_MORE
         SF_MORE
 #endif

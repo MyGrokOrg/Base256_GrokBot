@@ -147,7 +147,32 @@ def EI(x):
 def EN(n, x):
     with mp.workprec(1500): return mp.expint(int(n), x)
 
+def W1500(f):
+    def g(*a):
+        with mp.workprec(1500): return f(*a)
+    return g
+SI, CI, SHI, CHI = W1500(mp.si), W1500(mp.ci), W1500(mp.shi), W1500(mp.chi)
+LI = W1500(lambda x: mp.li(x))
+
 RANGES = [
+    ("si",       "si", SI, [(-10, 6, True)]),
+    ("si_mid",   "si", SI, [(-400, 400, False)]),
+    ("si_big",   "si", SI, [(8, 1000, True)]),
+    ("ci",       "ci", CI, [(-10, 6, True)]),
+    ("ci_mid",   "ci", CI, [(0, 400, False)]),
+    ("ci_big",   "ci", CI, [(8, 1000, True)]),
+    ("si_huge",  "si", SI, [(900, 262000, True)]),
+    ("ci_huge",  "ci", CI, [(900, 262000, True)]),
+    ("ci_root",  "ci", CI, [(0.6165, 0.6166, False)]),
+    ("shi",      "shi", SHI, [(-20, 9, True)]),
+    ("shi_big",  "shi", SHI, [(9, 17.47, True)]),
+    ("chi",      "chi", CHI, [(-20, 9, True)]),
+    ("chi_big",  "chi", CHI, [(9, 17.47, True)]),
+    ("chi_root", "chi", CHI, [(0.5238, 0.5239, False)]),
+    ("li",       "li", LI, [(-20, 20, True)]),
+    ("li_1",     "li", LI, [(0.999, 1.001, False)]),
+    ("li_big",   "li", LI, [(20, 3000, True)]),
+    ("li_tiny",  "li", LI, [(-262000, -20, True)]),
     ("ei",       "ei", EI, [(-10, 6, True)]),
     ("ei_neg",   "ei", EI, [(-400, 0, False)]),
     ("ei_mid",   "ei", EI, [(0, 500, False)]),

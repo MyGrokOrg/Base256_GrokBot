@@ -62,6 +62,11 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "alag") return assoc_laguerre(static_cast<unsigned>(std::stoul(a)), static_cast<unsigned>(std::stoul(b)), P(c));
     if (op == "ei") return expint(P(a));
     if (op == "en") return expint(static_cast<unsigned>(std::stoul(a)), P(b));
+    if (op == "si") return sinint(P(a));
+    if (op == "ci") return cosint(P(a));
+    if (op == "shi") return sinhint(P(a));
+    if (op == "chi") return coshint(P(a));
+    if (op == "li") return logint(P(a));
     if (op == "her") return hermite(static_cast<unsigned>(std::stoul(a)), P(b));
     std::cerr << "unknown op " << op << "\n";
     return float256::qnan();
@@ -161,6 +166,20 @@ const Ref kRefs[] = {
     {"en", "40", "12", "", "0x101846da169cf1ceaeb1b6a4ee18a58a0c3ec2f3736104b16680087275f1p-259"},
     {"en", "1000", "2", "", "0x11b88d8cfd04cd96e9f4daf406c3ac6659c2aa739c12ea6e6fc4ecf424d7p-249"},
     {"en", "0", "3", "", "0x10fe75dddf2074863019576d0b00b355a2b63da267aecbb2c5f42dfa153ep-242"},
+    {"si", "0.75", "", "", "0x1743358da65566584b58f0fc0df85674d313af6c4bc413e1d348a23ee0a6p-237"},
+    {"si", "-150.5", "", "", "-0x19080210c31fe701de07f3a8ad3739a7f5c3baac7a95506dcad20cc6d3b6p-236"},
+    {"si", "1e5", "", "", "0x192205cee772ab5235640938bd2250326c906c14039946bc0f0c88c82446p-236"},
+    {"ci", "3.5", "", "", "-0x1073273242139b63163f3480a1f019b8f7d7da1e965eecc07439e8838de6p-241"},
+    {"ci", "90", "", "", "0x14739ae2697bc7508284fae9e50864b5dedfd20d31d881ffc2fa46b1c0abp-243"},
+    {"ci", "1e40", "", "", "-0x13d94cbb44d2f741510a989b4bb67fc1f29427e3488245b0ea6e97b2e1a0p-370"},
+    {"shi", "-2.5", "", "", "-0x1c650c9538d7a9affda9e313739da2fab2c2493f62ddacae0b615dca076bp-235"},
+    {"shi", "700", "", "", "0x15aa94a53af48e6bc6673697e39e2f5b64539d7bbeaa16556182b566d50ap+763"},
+    {"chi", "0.125", "", "", "-0x17f91b55581f79c79f63c8ae4170070befc0a50b45301cdd5d7deee8b426p-236"},
+    {"chi", "65.5", "", "", "0x16674fd7556ba30674426b28a443f7eb13975ae093e9bd9a7f94c1da7cc0p-149"},
+    {"li", "0.5", "", "", "-0x183c257878eee36d8a46ce3ca4763cbf041d1dfb8e1263e5fc32e9697f3dp-238"},
+    {"li", "1.0000001", "", "", "-0x1f14ee3708da5aa5faf4425058f911cccd9b5fdecc432e91fc3e7f2eaedfp-233"},
+    {"li", "1e30", "", "", "0x17bca23e192a6b0c865bf71a9def67463c314db4998ce6f00162b6645ca9p-143"},
+    {"li", "2", "", "", "0x10b8fda7e918078599e853393f0af3deefad54b9ce533d61088126a05a6bp-236"},
     {"ibetac", "30", "2", "0.0625", "0x1ffffffffffffffffffffffffffffc5c0000000000000000000000000000p-237"},
 };
 
@@ -412,6 +431,32 @@ int main() {
              [](round_mode m) { return (m == round_mode::downward) ? -float256::denorm_min() : -float256::zero(); },
              base256::fe_underflow | kInx);
     CHECK(same(expint(1u, float256(-2.5)), -expint(float256(2.5))));
+
+    // Sine/cosine integrals and li.
+    EXPECT(sinint(-zero), -zero, 0);
+    EXPECT(sinint(nan), nan, 0);
+    {
+        fenv::clear_flags();
+        CHECK(same(sinint(-inf), -(float256::pi() * float256::half())) && fenv::test_flags() == kInx);
+        fenv::clear_flags();
+    }
+    EXPECT(cosint(zero), -inf, kDiv);
+    EXPECT(cosint(-one), nan, kInv);
+    EXPECT(cosint(inf), zero, 0);
+    EXPECT(sinhint(-inf), -inf, 0);
+    EXPECT(sinhint(zero), zero, 0);
+    EXPECT(coshint(zero), -inf, kDiv);
+    EXPECT(coshint(-one), nan, kInv);
+    EXPECT(coshint(inf), inf, 0);
+    EXPECT_M(sinhint(float256(-190000)),
+             [](round_mode m) { return (m == round_mode::toward_zero || m == round_mode::upward) ? -float256::max() : -float256::inf(false); },
+             base256::fe_overflow | kInx);
+    EXPECT(logint(zero), zero, 0);
+    EXPECT(logint(one), -inf, kDiv);
+    EXPECT(logint(-one), nan, kInv);
+    EXPECT(logint(inf), inf, 0);
+    CHECK(same(sinhint(float256(-3.5)), -sinhint(float256(3.5))));
+    CHECK(same(sinint(float256(-200.25)), -sinint(float256(200.25))));
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;

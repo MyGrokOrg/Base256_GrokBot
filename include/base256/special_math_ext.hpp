@@ -2,7 +2,8 @@
 /// More special functions (included by base256.hpp): the C++17 orthogonal
 /// polynomials (legendre, assoc_legendre, sph_legendre, laguerre,
 /// assoc_laguerre, hermite) and the exponential integrals expint (Ei) and
-/// expint(n, x) (E_n). Each evaluates in double-float256 (~474 bits)
+/// expint(n, x) (E_n), the sine/cosine integrals sinint, cosint, sinhint,
+/// coshint and the logarithmic integral logint. Each evaluates in double-float256 (~474 bits)
 /// and rounds once in the caller's mode with IEEE flags. See README "Special
 /// functions" for measured accuracy, domains and costs.
 
@@ -194,27 +195,34 @@ inline void rescale(dd& p0, dd& p1, int& k) {
 namespace detail_sf {
 namespace eint {
 
+// The series and fractions below take a float256 or (for li) a dd argument.
+[[nodiscard]] inline float256 H(float256 v) { return v; }
+[[nodiscard]] inline float256 H(const dd& v) { return v.hi; }
+[[nodiscard]] inline dd add(float256 a, float256 b) { return detail_dd::two_sum(a, b); }
+[[nodiscard]] inline dd add(const dd& a, float256 b) { return a + dd(b); }
+
 // S(x) = Σ_{k>=1} x^k/(k·k!), so Ei(x) = γ + ln|x| + S(x) and E1(t) = −γ − ln t − S(−t).
 // Once the terms decrease (k > |x|) and fall below 2^-245 of the sum, the rest
 // is summed in float256.
-[[nodiscard]] inline dd s_series(float256 x) {
+template <class T>
+[[nodiscard]] dd s_series(const T& x) {
     dd term{float256::one()}, sum{float256::zero()};
-    const float256 ax = abs(x);
+    const float256 ax = abs(H(x)), xh = H(x);
     std::uint64_t k = 1;
     for (;; ++k) {
         const float256 K = float256::from_uint(k);
         term = term * x / K;
-        const dd add = term / K;
-        sum = sum + add;
-        if (K > ax && f256_tail(add, sum)) break;
+        const dd ad = term / K;
+        sum = sum + ad;
+        if (K > ax && f256_tail(ad, sum)) break;
     }
     float256 tf = term.hi, st{};
     for (++k;; ++k) {
         const float256 K = float256::from_uint(k);
-        tf = tf * x / K;
-        const float256 add = tf / K;
-        st = st + add;
-        if (small_rel(dd(add), sum)) break;
+        tf = tf * xh / K;
+        const float256 ad = tf / K;
+        st = st + ad;
+        if (small_rel(dd(ad), sum)) break;
     }
     return sum + dd(st);
 }
@@ -222,7 +230,9 @@ namespace eint {
 inline constexpr int kEiAsym = 360;  // Ei asymptotic series from here (min term < 2^-500)
 
 // Ei(x) for x >= kEiAsym: e^x/x Σ k!/x^k.
-[[nodiscard]] inline SD ei_asym(float256 x) {
+template <class T>
+[[nodiscard]] SD ei_asym(const T& x) {
+    const float256 xh = H(x);
     dd term{float256::one()}, sum{float256::one()};
     std::uint64_t k = 1;
     for (;; ++k) {
@@ -232,7 +242,7 @@ inline constexpr int kEiAsym = 360;  // Ei asymptotic series from here (min term
     }
     float256 tf = term.hi, st{};
     for (++k;; ++k) {
-        tf = tf * float256::from_uint(k) / x;
+        tf = tf * float256::from_uint(k) / xh;
         st = st + tf;
         if (small_rel(dd(tf), sum)) break;
     }
@@ -243,14 +253,15 @@ inline constexpr int kEiAsym = 360;  // Ei asymptotic series from here (min term
 
 // The continued fraction E_n(x) = e^{-x} / (b0 + a1/(b1 + a2/(b2 + ...))),
 // b_k = x + n + 2k, a_k = −k(n − 1 + k) (division-free Wallis form, rescaled).
-[[nodiscard]] inline dd en_cf(std::uint64_t n, float256 x) {
+template <class T>
+[[nodiscard]] dd en_cf(std::uint64_t n, const T& x) {
     const float256 nn = float256::from_uint(n);
     dd A0{float256::one()}, B0{float256::zero()};
-    dd A1 = detail_dd::two_sum(x, nn), B1{float256::one()};
+    dd A1 = add(x, nn), B1{float256::one()};
     dd h = A1, hprev = h;
     for (std::uint64_t k = 1;; ++k) {
         const float256 K = float256::from_uint(k);
-        const dd b = detail_dd::two_sum(x, nn + K + K);
+        const dd b = add(x, nn + K + K);
         const dd a = -(detail_dd::two_prod(K, nn - float256::one() + K));
         const dd A2 = b * A1 + a * A0, B2 = b * B1 + a * B0;
         A0 = A1; B0 = B1; A1 = A2; B1 = B2;
@@ -271,18 +282,21 @@ inline constexpr int kEiAsym = 360;  // Ei asymptotic series from here (min term
 // E_n(x) for x > 0 by the series
 //   E_n(x) = (−x)^{n−1}/(n−1)! (ψ(n) − ln x) − Σ_{k≠n−1} (−x)^k / (k! (k−n+1)),
 // ψ(n) = −γ + H_{n−1}. Used for x < 40 (it cancels about 2.9x bits).
-[[nodiscard]] inline dd en_series(std::uint64_t n, float256 x) {
+template <class T>
+[[nodiscard]] dd en_series(std::uint64_t n, const T& x) {
+    const float256 xh = H(x);
     const dd one{float256::one()};
     dd sum{float256::zero()}, term = one;  // term = (−x)^k/k!
-    const float256 nx = -x;
+    const T nx = -x;
+    const float256 nxh = -xh;
     std::uint64_t k = 0;
     for (;; ++k) {
         const float256 K = float256::from_uint(k);
         if (k > 0) term = term * nx / K;
         if (k + 1 != n) {
-            const dd add = term / (K - float256::from_uint(n - 1));
-            sum = sum - add;
-            if (K > x && k + 1 > n && f256_tail(add, sum)) break;
+            const dd ad = term / (K - float256::from_uint(n - 1));
+            sum = sum - ad;
+            if (K > xh && k + 1 > n && f256_tail(ad, sum)) break;
         } else {
             dd psi = -euler_gamma();
             for (std::uint64_t j = 1; j < n; ++j) psi = psi + one / float256::from_uint(j);
@@ -293,10 +307,10 @@ inline constexpr int kEiAsym = 360;  // Ei asymptotic series from here (min term
     float256 tf = term.hi, st{};
     for (++k;; ++k) {
         const float256 K = float256::from_uint(k);
-        tf = tf * nx / K;
-        const float256 add = tf / (K - float256::from_uint(n - 1));
-        st = st - add;
-        if (small_rel(dd(add), sum)) break;
+        tf = tf * nxh / K;
+        const float256 ad = tf / (K - float256::from_uint(n - 1));
+        st = st - ad;
+        if (small_rel(dd(ad), sum)) break;
     }
     return sum + dd(st);
 }
@@ -310,9 +324,10 @@ inline constexpr int kEiAsym = 360;  // Ei asymptotic series from here (min term
 }
 
 // E_n(x), x > 0, as m·2^k.
-[[nodiscard]] inline SD en_sd(std::uint64_t n, float256 x) {
+template <class T>
+[[nodiscard]] SD en_sd(std::uint64_t n, const T& x) {
     if (n == 0) return mul(exp_sd(-dd(x)), dd(float256::one()) / x);  // e^{-x}/x
-    if (en_use_cf(n, x)) {
+    if (en_use_cf(n, H(x))) {
         const dd f = en_cf(n, x);
         return mul(exp_sd(-dd(x)), dd(float256::one()) / f);
     }
@@ -320,13 +335,14 @@ inline constexpr int kEiAsym = 360;  // Ei asymptotic series from here (min term
 }
 
 // Ei(x), x != 0 finite, as m·2^k.
-[[nodiscard]] inline SD ei_sd(float256 x) {
-    if (x.signbit()) {
+template <class T>
+[[nodiscard]] SD ei_sd(const T& x) {
+    if (H(x).signbit()) {
         SD e = en_sd(1, -x);
         e.m = -e.m;
         return e;
     }
-    if (x >= float256(kEiAsym)) return ei_asym(x);
+    if (H(x) >= float256(kEiAsym)) return ei_asym(x);
     return norm({euler_gamma() + detail_dd::log(dd(x)) + s_series(x), 0});
 }
 
@@ -367,6 +383,209 @@ inline constexpr int kEiAsym = 360;  // Ei asymptotic series from here (min term
     if (x.isinf()) return env.exact(float256::zero());
     if (x > float256(190000)) return env.underflow(false);
     return detail_sf::out(env, detail_sf::eint::en_sd(n, x));
+}
+
+namespace detail_sf {
+namespace trigint {
+
+// Odd and even parts of Σ_{k>=1} c_k x^k/(k·k!), c_k = 1 (hyperbolic) or the
+// signs of i^{k−1} (odd, Si) and i^k (even, Ci): odd = Shi or Si,
+// even + γ + ln x = Chi or Ci.
+inline void series(float256 x, bool trig, dd& odd, dd& even) {
+    dd term{float256::one()};
+    odd = even = dd(float256::zero());
+    std::uint64_t k = 1;
+    bool odone = false, edone = false;
+    for (;; ++k) {
+        const float256 K = float256::from_uint(k);
+        term = term * x / K;
+        dd ad = term / K;
+        if (trig && ((k & 3) == 3 || (k & 3) == 2)) ad = -ad;
+        if (k & 1) { odd = odd + ad; odone = K > x && f256_tail(ad, odd); }
+        else { even = even + ad; edone = K > x && f256_tail(ad, even); }
+        if (odone && edone) break;
+    }
+    float256 tf = term.hi, so{}, se{};
+    odone = edone = false;
+    for (++k;; ++k) {
+        const float256 K = float256::from_uint(k);
+        tf = tf * x / K;
+        float256 ad = tf / K;
+        if (trig && ((k & 3) == 3 || (k & 3) == 2)) ad = -ad;
+        if (k & 1) { so = so + ad; odone = small_rel(dd(ad), odd); }
+        else { se = se + ad; edone = small_rel(dd(ad), even); }
+        if (odone && edone) break;
+    }
+    odd = odd + dd(so);
+    even = even + dd(se);
+}
+
+inline constexpr int kSeriesX = 80;   // Si/Ci series below this (cancels about 1.44x bits)
+inline constexpr int kAsymX = 360;    // f, g asymptotic series from here
+
+// E1(ix) by the complex Wallis form of E1(z) = e^{-z}/(z+1 − 1/(z+3 − 4/(z+5 − ...)))
+// gives Ci(x) = −Re E1(ix), Si(x) = π/2 + Im E1(ix).
+inline void cf(float256 x, dd& si, dd& ci) {
+    const dd zero{float256::zero()}, one{float256::one()};
+    dd Ar0 = one, Ai0 = zero, Br0 = zero, Bi0 = zero;
+    dd Ar1{float256::one()}, Ai1{x}, Br1 = one, Bi1 = zero;
+    dd hr = one, hi = zero, pr = one, pi = zero;  // h = B/A
+    for (std::uint64_t k = 1;; ++k) {
+        const float256 K = float256::from_uint(k);
+        const dd br{K + K + float256::one()};
+        const dd a = -detail_dd::two_prod(K, K);
+        // A2 = (br + i x) A1 + a A0
+        const dd Ar2 = br * Ar1 - Ai1 * x + a * Ar0, Ai2 = br * Ai1 + Ar1 * x + a * Ai0;
+        const dd Br2 = br * Br1 - Bi1 * x + a * Br0, Bi2 = br * Bi1 + Br1 * x + a * Bi0;
+        Ar0 = Ar1; Ai0 = Ai1; Br0 = Br1; Bi0 = Bi1;
+        Ar1 = Ar2; Ai1 = Ai2; Br1 = Br2; Bi1 = Bi2;
+        if ((k & 7) == 0) {
+            const float256 big = abs(Ar1.hi) > abs(Ai1.hi) ? abs(Ar1.hi) : abs(Ai1.hi);
+            const int e = ilogb(big);
+            if (e > 1000 || e < -1000) {
+                for (dd* v : {&Ar0, &Ai0, &Br0, &Bi0, &Ar1, &Ai1, &Br1, &Bi1}) *v = detail_dd::ldexp(*v, -e);
+            }
+            const dd d = Ar1 * Ar1 + Ai1 * Ai1;
+            hr = (Br1 * Ar1 + Bi1 * Ai1) / d;
+            hi = (Bi1 * Ar1 - Br1 * Ai1) / d;
+            const dd dr = hr - pr, di = hi - pi;
+            const float256 m = abs(dr.hi) > abs(di.hi) ? abs(dr.hi) : abs(di.hi);
+            const float256 sz = abs(hr.hi) > abs(hi.hi) ? abs(hr.hi) : abs(hi.hi);
+            if (m.iszero() || ilogb(m) < ilogb(sz) - 468) break;
+            pr = hr; pi = hi;
+        }
+    }
+    // E1(ix) = e^{-ix} h = (cos x − i sin x)(hr + i hi)
+    dd s, c;
+    sincos_x(x, s, c);
+    const dd er = c * hr + s * hi, ei = c * hi - s * hr;
+    ci = -er;
+    si = detail_dd::pio2() + ei;
+}
+
+// x >= kAsymX: Si = π/2 − f cos x − g sin x, Ci = f sin x − g cos x with
+// f = F/x, g = G/x², F = Σ (−1)^k (2k)!/x^{2k}, G = Σ (−1)^k (2k+1)!/x^{2k}.
+inline void asym(float256 x, dd& si, dd& ci, int& ck) {
+    const dd one{float256::one()};
+    dd F = one, G = one;
+    const bool huge = ilogb(x) > 1000;
+    if (!huge) {
+        const dd ix2 = one / (dd(x) * x);
+        dd tF = one, tG = one;
+        for (std::uint64_t k = 1;; ++k) {
+            const float256 a = float256::from_uint(2 * k - 1), b = float256::from_uint(2 * k), c = float256::from_uint(2 * k + 1);
+            tF = -(tF * ix2 * a * b);
+            tG = -(tG * ix2 * b * c);
+            F = F + tF; G = G + tG;
+            if (small_rel(tF, F) && small_rel(tG, G)) break;
+        }
+    }
+    dd s, c;
+    sincos_x(x, s, c);
+    // Ci = (F sin x − (G/x) cos x)/x as m·2^ck (x may be near the top of the range).
+    const dd gx = huge ? dd(float256::zero()) : G / x;
+    const int ex = ilogb(x);
+    const dd xm{ldexp(x, -ex)};
+    const SD civ = norm({(F * s - gx * c) / xm, -ex});
+    ci = civ.m; ck = civ.k;
+    const SD sv = norm({(F * c + gx * s) / xm, -ex});
+    si = detail_dd::pio2() - (sv.k < -1200 ? dd(float256::zero()) : detail_dd::ldexp(sv.m, sv.k));
+}
+
+} // namespace trigint
+} // namespace detail_sf
+
+/// Sine integral Si(x) = ∫_0^x sin t/t dt, any real x (odd; Si(±∞) = ±π/2).
+[[nodiscard]] inline float256 sinint(float256 x) {
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x);
+    using detail_dd::dd;
+    const bool neg = x.signbit();
+    const float256 ax = abs(x);
+    dd si, ci;
+    if (ax.isinf()) si = detail_dd::pio2();
+    else if (ax < float256(detail_sf::trigint::kSeriesX)) detail_sf::trigint::series(ax, true, si, ci);
+    else if (ax < float256(detail_sf::trigint::kAsymX)) detail_sf::trigint::cf(ax, si, ci);
+    else { int k; detail_sf::trigint::asym(ax, si, ci, k); }
+    if (neg) si = -si;
+    return env.round(si.hi, si.lo);
+}
+
+/// Cosine integral Ci(x) = γ + ln x + ∫_0^x (cos t − 1)/t dt for x >= 0:
+/// Ci(0) = −∞ (pole), Ci(+∞) = +0; x < 0 is a domain error.
+[[nodiscard]] inline float256 cosint(float256 x) {
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.pole(true);
+    if (x.signbit()) return env.invalid();
+    if (x.isinf()) return env.exact(float256::zero());
+    using detail_dd::dd;
+    dd si, ci;
+    int k = 0;
+    if (x < float256(detail_sf::trigint::kSeriesX)) {
+        detail_sf::trigint::series(x, true, si, ci);
+        ci = ci + detail_sf::euler_gamma() + detail_dd::log(dd(x));
+    } else if (x < float256(detail_sf::trigint::kAsymX)) detail_sf::trigint::cf(x, si, ci);
+    else detail_sf::trigint::asym(x, si, ci, k);
+    return detail_sf::out(env, detail_sf::norm({ci, k}));
+}
+
+/// Hyperbolic sine integral Shi(x) = ∫_0^x sinh t/t dt, any real x (odd).
+/// Overflows above |x| ≈ 181705.
+[[nodiscard]] inline float256 sinhint(float256 x) {
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero() || x.isinf()) return env.exact(x);
+    using detail_dd::dd;
+    const bool neg = x.signbit();
+    const float256 ax = abs(x);
+    if (ax > float256(190000)) return env.overflow(neg);
+    detail_sf::SD v;
+    if (ax >= float256(detail_sf::eint::kEiAsym)) {
+        v = detail_sf::eint::ei_asym(ax);  // Shi = (Ei(x) + E1(x))/2, E1 below 2^-1000 relative
+        --v.k;
+    } else {
+        dd o, e;
+        detail_sf::trigint::series(ax, false, o, e);
+        v = detail_sf::norm({o, 0});
+    }
+    if (neg) v.m = -v.m;
+    return detail_sf::out(env, v);
+}
+
+/// Hyperbolic cosine integral Chi(x) = γ + ln x + ∫_0^x (cosh t − 1)/t dt for
+/// x >= 0: Chi(0) = −∞ (pole); x < 0 is a domain error. Overflows above x ≈ 181705.
+[[nodiscard]] inline float256 coshint(float256 x) {
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.pole(true);
+    if (x.signbit()) return env.invalid();
+    if (x.isinf()) return env.exact(x);
+    if (x > float256(190000)) return env.overflow(false);
+    using detail_dd::dd;
+    detail_sf::SD v;
+    if (x >= float256(detail_sf::eint::kEiAsym)) {
+        v = detail_sf::eint::ei_asym(x);  // Chi = (Ei(x) − E1(x))/2
+        --v.k;
+    } else {
+        dd o, e;
+        detail_sf::trigint::series(x, false, o, e);
+        v = detail_sf::norm({e + detail_sf::euler_gamma() + detail_dd::log(dd(x)), 0});
+    }
+    return detail_sf::out(env, v);
+}
+
+/// Logarithmic integral li(x) = Ei(ln x) for x >= 0: li(0) = 0, li(1) = −∞
+/// (pole), li(+∞) = +∞; x < 0 is a domain error.
+[[nodiscard]] inline float256 logint(float256 x) {
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x);
+    if (x.signbit()) return env.invalid();
+    if (x == float256::one()) return env.pole(true);
+    if (x.isinf()) return env.exact(x);
+    return detail_sf::out(env, detail_sf::eint::ei_sd(detail_dd::log(detail_dd::dd(x))));
 }
 
 } // namespace base256

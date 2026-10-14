@@ -263,6 +263,13 @@ void report(const char* name, const Stat& st, double bound, int& bad) {
 }
 
 int mpfr_lngamma_abs(mpfr_ptr r, mpfr_srcptr x, mpfr_rnd_t rnd) { int sg; return mpfr_lgamma(r, &sg, x, rnd); }
+// li(x) = Ei(ln x), ln x at 1300 bits (the result is never exact).
+int mpfr_li(mpfr_ptr r, mpfr_srcptr x, mpfr_rnd_t rnd) {
+    mpfr_t l; mpfr_init2(l, 1300); mpfr_log(l, x, MPFR_RNDN);
+    const int t = mpfr_eint(r, l, rnd);
+    mpfr_clear(l);
+    return t == 0 ? 1 : t;
+}
 // E_1(x) = −Ei(−x) (mpfr_eint gives −E_1(−x) for negative arguments).
 int mpfr_e1(mpfr_ptr r, mpfr_srcptr x, mpfr_rnd_t rnd) {
     mpfr_t nx; mpfr_init2(nx, mpfr_get_prec(x)); mpfr_neg(nx, x, MPFR_RNDN);
@@ -350,6 +357,8 @@ int main(int argc, char** argv) {
         {"expint", [](float256 x){return expint(x);}, mpfr_eint, -20, 9, true, true, 1, 0},
         {"ei_big", [](float256 x){return expint(x);}, mpfr_eint, 9, 17.5, true, true, 1, 0},
         {"e1",     [](float256 x){return expint(1u, x);}, mpfr_e1, -20, 8, true, false, 1, 0},
+        {"logint", [](float256 x){return logint(x);}, mpfr_li, -40, 40, true, false, 1, 0},
+        {"logint1",[](float256 x){return logint(x);}, mpfr_li, -236, -1, true, false, 1, 0, 3},
     };
     const bool all_fns = argc <= 4 || std::string(argv[4]).empty() || std::string(argv[4]) == "all";
     if (!all_fns) { std::string only = argv[4]; std::erase_if(fns, [&](const Fn& f){ return only.find(f.name) == std::string::npos; }); }
