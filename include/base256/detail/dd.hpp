@@ -442,24 +442,44 @@ inline void sincos_reduced(const dd& r, dd& s, dd& c) {
         c = one - ldexp(r2, -1);
         return;
     }
-    constexpr int kHalf = 8;
-    const dd x = ldexp(r, -kHalf);
-    const dd x2 = x * x;
-    // Horner in x2 on ±1/(2k+1)! and ±1/(2k)! (precomputed).
-    const auto& f = inv_factorials();
-    int n = series_terms(base256::ilogb(x.hi), 495);  // terms of the full series x^n/n!
-    n = std::min(n + 2, kMaxInvFact - 1);
-    const int ks = (n - 1) / 2, kc = n / 2;  // highest k used in sin / cos
-    auto coef = [&](int idx, int k) { const dd c = f[static_cast<std::size_t>(idx)]; return (k & 1) ? -c : c; };
-    dd ps = coef(2 * ks + 1, ks), pc = coef(2 * kc, kc);
-    for (int k = ks - 1; k >= 0; --k) ps = ps * x2 + coef(2 * k + 1, k);
-    for (int k = kc - 1; k >= 0; --k) pc = pc * x2 + coef(2 * k, k);
-    dd ss = ps * x, sc = pc;
+    // |r| <= 1: r = c_j + x with c_j = j/64 (MPFR sin/cos table), |x| <= 1/128;
+    // sin r = sin c cos x + cos c sin x, cos r = cos c cos x - sin c sin x.
+    const bool neg = r.hi.signbit();
+    const dd ar = neg ? -r : r;
+    const double rd = ar.hi.to_double();
+    const int j = rd <= 1.0 ? static_cast<int>(std::lround(rd * 64.0)) : -1;
+    const int kHalf = j < 0 ? 8 : 0;  // larger |r|: Taylor at r/2^8 and double-angle steps
+    const dd x = j < 0 ? ldexp(ar, -kHalf) : (j == 0 ? ar : ar - dd(base256::ldexp(float256::from_int(j), -6)));
+    dd ss, sc;
+    if (x.hi.iszero()) {
+        ss = x;
+        sc = one;
+    } else {
+        const dd x2 = x * x;
+        // Horner in x2 on ±1/(2k+1)! and ±1/(2k)! (precomputed).
+        const auto& f = inv_factorials();
+        int n = series_terms(base256::ilogb(x.hi), 495);  // terms of the full series x^n/n!
+        n = std::min(n + 2, kMaxInvFact - 1);
+        const int ks = (n - 1) / 2, kc = n / 2;  // highest k used in sin / cos
+        auto coef = [&](int idx, int k) { const dd c = f[static_cast<std::size_t>(idx)]; return (k & 1) ? -c : c; };
+        dd ps = coef(2 * ks + 1, ks), pc = coef(2 * kc, kc);
+        for (int k = ks - 1; k >= 0; --k) ps = ps * x2 + coef(2 * k + 1, k);
+        for (int k = kc - 1; k >= 0; --k) pc = pc * x2 + coef(2 * k, k);
+        ss = ps * x;
+        sc = pc;
+    }
     for (int i = 0; i < kHalf; ++i) {
         const dd s2 = ldexp(ss * sc, 1);
         sc = one - ldexp(ss * ss, 1);
         ss = s2;
     }
+    if (j > 0) {
+        const dd sj = dd_from_words(tables::kSinVal[j]), cj = dd_from_words(tables::kCosVal[j]);
+        const dd s1 = sj * sc + cj * ss;
+        sc = cj * sc - sj * ss;
+        ss = s1;
+    }
+    if (neg) ss = -ss;
     s = ss;
     c = sc;
 }

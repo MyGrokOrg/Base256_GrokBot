@@ -1,6 +1,6 @@
 /* Generates include/base256/detail/tables.hpp with MPFR:
  *   - log reduction tables (two stages) for detail_dd::log
- *   - atan(j/64) for detail_math::atan_dd
+ *   - atan(j/64) for detail_math::atan_dd, sin/cos(j/64) for sincos_reduced
  *   - erf/erfc expansion centers c_j = j/16: erfc(c_j) and (2/sqrt(pi)) e^{-c_j^2}
  * Every value is stored as a double-float256 (hi, lo), hi = RN237(v), lo = RN237(v - hi),
  * encoded as four little-endian uint64 words per float256.
@@ -80,6 +80,12 @@ int main(void) {
     /* atan(j/64), j = 0..64 */
     printf("inline constexpr std::uint64_t kAtanVal[65][8] = {\n");
     for (int j = 0; j <= 64; ++j) { mpfr_set_ui(c, j, MPFR_RNDN); mpfr_div_ui(c, c, 64, MPFR_RNDN); mpfr_atan(v, c, MPFR_RNDN); emit_dd(v); printf(",\n"); }
+    printf("};\n");
+    /* sin(j/64), cos(j/64), j = 0..64 */
+    printf("inline constexpr std::uint64_t kSinVal[65][8] = {\n");
+    for (int j = 0; j <= 64; ++j) { mpfr_set_ui(c, j, MPFR_RNDN); mpfr_div_ui(c, c, 64, MPFR_RNDN); mpfr_sin(v, c, MPFR_RNDN); emit_dd(v); printf(",\n"); }
+    printf("};\ninline constexpr std::uint64_t kCosVal[65][8] = {\n");
+    for (int j = 0; j <= 64; ++j) { mpfr_set_ui(c, j, MPFR_RNDN); mpfr_div_ui(c, c, 64, MPFR_RNDN); mpfr_cos(v, c, MPFR_RNDN); emit_dd(v); printf(",\n"); }
     printf("};\n\n} // namespace base256::detail_dd::tables\n");
     mpfr_clears(c, v, inv, (mpfr_ptr)0);
     return 0;
