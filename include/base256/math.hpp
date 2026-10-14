@@ -452,86 +452,56 @@ inline void trig_dd(float256 ax, detail_dd::dd& s, detail_dd::dd& c, int& quad) 
 
 namespace detail_math {
 // float256 arctangent, a few ulps; seed for the dd correction below.
-[[nodiscard]] inline float256 atan_seed(float256 x) {
-    if (x.isnan() || x.isinf()) {
-        if (x.isinf()) return copysign(float256::pi() * float256::half(), x);
-        return x;
+// atan of a dd q >= 0: q > 1 uses π/2 - atan(1/q); then atan(q) = atan(c_j) +
+// atan(t), c_j = j/64 (MPFR table), t = (q - c_j)/(1 + q c_j), |t| <= 1/128,
+// and atan(t) = t Σ (-1)^n t^{2n}/(2n+1) by Horner (~36 terms at most).
+[[nodiscard]] inline detail_dd::dd atan_dd(detail_dd::dd q) {
+    using detail_dd::dd;
+    const bool recip = q.hi > float256::one();
+    if (recip) q = dd(float256::one()) / q;
+    const int j = static_cast<int>(std::lround(q.hi.to_double() * 64.0));
+    const float256 c = ldexp(float256::from_int(j), -6);
+    const dd t = j == 0 ? q : (q - dd(c)) / (dd(float256::one()) + q * c);
+    dd r{float256::zero()};
+    if (!t.hi.iszero()) {
+        const dd t2 = t * t;
+        const int et = -2 * (ilogb(t.hi) + 1);  // t^2 < 2^-et
+        int n = et > 0 ? (505 + et - 1) / et : detail_dd::kMaxOddInv;
+        n = std::min(n, detail_dd::kMaxOddInv);
+        const auto& co = detail_dd::inv_odd();
+        auto coef = [&](int i) { const dd v = co[static_cast<std::size_t>(i)]; return (i & 1) ? -v : v; };
+        dd p = coef(n);
+        for (int i = n - 1; i >= 0; --i) p = p * t2 + coef(i);
+        r = p * t;
     }
-    if (x.iszero()) return x;
-    bool sign = x.signbit();
-    float256 a = abs(x);
-    bool recip = false;
-    if (a > float256::one()) {
-        a = float256::one() / a;
-        recip = true;
-    }
-    // atan(a) for a in [0,1]: series in terms of z, or Taylor of atan
-    // atan(a) = a - a^3/3 + a^5/5 - ...  slow near 1, use identity
-    // atan(a) = atan(c) + atan((a-c)/(1+a c)) with c = 2-sqrt(3) ≈ tan(π/12)
-    const float256 tan15 = float256::parse("0.267949192431122706472553658494127633").value_or(float256(0.2679491924311227));
-    int k = 0;
-    while (a > tan15 && k < 8) {
-        // atan(a) = π/6 + atan((a*√3 - 1)/(√3 + a))  -- reduce toward 0
-        const float256 s3 = float256::sqrt2() * float256::parse("1.224744871391589049098642037352945696").value_or(float256(1.224744871391589));
-        (void)s3;
-        // simpler: half-angle: atan(a) = 2 atan(a/(1+sqrt(1+a^2)))
-        a = a / (float256::one() + sqrt(float256::one() + a * a));
-        ++k;
-    }
-    const float256 a2 = a * a;
-    float256 term = a;
-    float256 sum  = a;
-    for (int n = 1; n <= 80; ++n) {
-        term = term * a2;
-        float256 add = term / float256::from_int(static_cast<std::int64_t>(2 * n + 1));
-        if (n & 1) add = -add;
-        const float256 next = sum + add;
-        if (next == sum) break;
-        sum = next;
-    }
-    for (int i = 0; i < k; ++i) sum = sum + sum;
-    if (recip) sum = float256::pi() * float256::half() - sum;
-    return sign ? -sum : sum;
+    if (j != 0) r = detail_dd::dd_from_words(detail_dd::tables::kAtanVal[j]) + r;
+    if (recip) r = detail_dd::pio2() - r;
+    return r;
 }
 
-
-// atan2 seed for finite (y, x) not both zero.
-[[nodiscard]] inline float256 atan2_seed(float256 y, float256 x) {
-    if (x.iszero()) return copysign(float256::pi() * float256::half(), y);
-    const float256 a = atan_seed(y / x);
-    if (x.signbit()) return y.signbit() ? a - float256::pi() : a + float256::pi();
-    return a;
-}
-
-// sin and cos of a float256 |a| <= 4 as dd.
-inline void sincos_small(float256 a, detail_dd::dd& s, detail_dd::dd& c) {
-    int q = 0;
-    detail_dd::dd sd, cd;
-    const detail_dd::dd r = detail_dd::reduce_pio2(abs(a), q);
-    detail_dd::sincos_reduced(r, sd, cd);
-    s = (q & 1) ? cd : sd;
-    c = (q & 1) ? -sd : cd;
-    if (q >= 2) { s = -s; c = -c; }
-    if (a.signbit()) s = -s;
-}
-
-// atan2 of dd (Y, X), finite, not both zero: θ0 from the seed, then
-// θ = θ0 + atan(t), t = (Y cos θ0 − X sin θ0)/(X cos θ0 + Y sin θ0), |t| ~ 2^-230.
+// atan2 of dd (Y, X), finite, not both zero.
 [[nodiscard]] inline detail_dd::dd atan2_dd(detail_dd::dd Y, detail_dd::dd X) {
     using detail_dd::dd;
-    // Bring both to a moderate exponent so the products neither overflow nor go subnormal.
+    // Bring both to a moderate exponent so the quotient neither overflows nor goes subnormal.
     const int ey = Y.hi.iszero() ? -1000000 : ilogb(Y.hi);
     const int ex = X.hi.iszero() ? -1000000 : ilogb(X.hi);
     const int e = ey > ex ? ey : ex;
     Y = detail_dd::ldexp(Y, -e);
     X = detail_dd::ldexp(X, -e);
-    const float256 t0 = atan2_seed(Y.round(), X.round());
-    dd s, c;
-    sincos_small(t0, s, c);
-    const dd num = Y * c - X * s;
-    const dd den = X * c + Y * s;
-    const dd t = num / den;
-    return dd(t0) + (t - t * t * t / float256::from_int(3));
+    const bool yneg = Y.hi.signbit();
+    if (X.hi.iszero()) return yneg ? -detail_dd::pio2() : detail_dd::pio2();
+    const dd ay = yneg ? -Y : Y;
+    const bool xneg = X.hi.signbit();
+    const dd ax = xneg ? -X : X;
+    // θ in [0, π/2] for (|Y|, |X|), computed from the smaller ratio.
+    dd th;
+    if (ay.hi <= ax.hi) {
+        th = ay.hi.iszero() ? dd(float256::zero()) : atan_dd(ay / ax);
+    } else {
+        th = detail_dd::pio2() - atan_dd(ax / ay);
+    }
+    if (xneg) th = detail_dd::pi() - th;
+    return yneg ? -th : th;
 }
 } // namespace detail_math
 
