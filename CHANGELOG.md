@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.14.0
+
+- **Fast paths for `+`, `−`, `×`**: when both operands are normal and the result is normal before and after rounding, they skip unpacking and special-case handling. They are about 1.45× faster (add 62 → 42 ns, mul 55 → 38 ns). Every other op benefits from `pack()` checking the common normal case first. The results are bit-identical to the general path in all five modes, flags included. `BASE256_NO_FAST_PATHS` turns the fast paths off.
+  - New ctest `fastpath`: `tests/fastpath_diff.cpp` is built with and without the fast paths. Each build hashes the result bits and flags of `+ − × ÷ fma sqrt` in all modes over random encodings, biased toward exponent boundaries, cancellation and carries, and the two hashes must match. It was checked locally on 3M cases and across GCC and clang builds on 2M cases. A deliberately off-by-one boundary is detected.
+  - `mpfr_diff`: 300,000 cases in all 5 modes (14.4M checks), 0 failures.
+- **`erf` 2.5×, `erfc` 2.3×, `tgamma` 1.6×, `lgamma` 1.2× faster.**
+  - The erf series uses Horner on a precomputed 2^n/(2n+1)!! table and now covers a < 6. erfc is computed as 1 − erf there, which loses fewer than 52 of about 474 bits.
+  - The Laplace continued fraction for erfc (a ≥ 6) uses the forward convergent recurrence: one division in total instead of one per level. Its depth is 6400/a² + 50, measured to keep the truncation error below 2^-300 (the old fixed depths gave 2^-260).
+  - `tgamma` computes exp(Stirling) / rising product, or the reflection formula, as m·2^k rather than exp(lgamma). This saves a log and an exp's worth of work.
+  - The rising product pairs its factors, halving the dd multiplications.
+  - The Stirling correction uses Horner in 1/w², with the term count chosen from the exponents.
+- Accuracy and flags are unchanged. The full `mpfr_ulp` suite (53 checks × 3,000 cases × 5 modes, two seeds, about 1.6M evaluations) gives 0 misrounded results, 0 flag errors and 0 direction errors.
+
 ## 4.13.0
 
 - **Speed: elementary functions 10–21× faster, `/` 14×, `sqrt` 5×** with no accuracy change: the full `mpfr_ulp` suite in all five modes still shows 0 misrounded results and 0 flag errors.

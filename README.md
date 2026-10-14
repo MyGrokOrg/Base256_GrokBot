@@ -137,7 +137,7 @@ fenv::set_round(round_mode::to_nearest_even);
 
 | Area | Status |
 |---|---|
-| `+ − × ÷`, `fma`, `sqrt`, `fmod`, `remainder` | Correctly rounded or exact in all 5 modes, flags included. Verified bit-for-bit against MPFR (237-bit, subnormalized) on randomized and edge-case operands |
+| `+ − × ÷`, `fma`, `sqrt`, `fmod`, `remainder` | Correctly rounded or exact in all 5 modes, flags included. `+ − ×` take a fast path for normal operands and results; it is bit-identical to the general path (ctest `fastpath`; define `BASE256_NO_FAST_PATHS` to disable it). Verified bit-for-bit against MPFR (237-bit, subnormalized) on randomized and edge-case operands |
 | Subnormals, signed zeros, ±∞, NaN payloads | Supported (see NaN rules) |
 | Comparisons | `==`/`!=` quiet, `<`/`<=`/`>`/`>=` signal invalid on NaN; `std::partial_ordering` |
 | Conversions from/to `double`, `float`, `long double`, integers | Exact or correctly rounded in the current mode |
@@ -164,41 +164,41 @@ Exceptions and limits:
 
 `base256_bench [seconds] [filter]` (built with the tests) prints ns/call. GCC 13 `-O2`, one x86-64 core:
 
-| Function | 4.12.0 | 4.13.0 | Speedup |
-|---|---:|---:|---:|
-| `add` | 72 ns | 62 ns | 1.2× |
-| `mul` | 66 ns | 55 ns | 1.2× |
-| `div` | 2.0 µs | 140 ns | 14.0× |
-| `fma` | 118 ns | 107 ns | 1.1× |
-| `sqrt` | 2.1 µs | 397 ns | 5.4× |
-| `exp` | 328.5 µs | 16.0 µs | 20.5× |
-| `exp2` | 325.3 µs | 16.5 µs | 19.7× |
-| `expm1` | 326.1 µs | 15.5 µs | 21.1× |
-| `log` | 436.5 µs | 27.4 µs | 16.0× |
-| `log2` | 447.6 µs | 29.1 µs | 15.4× |
-| `log10` | 446.9 µs | 28.4 µs | 15.7× |
-| `log1p` | 434.5 µs | 27.1 µs | 16.1× |
-| `pow` | 751.0 µs | 43.8 µs | 17.1× |
-| `cbrt` | 13.6 µs | 3.5 µs | 3.9× |
-| `sin` | 450.4 µs | 22.7 µs | 19.9× |
-| `cos` | 447.0 µs | 24.8 µs | 18.0× |
-| `tan` | 463.6 µs | 25.2 µs | 18.4× |
-| `sin_1e30` | 466.8 µs | 27.7 µs | 16.9× |
-| `sin_1e9999` | 469.0 µs | 28.3 µs | 16.6× |
-| `atan` | 600.3 µs | 45.6 µs | 13.2× |
-| `asin` | 631.9 µs | 47.6 µs | 13.3× |
-| `acos` | 639.2 µs | 47.4 µs | 13.5× |
-| `atan2` | 521.9 µs | 38.4 µs | 13.6× |
-| `sinh` | 338.0 µs | 18.7 µs | 18.1× |
-| `cosh` | 334.3 µs | 18.8 µs | 17.7× |
-| `tanh` | 335.0 µs | 18.6 µs | 18.0× |
-| `asinh` | 427.5 µs | 30.2 µs | 14.2× |
-| `acosh` | 445.8 µs | 30.2 µs | 14.8× |
-| `atanh` | 856.8 µs | 55.2 µs | 15.5× |
-| `erf` | 1616.6 µs | 143.8 µs | 11.2× |
-| `erfc` | 2485.1 µs | 265.6 µs | 9.4× |
-| `tgamma` | 1427.9 µs | 128.6 µs | 11.1× |
-| `lgamma` | 602.7 µs | 56.3 µs | 10.7× |
+| Function | 4.12.0 | 4.13.0 | 4.14.0 | Total speedup |
+|---|---:|---:|---:|---:|
+| `add` | 72 ns | 62 ns | 42 ns | 1.7× |
+| `mul` | 66 ns | 55 ns | 38 ns | 1.7× |
+| `div` | 2.0 µs | 140 ns | 144 ns | 13.6× |
+| `fma` | 118 ns | 107 ns | 117 ns | 1.0× |
+| `sqrt` | 2.1 µs | 397 ns | 410 ns | 5.2× |
+| `exp` | 328.5 µs | 16.0 µs | 16.4 µs | 20.1× |
+| `exp2` | 325.3 µs | 16.5 µs | 16.4 µs | 19.9× |
+| `expm1` | 326.1 µs | 15.5 µs | 15.6 µs | 20.9× |
+| `log` | 436.5 µs | 27.4 µs | 27.1 µs | 16.1× |
+| `log2` | 447.6 µs | 29.1 µs | 28.4 µs | 15.8× |
+| `log10` | 446.9 µs | 28.4 µs | 29.1 µs | 15.4× |
+| `log1p` | 434.5 µs | 27.1 µs | 26.9 µs | 16.1× |
+| `pow` | 751.0 µs | 43.8 µs | 43.7 µs | 17.2× |
+| `cbrt` | 13.6 µs | 3.5 µs | 3.0 µs | 4.6× |
+| `sin` | 450.4 µs | 22.7 µs | 22.4 µs | 20.1× |
+| `cos` | 447.0 µs | 24.8 µs | 22.2 µs | 20.1× |
+| `tan` | 463.6 µs | 25.2 µs | 23.8 µs | 19.5× |
+| `sin_1e30` | 466.8 µs | 27.7 µs | 26.4 µs | 17.7× |
+| `sin_1e9999` | 469.0 µs | 28.3 µs | 26.9 µs | 17.4× |
+| `atan` | 600.3 µs | 45.6 µs | 43.1 µs | 13.9× |
+| `asin` | 631.9 µs | 47.6 µs | 45.5 µs | 13.9× |
+| `acos` | 639.2 µs | 47.4 µs | 44.8 µs | 14.3× |
+| `atan2` | 521.9 µs | 38.4 µs | 36.6 µs | 14.3× |
+| `sinh` | 338.0 µs | 18.7 µs | 17.9 µs | 18.9× |
+| `cosh` | 334.3 µs | 18.8 µs | 17.2 µs | 19.5× |
+| `tanh` | 335.0 µs | 18.6 µs | 17.5 µs | 19.1× |
+| `asinh` | 427.5 µs | 30.2 µs | 27.3 µs | 15.7× |
+| `acosh` | 445.8 µs | 30.2 µs | 29.6 µs | 15.0× |
+| `atanh` | 856.8 µs | 55.2 µs | 53.1 µs | 16.1× |
+| `erf` | 1616.6 µs | 143.8 µs | 57.2 µs | 28.3× |
+| `erfc` | 2485.1 µs | 265.6 µs | 113.5 µs | 21.9× |
+| `tgamma` | 1427.9 µs | 128.6 µs | 79.4 µs | 18.0× |
+| `lgamma` | 602.7 µs | 56.3 µs | 48.7 µs | 12.4× |
 
 ## Notes on specific functions
 
