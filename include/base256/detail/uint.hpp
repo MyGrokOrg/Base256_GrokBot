@@ -373,7 +373,7 @@ struct Div512 {
     u256 rem;
 };
 
-[[nodiscard]] constexpr Div512 divmod_512_256(u512 n, u256 d) noexcept {
+[[nodiscard]] constexpr Div512 divmod_512_256_bitwise(u512 n, u256 d) noexcept {
     Div512 r{};
     if (d.is_zero()) return r; // caller must not divide by zero
     u512 rem{};
@@ -405,6 +405,52 @@ struct Div512 {
     return r;
 }
 
+// Knuth algorithm D on 64-bit limbs (TAOCP 4.3.1); falls back to the bitwise
+// loop where no 128-bit integer type exists.
+[[nodiscard]] constexpr Div512 divmod_512_256(u512 n, u256 d) noexcept {
+#if defined(__SIZEOF_INT128__)
+    Div512 r{};
+    int nd = 4;
+    while (nd > 0 && d.d[nd - 1] == 0) --nd;
+    if (nd == 0) return r;  // caller must not divide by zero
+    const int s = std::countl_zero(d.d[nd - 1]);
+    std::uint64_t v[4]{}, u[9]{};
+    for (int i = nd - 1; i >= 0; --i)
+        v[i] = (d.d[i] << s) | (s && i ? d.d[i - 1] >> (64 - s) : 0);
+    u[8] = s ? n.d[7] >> (64 - s) : 0;
+    for (int i = 7; i >= 0; --i) u[i] = (n.d[i] << s) | (s && i ? n.d[i - 1] >> (64 - s) : 0);
+    const std::uint64_t vt = v[nd - 1], vs = nd > 1 ? v[nd - 2] : 0;
+    for (int j = 8 - nd; j >= 0; --j) {
+        const u128 num = (static_cast<u128>(u[j + nd]) << 64) | u[j + nd - 1];
+        u128 qhat = num / vt, rhat = num % vt;
+        while (qhat >> 64 || (nd > 1 && qhat * vs > ((rhat << 64) | u[j + nd - 2]))) {
+            --qhat;
+            rhat += vt;
+            if (rhat >> 64) break;
+        }
+        // u[j .. j+nd] -= qhat * v
+        std::uint64_t borrow = 0, carry = 0;
+        for (int i = 0; i < nd; ++i) {
+            const u128 p = qhat * v[i] + carry;
+            carry = static_cast<std::uint64_t>(p >> 64);
+            u[i + j] = subb64(u[i + j], static_cast<std::uint64_t>(p), borrow);
+        }
+        u[j + nd] = subb64(u[j + nd], carry, borrow);
+        if (borrow) {  // qhat was one too large: add v back
+            --qhat;
+            std::uint64_t c = 0;
+            for (int i = 0; i < nd; ++i) u[i + j] = addc64(u[i + j], v[i], c);
+            u[j + nd] += c;
+        }
+        r.quot.d[j] = static_cast<std::uint64_t>(qhat);
+    }
+    for (int i = 0; i < nd; ++i) r.rem.d[i] = (u[i] >> s) | (s && i + 1 < nd ? u[i + 1] << (64 - s) : 0);
+    return r;
+#else
+    return divmod_512_256_bitwise(n, d);
+#endif
+}
+
 [[nodiscard]] constexpr u512 operator|(const u512& a, const u512& b) noexcept {
     u512 r;
     for (int i = 0; i < 8; ++i) r.d[i] = a.d[i] | b.d[i];
@@ -413,7 +459,7 @@ struct Div512 {
 
 // Integer square root of a 512-bit value: floor(sqrt(n)) as a 256-bit integer.
 // Hacker's Delight restoring algorithm over 256 even bit-places.
-[[nodiscard]] constexpr u256 isqrt_512(u512 x) noexcept {
+[[nodiscard]] constexpr u256 isqrt_512_bitwise(u512 x) noexcept {
     u512 m{};
     m.set_bit(510); // highest even bit of a 512-bit word
     u512 y{};
@@ -427,6 +473,44 @@ struct Div512 {
         m = m >> 2;
     }
     return y.lo256();
+}
+
+// floor(sqrt(n)): a 64-bit seed from the top 128 bits, then Newton steps
+// x <- (x + n/x)/2 from above (monotone decreasing to the floor). Used when
+// the top limb is non-zero (always so for float256::sqrt); else bitwise.
+[[nodiscard]] constexpr u256 isqrt_512(u512 n) noexcept {
+#if defined(__SIZEOF_INT128__)
+    if (n.d[7] < (1ULL << 62)) return isqrt_512_bitwise(n);
+    const u128 t = (static_cast<u128>(n.d[7]) << 64) | n.d[6];
+    // 64-bit bitwise isqrt of t
+    u128 rem = t, root = 0, bit = static_cast<u128>(1) << 126;
+    while (bit) {
+        if (rem >= root + bit) {
+            rem -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    // sqrt(n) < (root + 1) * 2^192 <= 2^256
+    u512 x{};
+    const u128 r1 = root + 1;
+    if (r1 >> 64) {  // root = 2^64 - 1: start just below 2^256
+        for (int i = 0; i < 4; ++i) x.d[i] = ~0ULL;
+    } else {
+        x.d[3] = static_cast<std::uint64_t>(r1);
+    }
+    for (;;) {
+        const Div512 q = divmod_512_256(n, x.lo256());
+        const u512 y = add_u512(x, q.quot) >> 1;
+        if (!(y < x)) break;
+        x = y;
+    }
+    return x.lo256();
+#else
+    return isqrt_512_bitwise(n);
+#endif
 }
 
 } // namespace base256::detail
