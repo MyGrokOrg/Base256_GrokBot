@@ -275,23 +275,44 @@ struct StirlingTable {
     return tab;
 }
 
+// Σ_k c_k / w^(2k+1) (the Stirling correction), by Horner in 1/w² with the
+// number of terms chosen from the exponents (each term below 2^-505 of `ref`).
+[[nodiscard]] inline detail_dd::dd stirling_series(const detail_dd::dd& w, int ref_exp) {
+    using detail_dd::dd;
+    const StirlingTable& tab = stirling_table();
+    const int ew = ilogb(w.hi);  // 1/w <= 2^-ew
+    int K = kStirlingTerms;
+    for (int k = 0; k < kStirlingTerms; ++k) {
+        if (ilogb(tab.c[k].hi) - (2 * k + 1) * ew < ref_exp - 505) { K = k; break; }
+    }
+    if (K == 0) return dd(float256::zero());
+    const dd inv = dd(float256::one()) / w;
+    const dd inv2 = inv * inv;
+    dd p = tab.c[K - 1];
+    for (int k = K - 2; k >= 0; --k) p = p * inv2 + tab.c[k];
+    return p * inv;
+}
+
+// (w - 1/2) ln w - w + ln √(2π) + Σ c_k / w^(2k+1)  (ln Γ(w), w >= 128).
 [[nodiscard]] inline detail_dd::dd stirling_dd(const detail_dd::dd& w) {
     using detail_dd::dd;
     const auto& cs = detail_dd::consts();
     const dd lw = detail_dd::log(w);
-    dd sum = (w - dd(float256::half())) * lw - w + dd(cs.half_ln_2pi[0], cs.half_ln_2pi[1]);
-    const dd inv = dd(float256::one()) / w;
-    const dd inv2 = inv * inv;
-    dd p = inv;
-    const float256 tiny = ldexp(abs(sum.hi), -500);
-    const StirlingTable& tab = stirling_table();
-    for (int k = 0; k < kStirlingTerms; ++k) {
-        const dd term = tab.c[k] * p;
-        sum = sum + term;
-        if (abs(term.hi) < tiny) break;
-        p = p * inv2;
-    }
-    return sum;
+    const dd sum = (w - dd(float256::half())) * lw - w + dd(cs.half_ln_2pi[0], cs.half_ln_2pi[1]);
+    return sum + stirling_series(w, ilogb(sum.hi));
+}
+
+// z (z+1) … (z+n-1) as dd, pairing (z+i)(z+n-1-i) = z(z+n-1) + i(n-1-i).
+[[nodiscard]] inline detail_dd::dd rising(const detail_dd::dd& z, int n) {
+    using detail_dd::dd;
+    if (n <= 0) return dd(float256::one());
+    if (n == 1) return z;
+    const dd q = z * (z + dd(float256::from_int(n - 1)));
+    dd prod = q;
+    int i = 1;
+    for (; i < n - 1 - i; ++i) prod = prod * (q + dd(float256::from_int(static_cast<std::int64_t>(i) * (n - 1 - i))));
+    if (i == n - 1 - i) prod = prod * (z + dd(float256::from_int(i)));
+    return prod;
 }
 
 // ln Γ(z) for a positive dd z: shift to z + n >= 128 and divide out the
@@ -300,9 +321,16 @@ struct StirlingTable {
     using detail_dd::dd;
     if (z.hi >= float256(kStirlingShift)) return stirling_dd(z);
     const int n = kStirlingShift - static_cast<int>(floor(z.hi).to_double());
-    dd prod = z;
-    for (int i = 1; i < n; ++i) prod = prod * (z + dd(float256::from_int(i)));
-    return stirling_dd(z + dd(float256::from_int(n))) - detail_dd::log(prod);
+    return stirling_dd(z + dd(float256::from_int(n))) - detail_dd::log(rising(z, n));
+}
+
+// Γ(z) as m·2^k for a positive dd z.
+[[nodiscard]] inline detail_dd::Scaled gamma_abs_scaled_pos(const detail_dd::dd& z) {
+    if (z.hi >= float256(kStirlingShift)) return detail_dd::exp_scaled(stirling_dd(z));
+    const int n = kStirlingShift - static_cast<int>(floor(z.hi).to_double());
+    detail_dd::Scaled e = detail_dd::exp_scaled(stirling_dd(z + detail_dd::dd(float256::from_int(n))));
+    e.m = e.m / rising(z, n);
+    return e;
 }
 
 // sin(π g) for g in (0, 1/2], as dd. Positive.
@@ -343,6 +371,22 @@ struct StirlingTable {
                                : hexc("0x6.693556faacb5bd67b25c9734cdad5090803d4907c3115749b1897e3b0f4p-4");
     const float256 e2 = e * e;
     return a1 * e + dd(a2 * e2) - dd(a3 * e2 * e);
+}
+
+// |Γ(x)| as m·2^k for finite x that is not a pole, without going through ln:
+// Γ(z) = exp(Stirling(z + n)) / (z (z+1) … (z+n-1)) for z > 0, and the
+// reflection |Γ(x)| = π / (|sin(πx)| Γ(1 - x)) for x < 0.
+[[nodiscard]] inline detail_dd::Scaled gamma_abs_scaled(float256 x) {
+    using detail_dd::dd;
+    if (x.signbit()) {
+        const float256 f = x - round(x);
+        const dd sp = sin_pi_dd(abs(f));
+        detail_dd::Scaled e = gamma_abs_scaled_pos(detail_dd::two_sum(float256::one(), -x));
+        e.m = detail_dd::pi() / (sp * e.m);
+        e.k = -e.k;
+        return e;
+    }
+    return gamma_abs_scaled_pos(dd(x));
 }
 
 } // namespace detail_gamma
@@ -386,10 +430,7 @@ struct StirlingTable {
         neg = odd != (x - k).signbit();
         if (x < float256(-20000)) return env.underflow(neg);  // |Γ(x)| < 2^-262378
     }
-    const detail_dd::dd L = detail_gamma::lgamma_dd(x);
-    if (L.hi > float256(181800)) return env.overflow(neg);
-    if (L.hi < float256(-182000)) return env.underflow(neg);
-    detail_dd::Scaled e = detail_dd::exp_scaled(L);
+    detail_dd::Scaled e = detail_gamma::gamma_abs_scaled(x);
     if (neg) e.m = -e.m;
     return e.m.out(env, e.k);
 }
