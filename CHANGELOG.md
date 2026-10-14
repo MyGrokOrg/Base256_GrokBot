@@ -1,5 +1,28 @@
 # Changelog
 
+## 4.18.0
+
+- **Faster special functions** (ns/call, `base256_bench`, 4.17.0 → 4.18.0):
+  - `cyl_neumann` 1.29 → 0.67 ms, `cyl_bessel_k` 1.34 → 0.63 ms
+  - `cyl_bessel_j` 351 → 255 µs, `cyl_bessel_i` 326 → 238 µs, `jn` 281 → 203 µs, `sph_bessel` 295 → 228 µs
+  - `ibeta` 1.09 → 0.55 ms, `beta` 157 → 108 µs
+  - `gamma_p`/`gamma_q` 691/702 → 333/344 µs (`gamma_p(0.5, 3)`: 11.8 → 0.27 ms)
+  - `riemann_zeta` 835 → 471 µs
+  - `comp_ellint_3` 1.81 ms → 39 µs, `ellint_3` 1.75 → 0.59 ms, `ellint_2` 612 → 421 µs, `ellint_1` 276 → 204 µs
+- **How:**
+  - **Bessel Y/K.** The Temme gamma factors (and Γ(z) for 0.5 ≤ z < 40) come from an MPFR Taylor table of 1/Γ(1+μ) instead of gamma calls. The Temme step needs one dd division instead of four. Temme's series now runs to x < 100 (Y) and 60 (K), where it beats Steed's CF2 at this precision; the measured margin is more than 2^-300 relative. Series and Temme terms below 2^-245 of the sum finish in float256.
+  - **ibeta and incomplete gamma.** The continued fractions use a division-free Wallis recurrence on the denominator-cleared fraction instead of modified Lentz. The γ series also covers a + 1 ≤ x < 36, where the Γ fraction converged slowly.
+  - **Elliptic.** Complete Π uses Bulirsch's quadratically convergent `cel`. Carlson R_F/R_D/R_J duplicate only to 2^-40 and finish with a degree-12 Taylor tail (DLMF 19.19.7) instead of degree 5 at 2^-90. R_C's series truncates by |t|.
+  - **Zeta.** A planned Euler–Maclaurin split (N = 24…64 instead of 128), with tabled B_2k/(2k)! and ln p.
+- **New `hurwitz_zeta(s, a)`** for s > 1 and a > 0. It picks between a direct sum and Euler–Maclaurin by estimated cost, and scales by a^-s so that huge and tiny a stay in range.
+- **Verification:**
+  - Full `mpfr_ulp` in all modes (CI), and the special_math, mpfr_diff and fastpath tests pass, with GCC and clang `-Werror`.
+  - `tools/sf_check.py` against mpmath found 0 misroundings over all ranges, max 0.5 ulp.
+  - New sf_check ranges: y_temme/k_temme, gp/gq/gu_mid, ell_Pi1, ell_Pibig, hz*.
+  - The hz* ranges use mpmath at 3000 bits, because its zeta(s, a) loses hundreds of bits at large a.
+- **Fixed during development:** a truncation bound in 0f0598d used ilogb(μ) as an upper bound on log2|μ|, which could lose about 60 bits for |μ| near 1/2. It was fixed in e60960f; the checks had not caught it.
+- **New tables:** `tools/gen_tables.c` also emits 1/Γ(1+x) Taylor coefficients (112), B_2k/(2k)! (140) and ln p for p < 64. `include/` grows from 580 KB to 636 KB.
+
 ## 4.17.0
 
 - **New `special_math.hpp`** (included by `base256.hpp`), using the C++17 special-math names. Every function evaluates in double-float256, rounds once in the current mode and raises IEEE flags.

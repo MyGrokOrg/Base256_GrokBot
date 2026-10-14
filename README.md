@@ -29,7 +29,7 @@ Header-only. Real 256-bit software arithmetic — not a `double` wrapper.
 - Conversions to/from `float`, `double`, integers, decimal, and C99 hex-float
 - `std::numeric_limits<float256>` (`is_iec559` is `false` for now; see [IEEE 754 conformance](#ieee-754-conformance))
 - Elementary functions: `exp`, `log`, `pow`, `sin`/`cos`/`tan`, `atan`/`asin`/`acos`, hyperbolics and inverse hyperbolics, `cbrt`, `erf`/`erfc`, `tgamma`/`lgamma`
-- Special functions (`special_math.hpp`, C++17 names): `cyl_bessel_j/i/k`, `cyl_neumann`, `sph_bessel`, `sph_neumann`, `jn`/`yn`, `beta`, `ibeta`/`ibetac`, `riemann_zeta`, `tgamma_lower`/`tgamma_upper`, `gamma_p`/`gamma_q`, `comp_ellint_1/2/3`, `ellint_1/2/3`
+- Special functions (`special_math.hpp`, C++17 names): `cyl_bessel_j/i/k`, `cyl_neumann`, `sph_bessel`, `sph_neumann`, `jn`/`yn`, `beta`, `ibeta`/`ibetac`, `riemann_zeta`, `hurwitz_zeta`, `tgamma_lower`/`tgamma_upper`, `gamma_p`/`gamma_q`, `comp_ellint_1/2/3`, `ellint_1/2/3`
 - `sincos` and IEEE `remquo`
 - `ldexp`, `frexp`, `ilogb` / `logb`, `nextafter` / `nextup` / `nextdown`, `floor`/`ceil`/`trunc`/`round` (ties away), `rint` / `nearbyint` (ties to even), `modf`, `hypot`, `fmod`, `remainder`, `fdim`
 - User-defined literals `3.1415_f256` and `"0.1"_f256`, both parsed exactly (correctly rounded)
@@ -181,17 +181,18 @@ How they behave:
 | `beta` | MPFR `beta`, all modes; mpmath | x, y ∈ [2^-200, 2^60] | 0.5 ulp RN, 1 ulp directed |
 | `ibeta`, `ibetac` | mpmath at 2000 bits | a, b ∈ [2^-60, 5000], x ∈ [2^-60, 1] | 0.5 ulp |
 | `riemann_zeta` | MPFR `zeta`, all modes; mpmath | \|x\| ∈ [2^-300, 2^14], x within 2^-236 of 1, near the trivial zeros | 0.5 ulp RN, 1 ulp directed |
+| `hurwitz_zeta` | mpmath at 3000 bits | s ∈ (1, 3000], a ∈ [2^-20, 2^300], s within 0.01 of 1 (100 per range, 4 ranges) | 0.5 ulp |
 | `tgamma_lower/upper`, `gamma_p/q` | MPFR `gamma_inc` (Γ(a) at up to ~5000 bits), all modes; mpmath | a ∈ [2^-200, 3000], x ∈ [2^-12, 2^9] | 0.5 ulp RN, 1 ulp directed |
 | `comp_ellint_1/2/3`, `ellint_1/2/3` | mpmath | \|k\| ≤ 1 (incl. 0.999…1), ν ∈ [−10, 1), \|φ\| ≤ 100 | 0.5 ulp |
 
 Over 1500 cases × 5 modes per MPFR-checked function, no result was misrounded. mpmath has no binary256 rounding modes, so the mpmath-only functions were checked in round-to-nearest. Their directed modes are covered by the reference values in `tests/test_special_math.cpp`. As with the elementary functions, these results are measured, not guaranteed.
 
 Methods:
-- **Bessel:** power series for x < 120. For Y and K, Temme's series below x = 40 and Steed's CF1/CF2 from 40 to 120. Hankel and large-x expansions from 120 up, with forward recurrence (Y, K, and J for ν < x) or CF1 plus downward recurrence (J for ν ≥ x).
-- **Zeta:** Euler–Maclaurin at N = 128 for x ≥ 0, and the functional equation for x < 0.
-- **Incomplete gamma:** series or Lentz continued fraction, with a small-a form for the upper part.
-- **Incomplete beta:** Lentz continued fraction.
-- **Elliptic:** AGM for K and E, Carlson R_F, R_D and R_J for the rest.
+- **Bessel:** power series for x < 120. For Y and K, Temme's series below x = 100 (Y) and 60 (K), and Steed's CF1/CF2 above that up to 120. The Temme gamma factors come from an MPFR Taylor table of 1/Γ(1+μ). Terms below 2^-245 of a sum are finished in float256. Hankel and large-x expansions from 120 up, with forward recurrence (Y, K, and J for ν < x) or CF1 plus downward recurrence (J for ν ≥ x).
+- **Zeta:** Euler–Maclaurin for x ≥ 0 at the smallest N in 24…64 whose remainder estimate is below 2^-506, with B_2k/(2k)! and ln p from MPFR tables. The functional equation handles x < 0. `hurwitz_zeta` picks by estimated cost between a direct sum and N terms plus Euler–Maclaurin at N + a.
+- **Incomplete gamma:** the series for x < max(a + 1, 36), otherwise a division-free (Wallis) continued fraction. A small-a form handles the upper part.
+- **Incomplete beta:** division-free (Wallis) continued fraction.
+- **Elliptic:** AGM for K and E, and Bulirsch's `cel` for complete Π. Carlson R_F, R_D and R_J handle the rest, stopping duplication at 2^-40 and finishing with a degree-12 Taylor tail.
 
 Domain and limits:
 - **Bessel:** ν ≥ 0 and x ≥ 0 for `cyl_*`, `sph_*` and `yn`. Negative values are a domain error. `jn` accepts any n and any x.
@@ -199,13 +200,13 @@ Domain and limits:
   - Cost grows with ν (recurrences take ν steps) and with x for ν > x (CF1 takes ~x steps).
 - **`beta`:** x, y > 0. Zero is a pole and negative values are a domain error. Above about 2^200 the ln-gamma difference loses accuracy (2^-474 · x ln x); this was checked only up to 2^60.
 - **`ibeta`/`ibetac`:** a, b > 0 and 0 ≤ x ≤ 1. The continued fraction needs ~√max(a, b) iterations, so very large a or b is slow.
-- **`riemann_zeta`:** below −30000 it overflows. ζ(−2n) is exactly +0, ζ(1) is a pole and ζ(−∞) is a domain error. Hurwitz zeta is not provided.
+- **`riemann_zeta`:** below −30000 it overflows. ζ(−2n) is exactly +0, ζ(1) is a pole and ζ(−∞) is a domain error. `hurwitz_zeta(s, a)` takes s > 1 and a > 0 (GSL's `hzeta` domain): s = 1 is a pole and anything else is a domain error. It gets slow for s ≫ a, where it needs about s/(2π) exponentials.
 - **Incomplete gamma:** a > 0 and x ≥ 0 (Γ(a, x) for a ≤ 0 is not provided). Large a costs ~√a iterations.
 - **Elliptic:** |k| ≤ 1. `comp_ellint_1(±1)`, `comp_ellint_3(k, 1)` and F(±1, φ) for |φ| ≥ π/2 are poles.
   - `ellint_3` needs 1 − ν sin²φ > 0, and ν < 1 when |φ| > π/2. Cauchy principal values (ν > 1) are not supported.
   - `ellint_3` uses the C++17 sign convention (1 − ν sin²θ).
 
-**Speed.** These functions cost 20 µs to 1.8 ms per call (see the Performance table), well above the elementary functions. Most of the time goes into the dd recurrences and continued fractions.
+**Speed.** These functions cost 18 µs to 0.7 ms per call (`hurwitz_zeta` about 1.7 ms) (see the Performance table), well above the elementary functions. Most of the time goes into the dd recurrences and continued fractions.
 
 ## Performance
 
@@ -247,26 +248,27 @@ Domain and limits:
 | `tgamma` | 1427.9 µs | 128.6 µs | 79.4 µs | 71.6 µs | 54.5 µs | 26.2× |
 | `lgamma` | 602.7 µs | 56.3 µs | 48.7 µs | 32.3 µs | 20.7 µs | 29.1× |
 
-Special functions (4.17.0, same machine):
+Special functions (same machine):
 
-| Function | Arguments | Time |
-|---|---|---:|
-| `cyl_bessel_j` | ν ∈ [0.02, 10], x ∈ [0.1, 50] | 351 µs |
-| `cyl_neumann` | same | 1.29 ms |
-| `cyl_bessel_i` | same | 326 µs |
-| `cyl_bessel_k` | same | 1.34 ms |
-| `jn` | n ∈ [0, 9], x ∈ [0.1, 50] | 281 µs |
-| `sph_bessel` | same | 295 µs |
-| `beta` | x, y ∈ [0.1, 50] | 157 µs |
-| `ibeta` | a, b ∈ [0.1, 50], x = 0.4 | 1.09 ms |
-| `riemann_zeta` | x ∈ [−20, 40] | 835 µs |
-| `gamma_p` | a, x ∈ [0.1, 50] | 691 µs |
-| `gamma_q` | same | 702 µs |
-| `comp_ellint_1` | \|k\| < 0.99 | 19 µs |
-| `comp_ellint_2` | same | 19 µs |
-| `comp_ellint_3` | ν ∈ (−0.9, 0.9) | 1.81 ms |
+| Function | Arguments | 4.17.0 | 4.18.0 |
+|---|---|---:|---:|
+| `cyl_bessel_j` | ν ∈ [0.02, 10], x ∈ [0.1, 50] | 351 µs | 255 µs |
+| `cyl_neumann` | same | 1.29 ms | 666 µs |
+| `cyl_bessel_i` | same | 326 µs | 238 µs |
+| `cyl_bessel_k` | same | 1.34 ms | 627 µs |
+| `jn` | n ∈ [0, 9], x ∈ [0.1, 50] | 281 µs | 203 µs |
+| `sph_bessel` | same | 295 µs | 228 µs |
+| `beta` | x, y ∈ [0.1, 50] | 157 µs | 108 µs |
+| `ibeta` | a, b ∈ [0.1, 50], x = 0.4 | 1.09 ms | 552 µs |
+| `riemann_zeta` | x ∈ [−20, 40] | 835 µs | 471 µs |
+| `hurwitz_zeta` | s ∈ [1.1, 51], a ∈ [0.1, 50] | — | 1.74 ms |
+| `gamma_p` | a, x ∈ [0.1, 50] | 691 µs | 333 µs |
+| `gamma_q` | same | 702 µs | 344 µs |
+| `comp_ellint_1` | \|k\| < 0.99 | 19 µs | 18 µs |
+| `comp_ellint_2` | same | 19 µs | 18 µs |
+| `comp_ellint_3` | ν ∈ (−0.9, 0.9) | 1.81 ms | 39 µs |
 | `ellint_1` | \|φ\| < 3 | 276 µs |
-| `ellint_2` | same | 612 µs |
+| `ellint_2` | same | 612 µs | 421 µs |
 | `ellint_3` | ν ∈ (−0.5, 0.5), \|φ\| < 1.5 | 1.75 ms |
 
 Run-to-run noise is about ±10% for the basic operations. `fma` has not changed since 4.13.0: its column (117, 121, 104 ns) only shows that noise. Callgrind counts 1427 → 1406 instructions per call from 4.13 to 4.14, and five repeated runs in 4.16.0 give 107–110 ns. Since 4.15.0, `log`, `atan`, `sin`/`cos` and `erf`/`erfc` use MPFR-generated tables (`detail/tables.hpp`, generated by `tools/gen_tables.c`). The `erf`/`erfc` Taylor coefficients at each center are built lazily on first use (about 100 µs per center, thread-safe).
@@ -279,6 +281,6 @@ Run-to-run noise is about ±10% for the basic operations. `fma` has not changed 
 
 Dual-licensed: you may use this software under either the **MIT License** ([LICENSE](LICENSE)) or **THE BEER-WARE LICENSE** (Revision 42, [LICENSE-BEERWARE](LICENSE-BEERWARE)), at your option.
 
-**4.17.0**: special functions (`special_math.hpp`). **4.16.0**: `tgamma`/`lgamma` with 140 MPFR Stirling coefficients and shift 64. **4.15.0**: MPFR table-driven `log`, `atan`, `sin`/`cos`, `erf`/`erfc`. **4.8.0**: rounding modes and exception flags, exact `fmod`/`remainder`. **4.7.0**: correctness fixes found by MPFR differential testing. See [CHANGELOG](CHANGELOG.md).
+**4.18.0**: faster special functions, `hurwitz_zeta`. **4.17.0**: special functions (`special_math.hpp`). **4.16.0**: `tgamma`/`lgamma` with 140 MPFR Stirling coefficients and shift 64. **4.15.0**: MPFR table-driven `log`, `atan`, `sin`/`cos`, `erf`/`erfc`. **4.8.0**: rounding modes and exception flags, exact `fmod`/`remainder`. **4.7.0**: correctness fixes found by MPFR differential testing. See [CHANGELOG](CHANGELOG.md).
 
 Created by Craig D. Mansfield, PhD, EI (MyGrokOrg).
