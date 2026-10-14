@@ -805,30 +805,62 @@ enum class BesselKind { J, Y, I, K };
 }
 } // namespace detail_sf
 
-/// Bessel function of the first kind J_ν(x), ν >= 0, x >= 0.
+namespace detail_sf {
+// −f() rounded in the current mode: f evaluated in the mirrored mode, then negated
+// (round_up(−v) = −round_down(v)); flags are the same. f is a public function.
+template <class F>
+[[nodiscard]] inline float256 negated(F f) {
+    const round_mode m = fenv::get_round();
+    if (m == round_mode::upward || m == round_mode::downward)
+        fenv::set_round(m == round_mode::upward ? round_mode::downward : round_mode::upward);
+    const float256 v = f();
+    fenv::set_round(m);
+    return -v;
+}
+// x < 0 (or −0) and integer ν >= 0, where C_ν(−x) = (−1)^ν C_ν(x) for C = J, I.
+[[nodiscard]] inline bool bessel_reflect(float256 nu, float256 x) {
+    return x.signbit() && !x.isnan() && !nu.isnan() && !nu.isinf() && !nu.signbit() && nu == trunc(nu);
+}
+[[nodiscard]] inline bool odd_int(float256 nu) { return ldexp(nu, -1) != trunc(ldexp(nu, -1)); }
+} // namespace detail_sf
+
+/// Bessel function of the first kind J_ν(x), ν >= 0. x < 0: for integer ν,
+/// J_ν(−x) = (−1)^ν J_ν(x) (so J_ν(−0) = −0 for odd ν); for non-integer ν the
+/// value is complex, so NaN with `invalid` (C++17 leaves x < 0 to the implementation).
 [[nodiscard]] inline float256 cyl_bessel_j(float256 nu, float256 x) {
+    if (detail_sf::bessel_reflect(nu, x)) {
+        if (detail_sf::odd_int(nu)) return detail_sf::negated([&] { return cyl_bessel_j(nu, -x); });
+        return cyl_bessel_j(nu, -x);
+    }
     detail_dd::FnEnv env;
     float256 r;
     if (detail_sf::bessel_special(env, detail_sf::BesselKind::J, nu, x, r)) return r;
     if (detail_sf::bessel_tiny(env, detail_sf::BesselKind::J, nu, x, r)) return r;
     return detail_sf::out(env, detail_sf::bessel::j(nu, x));
 }
-/// Bessel function of the second kind (Neumann) Y_ν(x), ν >= 0, x >= 0.
+/// Bessel function of the second kind (Neumann) Y_ν(x), ν >= 0, x >= 0; x < 0
+/// is complex for every ν, so NaN with `invalid`.
 [[nodiscard]] inline float256 cyl_neumann(float256 nu, float256 x) {
     detail_dd::FnEnv env;
     float256 r;
     if (detail_sf::bessel_special(env, detail_sf::BesselKind::Y, nu, x, r)) return r;
     return detail_sf::out(env, detail_sf::bessel::y(nu, x));
 }
-/// Modified Bessel function of the first kind I_ν(x), ν >= 0, x >= 0.
+/// Modified Bessel function of the first kind I_ν(x), ν >= 0. x < 0: for integer
+/// ν, I_ν(−x) = (−1)^ν I_ν(x); for non-integer ν NaN with `invalid` (complex).
 [[nodiscard]] inline float256 cyl_bessel_i(float256 nu, float256 x) {
+    if (detail_sf::bessel_reflect(nu, x)) {
+        if (detail_sf::odd_int(nu)) return detail_sf::negated([&] { return cyl_bessel_i(nu, -x); });
+        return cyl_bessel_i(nu, -x);
+    }
     detail_dd::FnEnv env;
     float256 r;
     if (detail_sf::bessel_special(env, detail_sf::BesselKind::I, nu, x, r)) return r;
     if (detail_sf::bessel_tiny(env, detail_sf::BesselKind::I, nu, x, r)) return r;
     return detail_sf::out(env, detail_sf::bessel::i(nu, x));
 }
-/// Modified Bessel function of the second kind K_ν(x), ν >= 0, x >= 0.
+/// Modified Bessel function of the second kind K_ν(x), ν >= 0, x >= 0; x < 0
+/// is complex for every ν, so NaN with `invalid`.
 [[nodiscard]] inline float256 cyl_bessel_k(float256 nu, float256 x) {
     detail_dd::FnEnv env;
     float256 r;
@@ -854,10 +886,23 @@ namespace detail_sf {
 }
 } // namespace detail_sf
 
-/// Spherical Bessel function j_n(x), x >= 0.
-[[nodiscard]] inline float256 sph_bessel(unsigned n, float256 x) { return detail_sf::sph(n, x, false); }
-/// Spherical Neumann function y_n(x), x >= 0.
-[[nodiscard]] inline float256 sph_neumann(unsigned n, float256 x) { return detail_sf::sph(n, x, true); }
+/// Spherical Bessel function j_n(x), any real x: j_n(−x) = (−1)^n j_n(x).
+[[nodiscard]] inline float256 sph_bessel(unsigned n, float256 x) {
+    if (x.signbit() && !x.isnan()) {
+        if (n & 1) return detail_sf::negated([&] { return detail_sf::sph(n, -x, false); });
+        return detail_sf::sph(n, -x, false);
+    }
+    return detail_sf::sph(n, x, false);
+}
+/// Spherical Neumann function y_n(x), any real x: y_n(−x) = (−1)^{n+1} y_n(x)
+/// (y_n(±0) is a pole, −∞ at +0, (−1)^n·∞ at −0).
+[[nodiscard]] inline float256 sph_neumann(unsigned n, float256 x) {
+    if (x.signbit() && !x.isnan()) {
+        if (!(n & 1)) return detail_sf::negated([&] { return detail_sf::sph(n, -x, true); });
+        return detail_sf::sph(n, -x, true);
+    }
+    return detail_sf::sph(n, x, true);
+}
 
 /// J_n(x) for any integer n and real x (J_{−n} = (−1)^n J_n, J_n(−x) = (−1)^n J_n(x)).
 [[nodiscard]] inline float256 jn(int n, float256 x) {

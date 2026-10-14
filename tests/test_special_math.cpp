@@ -139,6 +139,13 @@ const Ref kRefs[] = {
     {"zeta", "250", "", "", "0x100000000000000000000000000000000000000000000000000000000000p-236"},
     {"j", "0", "1", "", "0x187c7fdbd7b8ef839e3530c22b34cedc3cbaf7ccbfde50538b5581f88245p-237"},
     {"j", "0.5", "3", "", "0x10a460536e4369cdeea10a105e02c4d339d175bb19b68ab3bad4748baf03p-240"},
+    {"j", "3", "-2.5", "", "-0x1bb98fc5e82abb20d377d0fadde40255df35beecc62ddbed9ed35ab495d0p-239"},
+    {"j", "4", "-7.25", "", "0x177549b04c3bc234388bac4ffdb370408c6b7d97835faad33ecebe52efddp-240"},
+    {"i", "3", "-2.5", "", "-0x1e5c15b3f9137bc89569354bab497c28dcdfdf9a1f858262df55e00a5e5dp-238"},
+    {"i", "2", "-30", "", "0x15422dafb22c2be138e4b0de8001197ed0ec08ce592bccc960be1505891fp-197"},
+    {"sj", "3", "-2.5", "", "-0x1a9a882ac1bc94d6551951c9860ab2a64532292786fa76ab0d167ab5c067p-240"},
+    {"sy", "2", "-2.5", "", "0x1d0cc5770b52a0129232e85289172a6ca85b63331dc8652669286543bf9ap-238"},
+    {"sy", "3", "-2.5", "", "-0x197dc5d5487407192fd2ce401644910f58d885b123736b2c9e8ca10587f8p-237"},
     {"j", "2.25", "17.5", "", "0x11e90ccdd217718c7f58e6dc5dcebfdb9d0294d3d9976efae66fade762bfp-239"},
     {"j", "10", "1000", "", "-0x191bef1b8729ba9c86f779422721b421d95e3a6403194a55c53953cf2e35p-242"},
     {"j", "150", "100", "", "0x139ede31fcbf6c53b8b620481a3dce2a3666524dd1ceef28d9ae84b0a7d5p-288"},
@@ -346,12 +353,26 @@ int main() {
     EXPECT(cyl_bessel_i(float256(3), zero), zero, 0);
     EXPECT(cyl_neumann(float256(1), zero), -inf, kDiv);
     EXPECT(cyl_bessel_k(float256(0.5), zero), inf, kDiv);
+    // Bessel, x < 0: integer order reflects, otherwise complex (NaN + invalid).
+    EXPECT(cyl_bessel_j(float256(2.5), float256(-1)), nan, kInv);
+    EXPECT(cyl_bessel_i(float256(0.5), float256(-1)), nan, kInv);
+    EXPECT(cyl_neumann(float256(1), float256(-1)), nan, kInv);
+    EXPECT(cyl_bessel_k(float256(1), float256(-1)), nan, kInv);
+    EXPECT(cyl_bessel_j(float256(1), -zero), -zero, 0);
+    EXPECT(cyl_bessel_j(float256(2), -zero), zero, 0);
+    EXPECT(cyl_bessel_j(zero, -zero), one, 0);
+    EXPECT(cyl_bessel_i(float256(3), -inf), -inf, 0);
+    EXPECT(cyl_bessel_j(float256(3), -inf), -zero, 0);
+    EXPECT(sph_bessel(1, -zero), -zero, 0);
+    EXPECT(sph_neumann(0, -zero), inf, kDiv);
+    EXPECT(sph_neumann(1, -zero), -inf, kDiv);
+    EXPECT(yn(1, float256(-1)), nan, kInv);
     EXPECT(cyl_bessel_j(float256(1), inf), zero, 0);
     EXPECT(cyl_neumann(float256(1), inf), zero, 0);
     EXPECT(cyl_bessel_i(float256(1), inf), inf, 0);
     EXPECT(cyl_bessel_k(float256(1), inf), zero, 0);
     EXPECT(cyl_bessel_j(float256(-1), one), nan, kInv);
-    EXPECT(cyl_bessel_j(one, float256(-1)), nan, kInv);
+    EXPECT(cyl_bessel_j(float256(0.25), float256(-1)), nan, kInv);  // non-integer order, x < 0
     EXPECT(cyl_bessel_k(one, float256(-1)), nan, kInv);
     EXPECT(cyl_bessel_j(inf, one), nan, kInv);
     EXPECT(cyl_bessel_j(nan, one), nan, 0);

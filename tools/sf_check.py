@@ -78,6 +78,11 @@ def I(nu, x): return mp.besseli(nu, x)
 def K(nu, x): return mp.besselk(nu, x)
 def SJ(n, x): return mp.sqrt(mp.pi / (2 * x)) * mp.besselj(n + mp.mpf(1) / 2, x)
 def SY(n, x): return mp.sqrt(mp.pi / (2 * x)) * mp.bessely(n + mp.mpf(1) / 2, x)
+# x < 0, integer order: real by the reflection identities
+def JN(n, x): return (-1) ** int(n) * mp.besselj(n, -x)
+def IN(n, x): return (-1) ** int(n) * mp.besseli(n, -x)
+def SJN(n, x): return (-1) ** int(n) * SJ(n, -x)
+def SYN(n, x): return (-1) ** (int(n) + 1) * SY(n, -x)
 
 def BETA(a, b): return mp.beta(a, b)
 # mpmath's betainc can lose bits to cancellation; evaluate it at 2000 bits.
@@ -497,6 +502,13 @@ RANGES = [
     ("k_nugtx",  "k", K, [(100, 400, False), (100, 900, False)]),
     ("y_nearint","y", Y, [("nearint", 0, 5), (0, 200, False)]),
     ("k_nearint","k", K, [("nearint", 0, 5), (0, 200, False)]),
+    ("j_negx",   "j", JN, [("int", 0, 40), (-100, 0, False)]),
+    ("j_negbig", "j", JN, [("int", 0, 20), ("negexp", 7, 200)]),
+    ("j_negtiny","j", JN, [("int", 0, 10), ("negexp", -400, -8)]),
+    ("i_negx",   "i", IN, [("int", 0, 30), (-150, 0, False)]),
+    ("i_negtiny","i", IN, [("int", 0, 10), ("negexp", -400, -8)]),
+    ("sph_jneg", "sj", SJN, [("int", 0, 20), (-50, 0, False)]),
+    ("sph_yneg", "sy", SYN, [("int", 0, 20), (-50, 0, False)]),
     ("sph_j",   "sj", SJ, [("int", 0, 20), (0, 50, False)]),
     ("sph_y",   "sy", SY, [("int", 0, 20), (0, 50, False)]),
 ]
