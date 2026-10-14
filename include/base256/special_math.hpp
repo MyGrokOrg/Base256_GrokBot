@@ -454,7 +454,7 @@ inline void steed_k(float256 mu, float256 x, dd& kmu, dd& k1, int& kexp) {
     dd s = one + q * delh;
     for (int i = 1; i < 1000000; ++i) {
         a = a - D(2 * i);
-        c = -a * c / D(i + 1);
+        c = -a * c / float256::from_int(i + 1);
         const dd qnew = (q1 - b * q2) / a;
         q1 = q2; q2 = qnew;
         q = q + c * qnew;
@@ -474,69 +474,153 @@ inline void steed_k(float256 mu, float256 x, dd& kmu, dd& k1, int& kexp) {
     kexp = ex.k;
 }
 
+// K_μ, K_{μ+1} for moderate x (|μ| <= 1/2) without Steed's slowly converging
+// normalization sum: from the Wronskian I_μ K_{μ+1} + I_{μ+1} K_μ = 1/x,
+//   K_μ = 1 / (x I_μ (r + ρ)),  r = K_{μ+1}/K_μ,  ρ = I_{μ+1}/I_μ,
+// with I_μ from its (cancellation-free) power series and r, ρ from continued
+// fractions evaluated by division-free Wallis recurrences:
+//   r = (μ + x + 1/2 − a_1 T)/x, T = 1/(b_1 + a_2/(b_2 + …)), a_n = −(a_1 + n(n−1)),
+//   a_1 = 1/4 − μ², b_n = 2(x + n);   ρ = 1/(c_1 + 1/(c_2 + …)), c_n = 2(μ+n)/x.
+// Returns K_μ, K_{μ+1} as m·2^kexp (shared exponent).
+[[nodiscard]] inline dd wallis_ratio(int kind, const dd& mu, float256 x) {
+    // kind 0: T (K ratio), kind 1: ρ·x (I ratio, scaled: 1/(c'_1 + x²/(c'_2 + …)), c'_n = 2(μ+n)).
+    const dd one{float256::one()};
+    const dd a1 = dd(float256(0.25)) - mu * mu;
+    const dd x2 = detail_dd::two_prod(x, x);
+    dd A0 = one, A1{float256::zero()}, B0{float256::zero()}, B1 = one;
+    dd r{float256::zero()}, rprev{float256::one()};
+    for (int n = 1; n < 10000000; ++n) {
+        dd an, bn;
+        if (kind == 0) { an = n == 1 ? one : -(a1 + D(n * (n - 1))); bn = detail_dd::two_sum(float256::from_int(2 * n), x + x); }
+        else { an = n == 1 ? one : x2; bn = (mu + D(n)) * float256::two(); }
+        const dd A2 = bn * A1 + an * A0, B2 = bn * B1 + an * B0;
+        A0 = A1; A1 = A2; B0 = B1; B1 = B2;
+        const int e = ilogb(B1.hi);
+        if (e > 2000 || e < -2000) {
+            A0 = detail_dd::ldexp(A0, -e); A1 = detail_dd::ldexp(A1, -e);
+            B0 = detail_dd::ldexp(B0, -e); B1 = detail_dd::ldexp(B1, -e);
+        }
+        if ((n & 7) == 0) {
+            r = A1 / B1;
+            if (near_one(r / rprev)) break;
+            rprev = r;
+        }
+    }
+    return r;
+}
+// I_μ(x) = pre·S0 and ρ = I_{μ+1}/I_μ = (x/2) S1/S0 from one series loop:
+// t_k = q^k/(k!(μ+1)_k), q = x²/4, S0 = Σ t_k, S1 = Σ u_k, u_k = t_k/(μ+1+k),
+// t_{k+1} = u_k q/(k+1): one dd division per term; terms below 2^-245 of the
+// sums finish in float256.
+inline void i_pair(float256 mu, float256 x, SD& I, dd& rho) {
+    const dd one{float256::one()};
+    const dd M{mu};
+    const dd q = detail_dd::two_prod(ldexp(x, -1), ldexp(x, -1));
+    dd t = one, S0 = one, S1{float256::zero()};
+    int k = 0;
+    for (; k < 2000000; ++k) {
+        const dd u = t / (M + D(k + 1));
+        S1 = S1 + u;
+        t = u * q / float256::from_int(k + 1);
+        S0 = S0 + t;
+        if (float256::from_int(k) * float256::from_int(k) > abs(q.hi) && f256_tail(t, S0) && f256_tail(u, S1)) break;
+    }
+    float256 tf = t.hi, s0{}, s1{};
+    const int l0 = ilogb(S0.hi) - 492, l1 = ilogb(S1.hi) - 492;
+    for (++k; k < 2000000; ++k) {
+        const float256 u = tf / (mu + float256::from_int(k + 1));
+        s1 = s1 + u;
+        tf = u * q.hi / float256::from_int(k + 1);
+        s0 = s0 + tf;
+        if ((tf.iszero() || ilogb(tf) < l0) && (u.iszero() || ilogb(u) < l1)) break;
+    }
+    S0 = S0 + dd(s0);
+    S1 = S1 + dd(s1);
+    const SD pre = mul(exp_sd(M * detail_dd::log(dd(ldexp(x, -1)))), rgamma_sd(M + one));
+    I = mul(pre, S0);
+    rho = S1 * ldexp(x, -1) / S0;
+}
+inline void k_wronskian(float256 mu, float256 x, dd& kmu, dd& k1, int& kexp) {
+    const dd one{float256::one()};
+    const dd M{mu}, X{x};
+    const dd a1 = dd(float256(0.25)) - detail_dd::two_prod(mu, mu);
+    const dd T = wallis_ratio(0, M, x);
+    const dd r = (M + X + dd(float256::half()) - a1 * T) / X;
+    SD I;
+    dd rh;
+    i_pair(mu, x, I, rh);
+    kmu = one / (X * I.m * (r + rh));
+    k1 = kmu * r;
+    kexp = -I.k;
+}
+
 // Y_μ, Y_{μ+1} for x >= 2, |μ| <= 1/2 (Steed: CF1 for J'/J, CF2 for (J'+iY')/(J+iY)).
 inline void steed_y(float256 mu, float256 x, dd& ymu, dd& y1) {
     const dd one{float256::one()};
     const dd X{x};
     const dd xi = one / X;
     const dd xi2 = xi * float256::two();
-    const float256 tiny = ldexp(float256::one(), -20000);
-    // CF1 (modified Lentz) for f = J'_μ/J_μ.
+    // CF1 for f = J'_μ/J_μ = μ/x − J_{μ+1}/J_μ, J_{μ+1}/J_μ = 1/(b_1 − 1/(b_2 − …)),
+    // b_n = 2(μ+n)/x: Wallis recurrence (no divisions), power-of-two rescaling,
+    // tested every 8 steps. isign = sign of B_n (the unnormalized J_μ of the
+    // downward recurrence), as the product of Lentz's D_n = B_{n−1}/B_n.
     int isign = 1;
-    dd h = dd(mu) * xi;
-    if (abs(h.hi) < tiny) h = dd(tiny);
-    dd b = xi2 * mu;
-    dd dd_{float256::zero()};
-    dd c = h;
-    for (int i = 1; i < 10000000; ++i) {
-        b = b + xi2;
-        dd_ = b - dd_;
-        if (abs(dd_.hi) < tiny) dd_ = dd(tiny);
-        c = b - one / c;
-        if (abs(c.hi) < tiny) c = dd(tiny);
-        dd_ = one / dd_;
-        const dd del = c * dd_;
-        h = del * h;
-        if (dd_.hi.signbit()) isign = -isign;
-        if (near_one(del)) break;
+    dd h;
+    {
+        // A_{−1} = 1, A_0 = 0, B_{−1} = 0, B_0 = 1; the ratio is A_n/B_n.
+        dd A0 = one, A1{float256::zero()}, B0{float256::zero()}, B1 = one;
+        dd bn = xi2 * mu;
+        dd r{float256::zero()}, rprev{float256::one()};
+        for (int n = 1; n < 10000000; ++n) {
+            bn = bn + xi2;
+            const dd A2 = n == 1 ? A0 : bn * A1 - A0, B2 = n == 1 ? bn : bn * B1 - B0;  // a_1 = +1, a_n = −1
+            A0 = A1; A1 = A2; B0 = B1; B1 = B2;
+            const int e = ilogb(B1.hi);
+            if (e > 2000 || e < -2000) {
+                A0 = detail_dd::ldexp(A0, -e); A1 = detail_dd::ldexp(A1, -e);
+                B0 = detail_dd::ldexp(B0, -e); B1 = detail_dd::ldexp(B1, -e);
+            }
+            if ((n & 7) == 0) {
+                r = A1 / B1;
+                if (near_one(r / rprev)) break;
+                rprev = r;
+            }
+        }
+        if (B1.hi.signbit()) isign = -1;
+        h = dd(mu) * xi - r;
     }
     const dd f = h;
-    // CF2.
+    // CF2: p + iq = (J'+iY')/(J+iY) = −1/(2x) + i + (i/x) T, T = a_1/(b_1 + a_2/(b_2 + …)),
+    // a_k = ((2k−1)/2)² − μ², b_k = 2x + 2k i. Complex Wallis recurrence (no
+    // divisions; b_k has float256 parts), rescaled by powers of two, tested every 8 steps.
     const dd mu2 = detail_dd::two_prod(mu, mu);
-    dd a = dd(float256(0.25)) - mu2;
-    dd p = -detail_dd::ldexp(xi, -1);
-    dd q = one;
-    const dd br = X * float256::two();
-    dd bi = D(2);
-    dd fact = a * xi / (p * p + q * q);
-    dd cr = br + q * fact;
-    dd ci = bi + p * fact;
-    dd den = br * br + bi * bi;
-    dd dr = br / den;
-    dd di = -bi / den;
-    dd dlr = cr * dr - ci * di;
-    dd dli = cr * di + ci * dr;
-    dd temp = p * dlr - q * dli;
-    q = p * dli + q * dlr;
-    p = temp;
-    for (int i = 2; i < 1000000; ++i) {
-        a = a + D(2 * (i - 1));
-        bi = bi + D(2);
-        dr = a * dr + br;
-        di = a * di + bi;
-        fact = a / (cr * cr + ci * ci);
-        cr = br + cr * fact;
-        ci = bi - ci * fact;
-        den = dr * dr + di * di;
-        dr = dr / den;
-        di = -di / den;
-        dlr = cr * dr - ci * di;
-        dli = cr * di + ci * dr;
-        temp = p * dlr - q * dli;
-        q = p * dli + q * dlr;
-        p = temp;
-        if (near_one(dlr) && near_zero(dli)) break;
+    const float256 x2 = x + x;
+    dd Ar0 = one, Ai0{float256::zero()}, Ar1{float256::zero()}, Ai1{float256::zero()};  // A_{k−2}, A_{k−1}
+    dd Br0{float256::zero()}, Bi0{float256::zero()}, Br1 = one, Bi1{float256::zero()};
+    dd Tr{float256::zero()}, Ti{float256::zero()}, Pr{float256::zero()}, Pi{float256::zero()};
+    for (int k = 1; k < 1000000; ++k) {
+        const dd ak = dd(ldexp(float256::from_int((2 * k - 1) * (2 * k - 1)), -2)) - mu2;
+        const float256 bk = float256::from_int(2 * k);
+        const dd Ar2 = Ar1 * x2 - Ai1 * bk + ak * Ar0, Ai2 = Ai1 * x2 + Ar1 * bk + ak * Ai0;
+        const dd Br2 = Br1 * x2 - Bi1 * bk + ak * Br0, Bi2 = Bi1 * x2 + Br1 * bk + ak * Bi0;
+        Ar0 = Ar1; Ai0 = Ai1; Ar1 = Ar2; Ai1 = Ai2;
+        Br0 = Br1; Bi0 = Bi1; Br1 = Br2; Bi1 = Bi2;
+        const int e = ilogb(abs(Br1.hi) > abs(Bi1.hi) ? Br1.hi : Bi1.hi);
+        if (e > 2000 || e < -2000) {
+            for (dd* v : {&Ar0, &Ai0, &Ar1, &Ai1, &Br0, &Bi0, &Br1, &Bi1}) *v = detail_dd::ldexp(*v, -e);
+        }
+        if ((k & 7) == 0) {
+            const dd iden = one / (Br1 * Br1 + Bi1 * Bi1);
+            Tr = (Ar1 * Br1 + Ai1 * Bi1) * iden;
+            Ti = (Ai1 * Br1 - Ar1 * Bi1) * iden;
+            const dd dr = Tr - Pr, di = Ti - Pi;
+            const int lt = ilogb(abs(Tr.hi) > abs(Ti.hi) ? Tr.hi : Ti.hi);
+            if ((dr.hi.iszero() || ilogb(dr.hi) < lt - 468) && (di.hi.iszero() || ilogb(di.hi) < lt - 468)) break;
+            Pr = Tr; Pi = Ti;
+        }
     }
+    const dd p = -detail_dd::ldexp(xi, -1) - Ti * xi;
+    const dd q = one + Tr * xi;
     const dd w = xi2 / detail_dd::pi();
     const dd gam = (p - f) / q;
     dd rjmu = detail_dd::sqrt(w / ((p - f) * gam + q));
@@ -609,11 +693,11 @@ inline void split(float256 nu, int& n, float256& mu) {
 }
 
 inline constexpr int kAsymX = 120;  // Hankel / large-x expansions from here
-// Temme's series below these x, Steed's CF2 above: the series cancels ~e^x (Y) and
-// ~e^{2x} (K), leaving > 2^-330 relative error at the switch points (measured vs
-// the CF2), and is faster than the slowly converging CF2 up to there.
-inline constexpr int kTemmeYX = 100;
-inline constexpr int kTemmeKX = 60;
+// Temme's series below these x (it cancels ~e^x for Y and ~e^{2x} for K). Above:
+// Y by Steed (division-free CF1/CF2), K by the I-series Wronskian (no cancellation),
+// whichever was measured fastest; Steed's K remains the fallback from kAsymX.
+inline constexpr int kTemmeYX = 56;
+inline constexpr int kTemmeKX = 30;  // then the I-series Wronskian (k_wronskian) up to kAsymX
 
 // J_ν(x), ν >= 0, x > 0 finite.
 [[nodiscard]] inline SD j(float256 nu, float256 x) {
@@ -678,6 +762,7 @@ inline constexpr int kTemmeKX = 60;
     dd k0, k1;
     int ke = 0;
     if (x < float256(kTemmeKX)) temme_k(mu, x, k0, k1);
+    else if (x < float256(kAsymX)) k_wronskian(mu, x, k0, k1, ke);
     else steed_k(mu, x, k0, k1, ke);
     SD r = recur(k0, k1, mu, x, n, +1);
     r.k += ke;
