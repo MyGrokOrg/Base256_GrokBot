@@ -441,6 +441,207 @@ private:
     }
 
 public:
+    // --- error-free transformations on the integer significands ------------------
+    // Same results as the classic float formulas (s = RNE(a op b), e = RNE(exact - s)),
+    // computed in one 512-bit pass. Return false (caller falls back to the float
+    // formula) for non-finite/zero operands or when s overflows.
+private:
+    // RNE-round the signed 512-bit integer (neg, m) · 2^scale.
+    static constexpr float256 round_u512(bool neg, const detail::u512& m, int scale) noexcept {
+        using namespace detail;
+        if (m.is_zero()) return zero(false);
+        const int lz = m.clz();
+        const u512 n = m << lz;
+        Unpacked u;
+        u.kind = Kind::normal;
+        u.sign = neg;
+        u.wexp = scale + 511 - lz;
+        u.sig = n.hi256();
+        u.sticky = !n.lo256().is_zero();
+        return pack(u, round_mode::to_nearest_even);
+    }
+    // e = exact - s, with exact = (neg, m) · 2^scale and s its rounding (finite).
+    static constexpr float256 eft_error(bool neg, const detail::u512& m, int scale, float256 s) noexcept {
+        using namespace detail;
+        if (s.iszero()) return round_u512(neg, m, scale);  // underflowed: e = RNE(exact)
+        u512 si{};
+        {
+            const Unpacked us = s.unpack();
+            const int sh = us.wexp - 255 - scale;  // s = sig · 2^(wexp-255)
+            if (sh < 0) {
+                // only possible when s is far below m's lowest bit: cannot happen for
+                // a correct rounding of m; fall back to the conservative path
+                si = u512(us.sig) >> (-sh);
+            } else {
+                si = u512(us.sig) << sh;  // mod 2^512: the error is < 2^511
+            }
+        }
+        const u512 d = sub_u512(m, si);  // m - s_int (two's complement, |d| < 2^511)
+        if (d.d[7] >> 63) {
+            const u512 nd = sub_u512(u512{}, d);
+            return round_u512(!neg, nd, scale);
+        }
+        return round_u512(neg, d, scale);
+    }
+
+    // RNE of a normalized significand (leading bit 255) with sticky, for a result
+    // known to be normal: wexp in [kEmin, kEmax].
+    static constexpr float256 pack_rne_normal(bool neg, int wexp, detail::u256 sig, bool sticky) noexcept {
+        bool ix = false;
+        if (round_bits(sig, detail::kLsbPos, sticky, neg, round_mode::to_nearest_even, ix)) {
+            ++wexp;
+            sig = {};
+            sig.set_bit(255);
+        }
+        return pack_normal(neg, wexp, sig);
+    }
+    // s = RNE(m · 2^scale), e = RNE(m · 2^scale - s) directly on the 512-bit
+    // significand. False when s or e is not comfortably normal (the caller then
+    // takes the general path).
+    static constexpr bool eft_round(bool neg, const detail::u512& m, int scale, float256& s, float256& e) noexcept {
+        using namespace detail;
+        const int lz = m.clz();
+        if (lz >= 512) return false;
+        const u512 n = m << lz;  // leading bit 511; value = n · 2^(scale - lz)
+        const int wexp = scale + 511 - lz;
+        if (wexp < kEmin + 300 || wexp >= kEmax) return false;
+        constexpr int kCut = 256 + kLsbPos;  // bits below kCut are rounded off
+        // L = low kCut bits of n.
+        u512 low = n;
+        for (int i = 7; i > kCut / 64; --i) low.d[i] = 0;
+        low.d[kCut / 64] &= (1ULL << (kCut % 64)) - 1ULL;
+        const bool g = ((n.d[(kCut - 1) / 64] >> ((kCut - 1) % 64)) & 1ULL) != 0;
+        const bool lsb = ((n.d[kCut / 64] >> (kCut % 64)) & 1ULL) != 0;
+        bool rest = (n.d[(kCut - 1) / 64] & ((1ULL << ((kCut - 1) % 64)) - 1ULL)) != 0;
+        for (int i = 0; i < (kCut - 1) / 64 && !rest; ++i) rest = n.d[i] != 0;
+        const bool inc = g && (rest || lsb);
+        u256 top = n.hi256();
+        top.d[0] &= ~((1ULL << kLsbPos) - 1ULL);
+        int ws = wexp;
+        if (inc) {
+            std::uint64_t c = 0;
+            top = add_u256(top, u256{1ULL << kLsbPos}, c);
+            if (c) { ++ws; top = {}; top.set_bit(255); }
+        }
+        if (ws > kEmax) return false;
+        s = pack_normal(neg, ws, top);
+        // e = L - inc · 2^kCut, at scale (scale - lz).
+        bool eneg = neg;
+        u512 d = low;
+        if (inc) {
+            u512 big{};
+            big.set_bit(kCut);
+            d = sub_u512(big, low);
+            eneg = !neg;
+        }
+        if (d.is_zero()) { e = zero(false); return true; }
+        const int dz = d.clz();
+        const int we = scale - lz + 511 - dz;
+        if (we < kEmin + 1) return false;
+        const u512 dn = d << dz;
+        e = pack_rne_normal(eneg, we, dn.hi256(), !dn.lo256().is_zero());
+        return true;
+    }
+
+    static constexpr bool finite_nonzero(const detail::Unpacked& u) noexcept {
+        return u.kind == detail::Kind::normal || u.kind == detail::Kind::subnormal;
+    }
+    // Add sig · 2^(w - 255) (sign `neg`) into the two's-complement window W whose
+    // bit 508 is 2^maxw (so the sum of four terms below 2^(maxw+1) cannot overflow).
+    static constexpr void acc_term(detail::u512& W, const detail::Unpacked& u, int maxw) noexcept {
+        using namespace detail;
+        const int shift = 253 - (maxw - u.wexp);
+        if (shift <= -256) return;
+        const u512 t = shift >= 0 ? (u512(u.sig) << shift) : (u512(u.sig) >> (-shift));
+        W = u.sign ? sub_u512(W, t) : add_u512(W, t);
+    }
+
+public:
+    /// (hi, lo) = normalized dd sum of up to four finite terms, accurate to about
+    /// 2^-505 relative (one truncation of the 512-bit window). False when an
+    /// operand is not finite or the result is outside the comfortable range.
+    static constexpr bool dd_add_parts(float256 a0, float256 a1, float256 b0, float256 b1, float256& hi,
+                                       float256& lo) noexcept {
+        using namespace detail;
+        const Unpacked t[4] = {a0.unpack(), a1.unpack(), b0.unpack(), b1.unpack()};
+        int maxw = 0;
+        bool any = false;
+        for (const Unpacked& u : t) {
+            if (u.kind == Kind::zero) continue;
+            if (!finite_nonzero(u)) return false;
+            if (!any || u.wexp > maxw) maxw = u.wexp;
+            any = true;
+        }
+        if (!any) return false;
+        u512 W{};
+        for (const Unpacked& u : t)
+            if (u.kind != Kind::zero) acc_term(W, u, maxw);
+        bool neg = false;
+        if (W.d[7] >> 63) { W = sub_u512(u512{}, W); neg = true; }
+        if (W.is_zero()) { hi = zero(false); lo = zero(false); return true; }
+        return eft_round(neg, W, maxw - 508, hi, lo);
+    }
+    /// (hi, lo) = normalized dd product (a0 + a1)(b0 + b1), omitting a1·b1
+    /// (about 2^-474 relative), as the classic dd product does.
+    static constexpr bool dd_mul_parts(float256 a0, float256 a1, float256 b0, float256 b1, float256& hi,
+                                       float256& lo) noexcept {
+        using namespace detail;
+        const Unpacked ua = a0.unpack(), ub = b0.unpack(), ual = a1.unpack(), ubl = b1.unpack();
+        if (!finite_nonzero(ua) || !finite_nonzero(ub)) return false;
+        if (!(finite_nonzero(ual) || ual.kind == Kind::zero) || !(finite_nonzero(ubl) || ubl.kind == Kind::zero))
+            return false;
+        // W in units of 2^(wa + wb - 508): the main product shifted right by 2.
+        u512 W = mul_wide(ua.sig, ub.sig) >> 2;
+        // big · small, where small (a low part) stands in for the high part `replaced`.
+        auto cross = [&](const Unpacked& big, const Unpacked& small, const Unpacked& replaced) {
+            if (small.kind == Kind::zero) return;
+            const int sh = (replaced.wexp - small.wexp) + 2;
+            if (sh >= 512) return;
+            const u512 c = mul_wide(big.sig, small.sig) >> sh;
+            W = small.sign != replaced.sign ? sub_u512(W, c) : add_u512(W, c);
+        };
+        cross(ua, ubl, ub);
+        cross(ub, ual, ua);
+        if (W.d[7] >> 63) return false;  // cannot happen for normalized dd inputs
+        return eft_round(ua.sign != ub.sign, W, ua.wexp + ub.wexp - 508, hi, lo);
+    }
+
+    static constexpr bool eft_two_sum(float256 a, float256 b, float256& s, float256& e) noexcept {
+        using namespace detail;
+        Unpacked ua = a.unpack(), ub = b.unpack();
+        if ((ua.kind != Kind::normal && ua.kind != Kind::subnormal) ||
+            (ub.kind != Kind::normal && ub.kind != Kind::subnormal))
+            return false;
+        if (ua.wexp < ub.wexp || (ua.wexp == ub.wexp && ua.sig < ub.sig)) std::swap(ua, ub);
+        const int diff = ua.wexp - ub.wexp;
+        if (diff > 255) return false;
+        const int scale = ua.wexp - 510;
+        const u512 A = u512(ua.sig) << 255;
+        const u512 B = u512(ub.sig) << (255 - diff);
+        const u512 m = ua.sign == ub.sign ? add_u512(A, B) : sub_u512(A, B);
+        if (m.is_zero()) { s = zero(false); e = zero(false); return true; }
+        if (eft_round(ua.sign, m, scale, s, e)) return true;
+        s = round_u512(ua.sign, m, scale);
+        if (!s.isfinite()) return false;
+        e = eft_error(ua.sign, m, scale, s);
+        return true;
+    }
+    static constexpr bool eft_two_prod(float256 a, float256 b, float256& p, float256& e) noexcept {
+        using namespace detail;
+        const Unpacked ua = a.unpack(), ub = b.unpack();
+        if ((ua.kind != Kind::normal && ua.kind != Kind::subnormal) ||
+            (ub.kind != Kind::normal && ub.kind != Kind::subnormal))
+            return false;
+        const bool neg = ua.sign != ub.sign;
+        const int scale = ua.wexp + ub.wexp - 510;
+        const u512 m = mul_wide(ua.sig, ub.sig);
+        if (eft_round(neg, m, scale, p, e)) return true;
+        p = round_u512(neg, m, scale);
+        if (!p.isfinite()) return false;
+        e = eft_error(neg, m, scale, p);
+        return true;
+    }
+
     /// Round (hi + lo) · 2^k to binary256 in `mode` with one rounding, raising
     /// the flags as a single operation would. hi and lo are finite and form a
     /// normalized double-float256 (|lo| <= ulp(hi)/2). `tail` describes the

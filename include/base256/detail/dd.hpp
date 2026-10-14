@@ -74,16 +74,28 @@ private:
 inline float256 dd::out(FnEnv& env, int k, int tail) const { return env.round(hi, lo, k, tail); }
 
 [[nodiscard]] inline dd two_sum(float256 a, float256 b) {
+    {
+        float256 s, e;
+        if (float256::eft_two_sum(a, b, s, e)) return {s, e};
+    }
     const float256 s = a + b;
     const float256 bb = s - a;
     const float256 e = (a - (s - bb)) + (b - bb);
     return {s, e};
 }
 [[nodiscard]] inline dd fast_two_sum(float256 a, float256 b) {  // |a| >= |b|
+    {
+        float256 s, e;
+        if (float256::eft_two_sum(a, b, s, e)) return {s, e};
+    }
     const float256 s = a + b;
     return {s, b - (s - a)};
 }
 [[nodiscard]] inline dd two_prod(float256 a, float256 b) {
+    {
+        float256 p, e;
+        if (float256::eft_two_prod(a, b, p, e)) return {p, e};
+    }
     const float256 p = a * b;
     return {p, fma(a, b, -p)};
 }
@@ -91,6 +103,10 @@ inline float256 dd::out(FnEnv& env, int k, int tail) const { return env.round(hi
 [[nodiscard]] inline dd operator-(const dd& a) { return {-a.hi, -a.lo}; }
 
 [[nodiscard]] inline dd operator+(const dd& a, const dd& b) {
+    {
+        dd r;
+        if (float256::dd_add_parts(a.hi, a.lo, b.hi, b.lo, r.hi, r.lo)) return r;
+    }
     if (!a.hi.isfinite() || !b.hi.isfinite()) return dd(a.hi + b.hi);
     dd s = two_sum(a.hi, b.hi);
     const dd t = two_sum(a.lo, b.lo);
@@ -102,12 +118,20 @@ inline float256 dd::out(FnEnv& env, int k, int tail) const { return env.round(hi
 [[nodiscard]] inline dd operator-(const dd& a, const dd& b) { return a + (-b); }
 
 [[nodiscard]] inline dd operator*(const dd& a, const dd& b) {
+    {
+        dd r;
+        if (float256::dd_mul_parts(a.hi, a.lo, b.hi, b.lo, r.hi, r.lo)) return r;
+    }
     dd p = two_prod(a.hi, b.hi);
     if (!p.hi.isfinite()) return dd(p.hi);
     p.lo = p.lo + (a.hi * b.lo + a.lo * b.hi);
     return fast_two_sum(p.hi, p.lo);
 }
 [[nodiscard]] inline dd operator*(const dd& a, float256 b) {
+    {
+        dd r;
+        if (float256::dd_mul_parts(a.hi, a.lo, b, float256{}, r.hi, r.lo)) return r;
+    }
     dd p = two_prod(a.hi, b);
     if (!p.hi.isfinite()) return dd(p.hi);
     p.lo = p.lo + a.lo * b;
