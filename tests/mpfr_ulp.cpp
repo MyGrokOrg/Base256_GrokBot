@@ -133,8 +133,8 @@ float256 hard_trig(long E) {
 constexpr base256::round_mode kModes[5] = {base256::round_mode::to_nearest_even, base256::round_mode::to_nearest_away,
                                            base256::round_mode::toward_zero, base256::round_mode::upward,
                                            base256::round_mode::downward};
-// MPFR has no ties-away mode for set(); transcendental results are never ties.
-constexpr mpfr_rnd_t kMpfrModes[5] = {MPFR_RNDN, MPFR_RNDN, MPFR_RNDZ, MPFR_RNDU, MPFR_RNDD};
+// MPFR_RNDNA (ties away) is emulated in round_b256.
+constexpr mpfr_rnd_t kMpfrModes[5] = {MPFR_RNDN, MPFR_RNDNA, MPFR_RNDZ, MPFR_RNDU, MPFR_RNDD};
 const char* const kModeNames[5] = {"RNE", "RNA", "RZ", "RU", "RD"};
 int g_modes = 5;  // how many of kModes to test
 
@@ -143,6 +143,24 @@ struct Expected {
 };
 // Round the (1100-bit) reference to binary256 in rnd, emulating its exponent range.
 Expected round_b256(mpfr_t out, mpfr_srcptr ref, mpfr_rnd_t rnd) {
+    if (rnd == MPFR_RNDNA) {
+        // MPFR's set() has no ties-away mode: round away when ref is exactly
+        // halfway between its toward-zero and away-from-zero roundings.
+        mpfr_t z, s;
+        mpfr_init2(z, 237);
+        mpfr_init2(s, 2400);
+        round_b256(z, ref, MPFR_RNDZ);
+        Expected e = round_b256(out, ref, MPFR_RNDA);
+        bool tie = false;
+        if (mpfr_number_p(z) && mpfr_number_p(out) && !mpfr_equal_p(z, out)) {
+            mpfr_add(s, z, out, MPFR_RNDN);
+            mpfr_div_2ui(s, s, 1, MPFR_RNDN);
+            tie = mpfr_equal_p(s, ref) != 0;
+        }
+        if (!tie) e = round_b256(out, ref, MPFR_RNDN);
+        mpfr_clears(z, s, (mpfr_ptr)0);
+        return e;
+    }
     const mpfr_exp_t emin = mpfr_get_emin(), emax = mpfr_get_emax();
     mpfr_set_emin(kEminN - 237 + 2);  // -262377: smallest subnormal 2^-262378
     mpfr_set_emax(262144);
@@ -463,6 +481,90 @@ int main(int argc, char** argv) {
     two_arg("tgamma_upper", ig_gen, [](float256 a, float256 b) { return base256::tgamma_upper(a, b); }, ig_ref(1));
     two_arg("gamma_p", ig_gen, [](float256 a, float256 b) { return base256::gamma_p(a, b); }, ig_ref(2));
     two_arg("gamma_q", ig_gen, [](float256 a, float256 b) { return base256::gamma_q(a, b); }, ig_ref(3));
+    // Orthogonal polynomials of integer degree n in [0, 40]: exact references from
+    // the integer-coefficient forms at a precision that holds every term
+    // exactly (one final rounding), so exact results and flags are checked too.
+    // x is log-uniform in [2^-8, 2^6) with either sign, or a multiple of 1/64.
+    auto poly_gen = [&](float256& a, float256& b) {
+        a = float256::from_int(rnd_int(0, 40));
+        b = (rng() & 1) ? rnd_in(-8, 6, true) : ldexp(float256::from_int(rnd_int(-256, 256)), -6);
+        if (rng() & 1) b = -b;
+    };
+    auto poly_prec = [](long n) { return 260 * (n + 1) + 64 * (n + 1) + 256; };
+    // P_l(x) = 2^-l Σ_k (−1)^k C(l,k) C(2l−2k,l) x^{l−2k}
+    auto leg_ref = [&](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr x) {
+        const long l = mpfr_get_si(a, MPFR_RNDN);
+        mpfr_t s, p; mpz_t c, c2;
+        mpfr_inits2(poly_prec(l), s, p, (mpfr_ptr)0); mpz_inits(c, c2, nullptr);
+        mpfr_set_zero(s, 1);
+        for (long k = 0; 2 * k <= l; ++k) {
+            mpz_bin_uiui(c, static_cast<unsigned long>(l), static_cast<unsigned long>(k));
+            mpz_bin_uiui(c2, static_cast<unsigned long>(2 * l - 2 * k), static_cast<unsigned long>(l));
+            mpz_mul(c, c, c2);
+            if (k & 1) mpz_neg(c, c);
+            mpfr_pow_ui(p, x, static_cast<unsigned long>(l - 2 * k), MPFR_RNDN);
+            mpfr_mul_z(p, p, c, MPFR_RNDN);
+            mpfr_add(s, s, p, MPFR_RNDN);
+        }
+        mpfr_div_2ui(s, s, static_cast<unsigned long>(l), MPFR_RNDN);
+        if (mpfr_zero_p(s)) mpfr_setsign(s, s, (l & 1) && mpfr_signbit(x), MPFR_RNDN);  // odd: P_l(±0) = ±0
+        const int tr = mpfr_set(r, s, MPFR_RNDN);
+        mpfr_clears(s, p, (mpfr_ptr)0); mpz_clears(c, c2, nullptr);
+        return tr;
+    };
+    two_arg("legendre", poly_gen, [](float256 a, float256 b) { return base256::legendre(static_cast<unsigned>(a.to_double()), b); }, leg_ref);
+    // H_n by its recurrence (integer arithmetic on x, exact at this precision).
+    two_arg("hermite", poly_gen, [](float256 a, float256 b) { return base256::hermite(static_cast<unsigned>(a.to_double()), b); },
+            [&](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr x) {
+                const long n = mpfr_get_si(a, MPFR_RNDN);
+                mpfr_t p0, p1, p2, t;
+                mpfr_inits2(poly_prec(n) + 8 * n, p0, p1, p2, t, (mpfr_ptr)0);
+                mpfr_set_ui(p0, 1, MPFR_RNDN);
+                mpfr_mul_2ui(p1, x, 1, MPFR_RNDN);
+                if (n == 0) mpfr_set(p1, p0, MPFR_RNDN);
+                for (long j = 1; j < n; ++j) {
+                    mpfr_mul(p2, x, p1, MPFR_RNDN);
+                    mpfr_mul_ui(t, p0, static_cast<unsigned long>(j), MPFR_RNDN);
+                    mpfr_sub(p2, p2, t, MPFR_RNDN);
+                    mpfr_mul_2ui(p2, p2, 1, MPFR_RNDN);
+                    mpfr_set(p0, p1, MPFR_RNDN); mpfr_set(p1, p2, MPFR_RNDN);
+                }
+                if (mpfr_zero_p(p1)) mpfr_setsign(p1, p1, (n & 1) && mpfr_signbit(x), MPFR_RNDN);
+                const int tr = mpfr_set(r, p1, MPFR_RNDN);
+                mpfr_clears(p0, p1, p2, t, (mpfr_ptr)0);
+                return tr;
+            });
+    // L_n^(m)(x) = (1/n!) Σ_k (−1)^k C(n+m, n−k) (n!/k!) x^k, m in [0, 10] packed as a = n + 64·m.
+    auto lag_gen = [&](float256& a, float256& b) {
+        poly_gen(a, b);
+        a = a + float256::from_int(64 * ((rng() & 1) ? 0 : rnd_int(0, 10)));
+    };
+    two_arg("laguerre", lag_gen,
+            [](float256 a, float256 b) {
+                const unsigned v = static_cast<unsigned>(a.to_double());
+                return v < 64 ? base256::laguerre(v, b) : base256::assoc_laguerre(v % 64, v / 64, b);
+            },
+            [&](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr x) {
+                const long v = mpfr_get_si(a, MPFR_RNDN), n = v % 64, m = v / 64;
+                mpfr_t s, p; mpz_t c, f;
+                mpfr_inits2(poly_prec(n) + 16 * n, s, p, (mpfr_ptr)0); mpz_inits(c, f, nullptr);
+                mpfr_set_zero(s, 1);
+                for (long k = 0; k <= n; ++k) {
+                    mpz_bin_uiui(c, static_cast<unsigned long>(n + m), static_cast<unsigned long>(n - k));
+                    mpz_fac_ui(f, static_cast<unsigned long>(n));
+                    mpz_mul(c, c, f);
+                    mpz_fac_ui(f, static_cast<unsigned long>(k));
+                    mpz_divexact(c, c, f);
+                    if (k & 1) mpz_neg(c, c);
+                    mpfr_pow_ui(p, x, static_cast<unsigned long>(k), MPFR_RNDN);
+                    mpfr_mul_z(p, p, c, MPFR_RNDN);
+                    mpfr_add(s, s, p, MPFR_RNDN);
+                }
+                mpz_fac_ui(f, static_cast<unsigned long>(n));
+                const int tr = mpfr_div_z(r, s, f, MPFR_RNDN);
+                mpfr_clears(s, p, (mpfr_ptr)0); mpz_clears(c, f, nullptr);
+                return tr;
+            });
     mpfr_clears(xm, r, (mpfr_ptr)0);
     return check && bad ? 1 : 0;
 }

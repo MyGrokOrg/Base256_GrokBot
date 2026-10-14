@@ -98,7 +98,68 @@ def EF(k, phi): return mp.ellipf(phi, k * k)
 def EE2(k, phi): return mp.ellipe(phi, k * k)
 def EP3(k, n, phi): return mp.ellippi(n, phi, k * k)
 
+# Orthogonal polynomials: three-term recurrences at 2000 bits (mpmath's
+# hypergeometric evaluation is far slower at large degree; the two agree, see
+# --selftest).
+def _rec(n, p0, p1, step):
+    if n == 0: return p0
+    for j in range(1, n):
+        p0, p1 = p1, step(j, p0, p1)
+    return p1
+def LEG(n, x):
+    n = int(n)
+    with mp.workprec(2000): return _rec(n, mp.mpf(1), x, lambda j, a, b: ((2*j+1)*x*b - j*a) / (j+1))
+def ALEG(n, m, x):
+    n, m = int(n), int(m)
+    if m > n: return mp.mpf(0)
+    with mp.workprec(2000):
+        pmm = mp.fac2(2*m-1) * mp.sqrt(1 - x*x) ** m if m else mp.mpf(1)
+        if n == m: return pmm
+        return _rec(n - m, pmm, x*(2*m+1)*pmm, lambda j, a, b: ((2*(j+m)+1)*x*b - (j+2*m)*a) / (j+1))
+def SLEG(n, m, t):
+    n, m = int(n), int(m)
+    if m > n: return mp.mpf(0)
+    with mp.workprec(2000):
+        x, s = mp.cos(t), abs(mp.sin(t))
+        pmm = mp.fac2(2*m-1) * s ** m if m else mp.mpf(1)
+        p = pmm if n == m else _rec(n - m, pmm, x*(2*m+1)*pmm, lambda j, a, b: ((2*(j+m)+1)*x*b - (j+2*m)*a) / (j+1))
+        return (-1)**m * mp.sqrt((2*n+1) / (4*mp.pi) * mp.factorial(n-m) / mp.factorial(n+m)) * p
+def ALAG(n, m, x):
+    n, m = int(n), int(m)
+    with mp.workprec(2000): return _rec(n, mp.mpf(1), 1 + m - x, lambda j, a, b: ((2*j+1+m-x)*b - (j+m)*a) / (j+1))
+def LAG(n, x): return ALAG(n, 0, x)
+def HER(n, x):
+    n = int(n)
+    with mp.workprec(2000): return _rec(n, mp.mpf(1), 2*x, lambda j, a, b: 2*x*b - 2*j*a)
+
+def selftest():
+    with mp.workprec(600):
+        for n, m, x in [(7, 3, mp.mpf('0.3')), (20, 0, mp.mpf('-0.7')), (13, 13, mp.mpf('0.99'))]:
+            assert abs(ALEG(n, m, x) - mp.legenp(n, m, x, type=2) * (-1)**m) < mp.mpf(2)**-500 * max(1, abs(ALEG(n, m, x)))
+            assert abs(SLEG(n, m, x) - mp.re(mp.spherharm(n, m, x, 0))) < mp.mpf(2)**-500
+            assert abs(ALAG(n, m, 5*x) - mp.laguerre(n, m, 5*x)) < mp.mpf(2)**-500 * max(1, abs(ALAG(n, m, 5*x)))
+            assert abs(HER(n, 3*x) - mp.hermite(n, 3*x)) < mp.mpf(2)**-500 * max(1, abs(HER(n, 3*x)))
+            assert abs(LEG(n, x) - mp.legendre(n, x)) < mp.mpf(2)**-500
+    print("selftest ok")
+
 RANGES = [
+    ("leg",      "leg", LEG, [("int", 0, 60), (-1, 1, False)]),
+    ("leg_big",  "leg", LEG, [("int", 100, 1000), (-1, 1, False)]),
+    ("leg_out",  "leg", LEG, [("int", 0, 60), (0, 40, True)]),
+    ("aleg",     "aleg", ALEG, [("int", 0, 40), ("int", 0, 40), (-1, 1, False)]),
+    ("aleg_big", "aleg", ALEG, [("int", 100, 400), ("int", 0, 100), (-1, 1, False)]),
+    ("aleg_1",   "aleg", ALEG, [("int", 0, 30), ("int", 0, 30), (0.999, 1, False)]),
+    ("sleg",     "sleg", SLEG, [("int", 0, 40), ("int", 0, 40), (-4, 4, False)]),
+    ("sleg_big", "sleg", SLEG, [("int", 100, 300), ("int", 0, 100), (0, 3.2, False)]),
+    ("sleg_0",   "sleg", SLEG, [("int", 0, 30), ("int", 0, 30), (-60, -2, True)]),
+    ("lag",      "lag", LAG, [("int", 0, 60), (0, 200, False)]),
+    ("lag_small","lag", LAG, [("int", 0, 60), (-30, 3, True)]),
+    ("lag_big",  "lag", LAG, [("int", 100, 1000), (0, 4000, False)]),
+    ("lag_neg",  "lag", LAG, [("int", 0, 60), (-100, 0, False)]),
+    ("alag",     "alag", ALAG, [("int", 0, 60), ("int", 0, 60), (0, 300, False)]),
+    ("her",      "her", HER, [("int", 0, 60), (-12, 12, False)]),
+    ("her_big",  "her", HER, [("int", 100, 1000), (-50, 50, False)]),
+    ("her_huge", "her", HER, [("int", 0, 60), (3, 100, True)]),
     ("ell_K",    "K", EK, [(-1, 1, False)]),
     ("ell_K1",   "K", EK, [(0.999, 1, False)]),
     ("ell_E",    "E", EE, [(-1, 1, False)]),
@@ -179,6 +240,8 @@ RANGES = [
 ]
 
 def main():
+    if sys.argv[1] == "--selftest":
+        selftest(); return
     exe = sys.argv[1]
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 200
     rng = random.Random(int(sys.argv[3]) if len(sys.argv) > 3 else 1)

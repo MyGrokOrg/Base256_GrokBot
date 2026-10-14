@@ -55,6 +55,12 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "gq") return gamma_q(P(a), P(b));
     if (op == "ibeta") return ibeta(P(a), P(b), P(c));
     if (op == "ibetac") return ibetac(P(a), P(b), P(c));
+    if (op == "leg") return legendre(static_cast<unsigned>(std::stoul(a)), P(b));
+    if (op == "aleg") return assoc_legendre(static_cast<unsigned>(std::stoul(a)), static_cast<unsigned>(std::stoul(b)), P(c));
+    if (op == "sleg") return sph_legendre(static_cast<unsigned>(std::stoul(a)), static_cast<unsigned>(std::stoul(b)), P(c));
+    if (op == "lag") return laguerre(static_cast<unsigned>(std::stoul(a)), P(b));
+    if (op == "alag") return assoc_laguerre(static_cast<unsigned>(std::stoul(a)), static_cast<unsigned>(std::stoul(b)), P(c));
+    if (op == "her") return hermite(static_cast<unsigned>(std::stoul(a)), P(b));
     std::cerr << "unknown op " << op << "\n";
     return float256::qnan();
 }
@@ -130,6 +136,19 @@ const Ref kRefs[] = {
     {"ibeta", "0.001", "50", "0.5", "0x1fffffffffffffffeb58a617f0efef9affeca5e38a288b507323fe50d2ebp-237"},
     {"ibeta", "400", "600", "0.375", "0x1adc195d15bd1fcd36a25c2eb71fa70b106eece9dee55e563613a3bbf209p-241"},
     {"ibetac", "2.5", "3.5", "0.875", "0x12d53224bc5bec7b2c13201d7fcf46f98bb7e15a41318e24e01cc7d51bfdp-244"},
+    {"leg", "5", "0.3", "", "0x161aceee0f3cb3e5753a3ec02f2f9873ffac1d29dc725c3dee78183f91e6p-238"},
+    {"leg", "200", "-0.71", "", "0x17ed3263df78568352c9736fd56634c21c10eb5e96dba9c5d6c44f8b0585p-242"},
+    {"leg", "7", "12.3", "", "0x10d61410641d096f148ad17fb9f482f43ba69f3b9a0a01e1818fb7988824p-206"},
+    {"aleg", "6", "3", "0.4", "-0x1e123c04d94c21468d13af52d2272e806361124f88572c95228f5bfbca68p-231"},
+    {"aleg", "150", "40", "-0.999", "0x15b8bc409cab7f680deaf38a9a85ac58caf96d3cef50089b8476134829c8p-38"},
+    {"sleg", "5", "2", "0.7", "0x19fe0f71d07447e79d612370e5388e843172085755535c988d64ed122991p-238"},
+    {"sleg", "120", "60", "2.9", "0x1296b96873f71e5f2be1537f9505e6420d486d6d57d908bcd32b09af853dp-283"},
+    {"sleg", "10", "0", "1e-30", "0x14aefbf05f1304afec32ceaba4f6f69ee5452a344a0c1911d9c5d512e6d6p-236"},
+    {"lag", "6", "2.5", "", "0x152f1c71c71c71c71c71c71c71c71c71c71c71c71c71c71c71c71c71c71cp-237"},
+    {"lag", "400", "1000.5", "", "0x1080ea90776696306e3aa1a56ddbe1acbb7adf2c6e37ca56c500f8f36c08p+478"},
+    {"alag", "10", "3", "7.25", "0x1d390c949e9199749cfa2aa85ae0b3bb96bf1c4cca7d02d5ddb8e13e6eedp-233"},
+    {"her", "9", "1.1", "", "-0x1930840feb40bc6eecd8ecfcd437b660e0d1a2b0aabe6b465b3f520ba1b1p-223"},
+    {"her", "300", "-17.3", "", "-0x11189bb4fd03c1512c112159ed8c053bee4cddbbb0d36f1a98674a5b49a2p+1148"},
     {"ibetac", "30", "2", "0.0625", "0x1ffffffffffffffffffffffffffffc5c0000000000000000000000000000p-237"},
 };
 
@@ -330,6 +349,38 @@ int main() {
     CHECK(same(ellint_1(float256(0.6), float256(-1.3)), -ellint_1(float256(0.6), float256(1.3))));
     CHECK(abs(ellint_2(float256(0.6), float256(0.25) + float256::pi()) - ellint_2(float256(0.6), float256(0.25)) -
               float256::two() * comp_ellint_2(float256(0.6))) <= ldexp(one, -232));
+
+    // Orthogonal polynomials: exact values, signs of zero, infinities, domains.
+    EXPECT(legendre(0, nan), nan, 0);
+    EXPECT(legendre(0, float256(5)), one, 0);
+    EXPECT(legendre(9, one), one, 0);
+    EXPECT(legendre(9, -one), -one, 0);
+    EXPECT(legendre(2, zero), float256(-0.5), 0);
+    EXPECT(legendre(3, -zero), -zero, 0);
+    EXPECT(legendre(3, -inf), -inf, 0);
+    EXPECT(legendre(4, -inf), inf, 0);
+    EXPECT(hermite(3, float256(0.5)), float256(-5), 0);  // 8x³ − 12x
+    EXPECT(hermite(5, -zero), -zero, 0);
+    EXPECT(hermite(4, -inf), inf, 0);
+    EXPECT(laguerre(2, float256(2)), float256(-1), 0);    // (x² − 4x + 2)/2
+    EXPECT(laguerre(3, inf), -inf, 0);
+    EXPECT(laguerre(3, -inf), inf, 0);
+    EXPECT(assoc_laguerre(0, 7, float256(3)), one, 0);
+    EXPECT(assoc_laguerre(1, 2, float256(3)), zero, 0);  // 1 + m − x
+    EXPECT(assoc_legendre(2, 3, float256(0.5)), zero, 0);
+    EXPECT(assoc_legendre(3, 1, one), zero, 0);
+    EXPECT(assoc_legendre(2, 1, float256(1.5)), nan, kInv);
+    EXPECT(assoc_legendre(2, 2, float256(0.5)), float256(2.25), 0);  // 3(1 − x²)
+    EXPECT(sph_legendre(3, 1, inf), nan, kInv);
+    EXPECT(sph_legendre(3, 4, one), zero, 0);
+    EXPECT(sph_legendre(3, 1, zero), -zero, 0);
+    EXPECT_M(hermite(20000, float256(1e100)),
+             [](round_mode m) { return down(m) ? float256::max() : float256::inf(false); }, base256::fe_overflow | kInx);
+    // P_l(−x) = (−1)^l P_l(x), H_n likewise.
+    for (unsigned l : {4u, 7u, 30u}) {
+        CHECK(same(legendre(l, float256(-0.37)), (l & 1) ? -legendre(l, float256(0.37)) : legendre(l, float256(0.37))));
+        CHECK(same(hermite(l, float256(-2.5)), (l & 1) ? -hermite(l, float256(2.5)) : hermite(l, float256(2.5))));
+    }
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;

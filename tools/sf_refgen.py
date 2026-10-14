@@ -4,7 +4,7 @@ tests/test_special_math.cpp: {"op", "a", "b", "c", "result"} lines."""
 import sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 import mpmath as mp
-from sf_check import to_hex
+from sf_check import to_hex, LEG, ALEG, SLEG, LAG, ALAG, HER
 mp.mp.prec = 700
 
 def r256(v):
@@ -37,6 +37,7 @@ F = {
     "gq": lambda a, x: mp.gammainc(a, x, mp.inf, regularized=True),
     "ibeta": lambda a, b, x: mp.betainc(a, b, 0, x, regularized=True),
     "ibetac": lambda a, b, x: mp.betainc(a, b, x, 1, regularized=True),
+    "leg": LEG, "aleg": ALEG, "sleg": SLEG, "lag": LAG, "alag": ALAG, "her": HER,
 }
 CASES = [
     ("K", "0.5"), ("K", "0.999999"), ("E", "0.75"), ("E", "-0.25"), ("Pi", "0.5", "0.25"), ("Pi", "0.8", "-3"),
@@ -75,6 +76,11 @@ CASES = [
     ("ibeta", "400", "600", "0.375"),
     ("ibetac", "2.5", "3.5", "0.875"),
     ("ibetac", "30", "2", "0.0625"),
+    ("leg", "5", "0.3"), ("leg", "200", "-0.71"), ("leg", "7", "12.3"),
+    ("aleg", "6", "3", "0.4"), ("aleg", "150", "40", "-0.999"),
+    ("sleg", "5", "2", "0.7"), ("sleg", "120", "60", "2.9"), ("sleg", "10", "0", "1e-30"),
+    ("lag", "6", "2.5"), ("lag", "400", "1000.5"), ("alag", "10", "3", "7.25"),
+    ("her", "9", "1.1"), ("her", "300", "-17.3"),
 ]
 
 def main():

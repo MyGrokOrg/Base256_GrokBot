@@ -38,6 +38,12 @@ int main() {
         else if (f == "F1") r = ellint_1(P(a), P(b));
         else if (f == "E2") r = ellint_2(P(a), P(b));
         else if (f == "P3") r = ellint_3(P(a), P(b), P(c));
+        else if (f == "leg") r = legendre(static_cast<unsigned>(std::stoul(a)), P(b));
+        else if (f == "aleg") r = assoc_legendre(static_cast<unsigned>(std::stoul(a)), static_cast<unsigned>(std::stoul(b)), P(c));
+        else if (f == "sleg") r = sph_legendre(static_cast<unsigned>(std::stoul(a)), static_cast<unsigned>(std::stoul(b)), P(c));
+        else if (f == "lag") r = laguerre(static_cast<unsigned>(std::stoul(a)), P(b));
+        else if (f == "alag") r = assoc_laguerre(static_cast<unsigned>(std::stoul(a)), static_cast<unsigned>(std::stoul(b)), P(c));
+        else if (f == "her") r = hermite(static_cast<unsigned>(std::stoul(a)), P(b));
 #ifdef SF_MORE
         SF_MORE
 #endif
