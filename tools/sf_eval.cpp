@@ -60,6 +60,10 @@ int main() {
         else if (f == "aip") r = airy_ai_prime(P(a));
         else if (f == "bi") r = airy_bi(P(a));
         else if (f == "bip") r = airy_bi_prime(P(a));
+        else if (f == "erfinv") r = erf_inv(P(a));
+        else if (f == "erfcinv") r = erfc_inv(P(a));
+        else if (f == "w0") r = lambert_w0(P(a));
+        else if (f == "wm1") r = lambert_wm1(P(a));
 #ifdef SF_MORE
         SF_MORE
 #endif

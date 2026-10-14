@@ -163,7 +163,28 @@ GDR = W1500(lambda a, d: mp.exp(mp.loggamma(a) - mp.loggamma(a + d)))
 AI = W1500(lambda x: mp.airyai(x)); AIP = W1500(lambda x: mp.airyai(x, 1))
 BI = W1500(lambda x: mp.airybi(x)); BIP = W1500(lambda x: mp.airybi(x, 1))
 
+def ERFINV(x):
+    with mp.workprec(1500): return mp.erfinv(x)
+def ERFCINV(y):
+    with mp.workprec(1500):
+        if y < 1: return mp.findroot(lambda w: mp.log(mp.erfc(w)) - mp.log(y), mp.sqrt(-mp.log(y)) if y < 0.1 else mp.erfinv(1 - y))
+        return -mp.erfinv(y - 1) if y != 1 else mp.mpf(0)
+W0 = W1500(lambda x: mp.lambertw(x).real)
+WM1 = W1500(lambda x: mp.lambertw(x, -1).real)
+
 RANGES = [
+    ("erfinv",   "erfinv", ERFINV, [(-1, 1, False)]),
+    ("erfinv_s", "erfinv", ERFINV, [(-300, -2, True)]),
+    ("erfinv_1", "erfinv", ERFINV, [(0.999999, 1, False)]),
+    ("erfcinv",  "erfcinv", ERFCINV, [(0, 2, False)]),
+    ("erfcinv_t","erfcinv", ERFCINV, [(-262000, -2, True)]),
+    ("erfcinv_m","erfcinv", ERFCINV, [(-60, -1, True)]),
+    ("w0",       "w0", W0, [(-0.3678794411714423, 3, False)]),
+    ("w0_log",   "w0", W0, [(-300, 300, True)]),
+    ("w0_big",   "w0", W0, [(300, 262000, True)]),
+    ("w0_br",    "w0", W0, [(-0.36787944117144233, -0.3678794, False)]),
+    ("wm1",      "wm1", WM1, [(-0.3678794411714423, 0, False)]),
+    ("wm1_br",   "wm1", WM1, [(-0.36787944117144233, -0.3678794, False)]),
     ("ai",       "ai", AI, [(-20, 5, True)]),
     ("ai_pos",   "ai", AI, [(0, 60, False)]),
     ("ai_neg",   "ai", AI, [(-60, 0, False)]),

@@ -7,6 +7,8 @@
 /// and rounds once in the caller's mode with IEEE flags. See README "Special
 /// functions" for measured accuracy, domains and costs.
 
+#include <algorithm>
+
 #include "special_math.hpp"
 
 namespace base256 {
@@ -917,5 +919,210 @@ inline constexpr int kSerNeg = 110;   // x < 0: series while ζ < 110 (cancels ~
 [[nodiscard]] inline float256 airy_ai_prime(float256 x) { return detail_sf::airy::pub(x, 1); }
 [[nodiscard]] inline float256 airy_bi(float256 x) { return detail_sf::airy::pub(x, 2); }
 [[nodiscard]] inline float256 airy_bi_prime(float256 x) { return detail_sf::airy::pub(x, 3); }
+
+namespace detail_sf {
+namespace inv {
+
+// erfc(a) for finite a >= 0 as m·2^k (dd accuracy), from the elementary-function internals.
+[[nodiscard]] inline SD erfc_sd(float256 a) {
+    if (a < ldexp(float256::one(), -5)) return norm({dd(float256::one()) - detail_spec::erf_series_dd(a), 0});
+    if (a < float256(16)) return norm({detail_spec::erfc_center_dd(a), 0});
+    const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
+    return norm({e.m, e.k});
+}
+[[nodiscard]] inline dd two_over_sqrtpi() {
+    const auto& c = detail_dd::consts();
+    return dd(float256::two()) / dd(c.sqrtpi[0], c.sqrtpi[1]);
+}
+
+// erf^{-1}(x) for 0 < x <= 1/2: second-order Newton steps from a double guess,
+// each from a float256 point w (the dd erf is exact-argument there):
+//   r = erf(w) − x, δ1 = −r/erf'(w), δ = δ1 + w δ1² (erf''/erf' = −2w).
+[[nodiscard]] inline dd erfinv_small(float256 x) {
+    const double xd = x.to_double();
+    double w = 0.886226925452758 * xd;
+    for (int i = 0; i < 6; ++i) w -= (std::erf(w) - xd) / (1.1283791670955126 * std::exp(-w * w));
+    dd W{float256(w)};
+    for (int it = 0; it < 2; ++it) {
+        const float256 w0 = W.round();
+        const dd e = w0 < ldexp(float256::one(), -5) ? detail_spec::erf_series_dd(w0)
+                                                     : dd(float256::one()) - detail_spec::erfc_center_dd(w0);
+        const dd fp = two_over_sqrtpi() * detail_dd::exp(-detail_dd::two_prod(w0, w0));
+        const dd d1 = -(e - dd(x)) / fp;
+        W = dd(w0) + d1 + d1 * d1 * w0;
+    }
+    return W;
+}
+
+// erfc^{-1}(y) for 0 < y < 1/2 (w > 0.47) in the log form g(w) = ln(erfc(w)/y):
+//   R = erf'(w)/erfc(w), δ1 = g/R, δ = δ1 − (R − 2w) δ1²/2.
+[[nodiscard]] inline dd erfcinv_small(float256 y) {
+    double w;
+    const double ly = static_cast<double>(log(y).to_double());  // ln y, > −181800
+    {
+        // std::erfc below w = 25, else ln erfc(w) ≈ −w² − ln(w√π) + ln(1 − 1/(2w²) + 3/(4w⁴))
+        // (relative error ~2^-50 there).
+        w = std::sqrt(std::max(-ly - 0.5 * std::log(-3.14159 * ly), 0.25));
+        for (int i = 0; i < 40; ++i) {
+            double g, gp;
+            if (w < 25) {
+                const double e = std::erfc(w);
+                g = std::log(e) - ly;
+                gp = -1.1283791670955126 * std::exp(-w * w) / e;
+            } else {
+                const double w2 = w * w, s = 1 - 0.5 / w2 + 0.75 / (w2 * w2);
+                g = -w2 - std::log(w * 1.772453850905516) + std::log(s) - ly;
+                gp = -2 * w - 1 / w + (1 / (w2 * w) - 3 / (w2 * w2 * w)) / s;
+            }
+            const double d = g / gp;
+            w -= d;
+            if (std::abs(d) < 1e-17 * w) break;
+        }
+    }
+    dd W{float256(w)};
+    for (int it = 0; it < 3; ++it) {
+        const float256 w0 = W.round();
+        const SD E = erfc_sd(w0);
+        // E/y and R = (2/√π) e^{-w²} / E without leaving the exponent range
+        const int ey = ilogb(y);
+        const dd q = detail_dd::ldexp(E.m / ldexp(y, -ey), E.k - ey);
+        const SD ex = exp_sd(-detail_dd::two_prod(w0, w0));
+        const dd R = detail_dd::ldexp(two_over_sqrtpi() * ex.m / E.m, ex.k - E.k);
+        const dd g = detail_dd::log(q);
+        const dd d1 = g / R;
+        W = dd(w0) + d1 - (R - dd(w0 + w0)) * d1 * d1 * float256::half();
+    }
+    return W;
+}
+
+// W(x) by Halley steps on f = w e^w − x (near w = −1 and for |w| <~ 2) or
+// Newton steps on w + ln|w| = ln|x| (large |w|), from a double or float256 guess.
+[[nodiscard]] inline dd lambert(float256 x, bool minus1) {
+    const dd one{float256::one()};
+    const dd e1 = detail_dd::exp(one);
+    const dd ep = e1 * x + one;  // e·x + 1 >= 0 (checked by the caller)
+    double w;
+    const double xd = x.to_double();
+    const bool huge = abs(x) > float256(1e300) || (abs(x) < float256(1e-300));
+    if (ep.hi < float256(0.25)) {
+        const double p = std::sqrt(2 * ep.hi.to_double()) * (minus1 ? -1 : 1);
+        w = -1 + p - p * p / 3 + 11.0 / 72 * p * p * p - 43.0 / 540 * p * p * p * p;
+    } else if (huge) {
+        const double L1 = log(abs(x)).to_double(), L2 = std::log(std::abs(L1));
+        w = L1 - L2 + L2 / L1;
+        if (!minus1 && x.signbit()) w = xd;  // unreachable (tiny negative x handled by the caller)
+    } else if (!minus1) {
+        w = xd < 3 ? std::log1p(xd) * (1 - std::log1p(std::log1p(xd)) / (2 + std::log1p(xd))) : std::log(xd) - std::log(std::log(xd));
+        if (xd < 0.1 && xd > -0.1) w = xd - xd * xd;
+    } else {
+        const double L1 = std::log(-xd), L2 = std::log(-L1);
+        w = L1 - L2 + L2 / L1;
+    }
+    if (!huge && ep.hi >= float256(0.25)) {
+        for (int i = 0; i < 30; ++i) {  // Halley in double
+            const double ew = std::exp(w), f = w * ew - xd;
+            const double d = f / (ew * (w + 1) - (w + 2) * f / (2 * w + 2));
+            w -= d;
+            if (std::abs(d) <= 1e-16 * std::abs(w)) break;
+        }
+    }
+    dd W{float256(w)};
+    const bool logform = std::abs(w) > 3;
+    const dd L = logform ? detail_dd::log(dd(abs(x))) : dd(float256::zero());
+    for (int it = 0; it < 12; ++it) {
+        dd d;
+        if (logform) {  // w ← w (1 + L − ln|w|)/(1 + w)
+            const dd lw = detail_dd::log(detail_sf::dabs(W));
+            d = W * (W + lw - L) / (W + one);
+        } else {
+            const dd ew = detail_dd::exp(W), f = W * ew - dd(x), w1 = W + one;
+            d = f / (ew * w1 - (W + dd(float256::two())) * f / (w1 + w1));
+        }
+        W = W - d;
+        if (d.hi.iszero() || ilogb(d.hi) < ilogb(W.hi) - 470) break;
+    }
+    return W;
+}
+
+} // namespace inv
+} // namespace detail_sf
+
+/// Inverse error function: erf_inv(x) for −1 <= x <= 1 (±1 give ±∞ with a
+/// pole; |x| > 1 is a domain error).
+[[nodiscard]] inline float256 erf_inv(float256 x) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.exact(x);
+    const float256 a = abs(x), one = float256::one();
+    if (a > one) return env.invalid();
+    if (a == one) return env.pole(x.signbit());
+    dd r;
+    if (a < ldexp(one, -300)) {  // √π/2·x (1 + πx²/12): the omitted term is away from zero
+        const auto& c = detail_dd::consts();
+        r = dd(c.sqrtpi[0], c.sqrtpi[1]) * float256::half() * a;
+        if (x.signbit()) r = -r;
+        return env.round(r.hi, r.lo, 0, x.signbit() ? -1 : 1);
+    }
+    r = a <= float256::half() ? detail_sf::inv::erfinv_small(a) : detail_sf::inv::erfcinv_small(one - a);
+    if (x.signbit()) r = -r;
+    return r.out(env);
+}
+
+/// Inverse complementary error function erfc_inv(y) for 0 <= y <= 2
+/// (0 → +∞ and 2 → −∞ with a pole; outside is a domain error).
+[[nodiscard]] inline float256 erfc_inv(float256 y) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (y.isnan()) return env.nan(y);
+    const float256 one = float256::one(), two = float256::two();
+    if (y.signbit() && !y.iszero()) return env.invalid();
+    if (y > two) return env.invalid();
+    if (y.iszero()) return env.pole(false);
+    if (y == two) return env.pole(true);
+    if (y == one) return env.exact(float256::zero());
+    const bool neg = y > one;
+    const float256 t = neg ? two - y : y;  // exact (Sterbenz)
+    dd r;
+    if (t < float256::half()) r = detail_sf::inv::erfcinv_small(t);
+    else {
+        const float256 x = one - t;  // exact
+        if (x < ldexp(one, -300)) {
+            const auto& c = detail_dd::consts();
+            r = dd(c.sqrtpi[0], c.sqrtpi[1]) * float256::half() * x;
+            return env.round(neg ? -r.hi : r.hi, neg ? -r.lo : r.lo, 0, neg ? -1 : 1);
+        }
+        r = detail_sf::inv::erfinv_small(x);
+    }
+    if (neg) r = -r;
+    return r.out(env);
+}
+
+/// Lambert W, principal branch W0(x) for x >= −1/e (W0(−1/e) = −1 is not a
+/// binary256 argument; x < −1/e is a domain error), W0(+∞) = +∞.
+[[nodiscard]] inline float256 lambert_w0(float256 x) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero() || (x.isinf() && !x.signbit())) return env.exact(x);
+    if (x.isinf()) return env.invalid();
+    const dd ep = detail_dd::exp(dd(float256::one())) * x + dd(float256::one());
+    if (ep.hi.signbit()) return env.invalid();
+    if (abs(x) < ldexp(float256::one(), -300)) return env.round(x, float256::zero(), 0, -1);  // x − x² + …
+    return detail_sf::inv::lambert(x, false).out(env);
+}
+
+/// Lambert W, lower branch W−1(x) for −1/e <= x < 0: W−1(−0) = −∞ (pole);
+/// x >= 0 (other than −0) and x < −1/e are domain errors.
+[[nodiscard]] inline float256 lambert_wm1(float256 x) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.pole(true);
+    if (!x.signbit() || x.isinf()) return env.invalid();
+    const dd ep = detail_dd::exp(dd(float256::one())) * x + dd(float256::one());
+    if (ep.hi.signbit()) return env.invalid();
+    return detail_sf::inv::lambert(x, true).out(env);
+}
 
 } // namespace base256

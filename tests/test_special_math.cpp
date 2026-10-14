@@ -76,6 +76,10 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "aip") return airy_ai_prime(P(a));
     if (op == "bi") return airy_bi(P(a));
     if (op == "bip") return airy_bi_prime(P(a));
+    if (op == "erfinv") return erf_inv(P(a));
+    if (op == "erfcinv") return erfc_inv(P(a));
+    if (op == "w0") return lambert_w0(P(a));
+    if (op == "wm1") return lambert_wm1(P(a));
     if (op == "her") return hermite(static_cast<unsigned>(std::stoul(a)), P(b));
     std::cerr << "unknown op " << op << "\n";
     return float256::qnan();
@@ -211,6 +215,17 @@ const Ref kRefs[] = {
     {"bi", "50", "", "", "0x1c0e2147632ee9a8c05376a3ad09e3ba2e730be017253b3c259177d32228p+101"},
     {"bip", "0", "", "", "0x1cb0c1a680c8a08b085fbf122266921eb46ceaee6d2e3db957f854cd2e96p-238"},
     {"bip", "-1000", "", "", "0x1c51c7ce3eaffd99757b6e366519025cb962731180150b18864d6b2dc157p-236"},
+    {"erfinv", "0.25", "", "", "0x1cd70681d5ff70107285720620f7482dd56576ae3729537ba6a3c6200560p-239"},
+    {"erfinv", "-0.999999", "", "", "-0x1babd964833089f18a04f181fab07602f96b0a1c3ecdde43dc576e5cc66ap-235"},
+    {"erfcinv", "1e-3000", "", "", "0x14c54db6cb926fa3d0f6d8a3443e8d6c694c23dfb773f445e4d170d2cc59p-230"},
+    {"erfcinv", "1.5", "", "", "-0x1e861fbb24c009eb9a99e6e507de441be280a82c6aab9cc58c554de324b4p-238"},
+    {"erfcinv", "0.75", "", "", "0x1cd70681d5ff70107285720620f7482dd56576ae3729537ba6a3c6200560p-239"},
+    {"w0", "1", "", "", "0x122609af8e96574bd5fbb54c50db851c2dd0dd9d0ae35101927ee06a51c7p-237"},
+    {"w0", "-0.25", "", "", "-0x16dfb0a612bd03186db62e4542e746943f669575295f34679c63ba2c72d3p-238"},
+    {"w0", "1e100", "", "", "0x1c1afaba5e1a95c6235554b4aefcb1e08843cf05f963980d4364822e4766p-229"},
+    {"w0", "-0.3678794411", "", "", "-0x1fffd6ab7ab60d10d5f3455f727191814b86b2d2fe85fd9d995680c6d093p-237"},
+    {"wm1", "-0.1", "", "", "-0x1c9e01e6bc1fba36c39c9e06cd54f7943f66d7c3d8cb54e20f13fa257405p-235"},
+    {"wm1", "-1e-200", "", "", "-0x1d2a9a1cd86abeaad9cfc1c8fdfd42197f84155cf10da623c3951edba293p-228"},
     {"ibetac", "30", "2", "0.0625", "0x1ffffffffffffffffffffffffffffc5c0000000000000000000000000000p-237"},
 };
 
@@ -525,6 +540,25 @@ int main() {
     EXPECT_M(airy_ai(float256(5000)),
              [](round_mode m) { return m == round_mode::upward ? float256::denorm_min() : float256::zero(); },
              base256::fe_underflow | kInx);
+
+    // Inverse error functions and Lambert W.
+    EXPECT(erf_inv(one), inf, kDiv);
+    EXPECT(erf_inv(-one), -inf, kDiv);
+    EXPECT(erf_inv(-zero), -zero, 0);
+    EXPECT(erf_inv(float256(1.5)), nan, kInv);
+    EXPECT(erfc_inv(zero), inf, kDiv);
+    EXPECT(erfc_inv(float256(2)), -inf, kDiv);
+    EXPECT(erfc_inv(one), zero, 0);
+    EXPECT(erfc_inv(float256(-0.5)), nan, kInv);
+    EXPECT(lambert_w0(zero), zero, 0);
+    EXPECT(lambert_w0(inf), inf, 0);
+    EXPECT(lambert_w0(float256(-0.5)), nan, kInv);
+    EXPECT(lambert_wm1(-zero), -inf, kDiv);
+    EXPECT(lambert_wm1(float256(0.5)), nan, kInv);
+    EXPECT(lambert_wm1(float256(-0.5)), nan, kInv);
+    EXPECT_M(lambert_w0(ldexp(one, -400)),
+             [](round_mode m) { return down(m) ? nextafter(ldexp(float256::one(), -400), float256::zero()) : ldexp(float256::one(), -400); }, kInx);
+    for (double xv : {0.3, 0.999, 1e-9}) CHECK(abs(erf(erf_inv(float256(xv))) - float256(xv)) <= ldexp(one, -234));
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;
