@@ -5,6 +5,7 @@
 #include <mutex>
 #include <vector>
 #include "math.hpp"
+#include "detail/mp.hpp"
 
 namespace base256 {
 
@@ -397,6 +398,27 @@ inline constexpr int kStirlingTailBits = 270;
 
 } // namespace detail_gamma
 
+namespace detail_gamma {
+// ln|Γ(x)| for x < 0 next to a zero (|Γ(x)| ≈ 1), where the dd reflection
+// ln π − ln|sin πx| − lnΓ(1−x) cancels to below its ~2^-470 absolute error:
+// redo it in multiprecision with 330 bits beyond the cancellation.
+[[nodiscard]] inline detail_dd::dd lgamma_neg_zero_mp(float256 x, const detail_dd::dd& approx) {
+    namespace M = detail_mp;
+    int P = 330 + 64 + (approx.hi.iszero() ? 470 : -ilogb(approx.hi));
+    for (;;) {
+        const float256 f = x - round(x);  // exact, |f| <= 1/2
+        M::MP s, c;
+        M::sincos(M::mul(M::pi(P + 32), M::from_f256(f), P + 32), P + 32, s, c);
+        s.neg = false;
+        const M::MP omx = M::sub(M::from_u64(1), M::from_f256(x), 1 << 20);  // 1 − x, exact
+        M::MP v = M::sub(M::sub(M::log(M::pi(P + 32), P + 32), M::log(s, P + 32), P + 32),
+                         M::lgamma_pos(omx, P + 32), P + 32);
+        if ((!v.zero() && v.top() > -(P - 340)) || P > 8000) return M::to_dd(v);
+        P *= 2;
+    }
+}
+} // namespace detail_gamma
+
 // Natural log of |Γ(x)|. Poles (±0 and non-positive integers) return +∞ with divide-by-zero.
 [[nodiscard]] inline float256 lgamma(float256 x) {
     detail_dd::FnEnv env;
@@ -410,7 +432,9 @@ inline constexpr int kStirlingTailBits = 270;
     if (abs(x - float256::one()) < tiny) return detail_gamma::lgamma_near_1_2(x - float256::one(), false).out(env, 0, +1);
     if (abs(x - float256::two()) < tiny) return detail_gamma::lgamma_near_1_2(x - float256::two(), true).out(env, 0, +1);
     if (x > ldexp(float256::one(), 262100)) return env.overflow(false);  // x ln x > max
-    return detail_gamma::lgamma_dd(x).out(env);
+    const detail_dd::dd r = detail_gamma::lgamma_dd(x);
+    if (x.signbit() && (r.hi.iszero() || ilogb(r.hi) < -100)) return detail_gamma::lgamma_neg_zero_mp(x, r).out(env);
+    return r.out(env);
 }
 
 // Γ(x). Negative integers and −∞ are invalid; tgamma(±0) is ±∞ (divide-by-zero).

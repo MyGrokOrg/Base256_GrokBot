@@ -64,6 +64,7 @@ static bool eval(const std::string& f, const std::string& a, const std::string& 
         else if (f == "fs") r = fresnel_s(P(a));
         else if (f == "fc") r = fresnel_c(P(a));
         else if (f == "daw") r = dawson(P(a));
+        else if (f == "lg") r = lgamma(P(a));
         else if (f == "li2") r = dilog(P(a));
         else if (f == "plog") r = polylog(static_cast<unsigned>(std::stoul(a)), P(b));
         else if (f == "eta") r = dirichlet_eta(P(a));

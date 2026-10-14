@@ -87,6 +87,7 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "plog") return polylog(static_cast<unsigned>(std::stoul(a)), P(b));
     if (op == "eta") return dirichlet_eta(P(a));
     if (op == "bern") return bernoulli_b2n(static_cast<unsigned>(std::stoul(a)));
+    if (op == "lg") return lgamma(P(a));
     if (op == "her") return hermite(static_cast<unsigned>(std::stoul(a)), P(b));
     std::cerr << "unknown op " << op << "\n";
     return float256::qnan();
@@ -257,6 +258,10 @@ const Ref kRefs[] = {
     {"bern", "1", "", "", "0x155555555555555555555555555555555555555555555555555555555555p-239"},
     {"bern", "13", "", "", "0x15c06d2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabp-216"},
     {"bern", "500", "", "", "-0x1de5585639bd96582dd69a0cecaa6331ca6f6632766d102ac8cec49c99d6p+5642"},
+    {"lg", "-0x13a7fc9600f86c155f64f98af8d0389619a4026cd3ce5aea304a6a2bf9dap-235", "", "", "0x1217949e01bda6b85808cba543bccb06239d38d33f408aa519ddfd1f4129p-471"},
+    {"lg", "-0x15fb410a1bd900cbccad25a320f575fa5805a414fcb0f214299f356825a1p-235", "", "", "-0x114c1b323c77a336687f8285cbafacb54aaeb76686831f1c20e52604c24ep-471"},
+    {"lg", "-0x1dfffffffffe5180c18cc09de606e3f13a6e6af93c7b82f8d8dcc77d942dp-233", "", "", "-0x1c02f876b677c813d00a5d5c57d413b7db1202610d2cf812fb898cdd85e7p-430"},
+    {"lg", "-2.4570247382208006", "", "", "0x1421164971b87bc81c0f4769b74f6e5dceb2f1ac613785edd43ca8fa50e8p-291"},
     {"ibetac", "30", "2", "0.0625", "0x1ffffffffffffffffffffffffffffc5c0000000000000000000000000000p-237"},
 };
 

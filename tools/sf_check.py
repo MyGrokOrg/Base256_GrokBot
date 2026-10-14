@@ -192,7 +192,31 @@ PLOG = W1500(lambda n, x: mp.polylog(int(n), x).real)
 ETA = W1500(lambda s: mp.altzeta(s))
 BERN = W1500(lambda n: mp.bernoulli(2 * int(n)))
 
+def LG(x):
+    with mp.workprec(max(REFPREC[0], 3000)): return mp.log(abs(mp.gamma(x)))
+_LGZ = []
+def lg_zeros():
+    """zeros of ln|Γ(x)| for x in (−41, −2) (two per unit interval)."""
+    if not _LGZ:
+        with mp.workprec(3000):
+            f = lambda x: mp.log(abs(mp.gamma(x)))
+            for n in range(2, 41):
+                if n == 2: guesses = [mp.mpf(-2.457), mp.mpf(-2.747)]
+                elif n == 3: guesses = [mp.mpf(-3.1436), mp.mpf(-3.9553)]
+                else: guesses = [-n - 1 / mp.factorial(n), -n - 1 + 1 / mp.factorial(n + 1)]
+                for g in guesses:
+                    x = g
+                    for _ in range(200):  # Newton, (ln|Γ|)' = ψ
+                        d = f(x) / mp.digamma(x)
+                        x -= d
+                        if abs(d) < mp.mpf(2)**-2800 * abs(x): break
+                    assert abs(f(x)) < mp.mpf(2)**-2500 * abs(mp.digamma(x)), (n, g)
+                    _LGZ.append(x)
+    return _LGZ
+
 RANGES = [
+    ("lg_negz",  "lg", LG, [("nearzero", lg_zeros, 1, 236)]),
+    ("lg_neg",   "lg", LG, [(-60, -2, False)]),
     ("li2",      "li2", LI2, [(-3, 1, False)]),
     ("li2_s",    "li2", LI2, [(-300, -1, True)]),
     ("li2_neg",  "li2", LI2, [(-1e6, -1, False)]),
@@ -468,6 +492,12 @@ def gen_cases(args, rng, n):
                 h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
             elif a[0] == "int":
                 k = rng.randint(a[1], a[2]); hs.append(str(k)); vs.append(mp.mpf(k))
+            elif a[0] == "nearzero":
+                # a binary256 point within 2^-k (relative) of a listed zero, k up to 236 (the nearest points)
+                z = rng.choice(a[1]())
+                k = rng.randint(a[2], a[3])
+                v = z * (1 + rng.choice([-1, 1]) * mp.ldexp(rng.random(), -k))
+                h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
             else:
                 h, v = rnd256(a[0], a[1], a[2], rng); hs.append(h); vs.append(v)
         cases.append((hs, vs))
@@ -486,22 +516,7 @@ def main():
     for name, op, ref, args in RANGES:
         if flt and flt not in name:
             continue
-        cases = []
-        for _ in range(n):
-            hs, vs = [], []
-            for a in args:
-                if a[0] == "nearnegeven":
-                    v = -2 * mp.mpf(rng.randint(a[1], a[2])) + mp.ldexp(rng.choice([-1, 1]), -rng.randint(20, 200))
-                    h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
-                elif a[0] == "nearint":
-                    v = mp.mpf(rng.randint(a[1], a[2])) + mp.ldexp(rng.choice([-1, 1]), -rng.randint(20, 200))
-                    if v < 0: v = -v
-                    h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
-                elif a[0] == "int":
-                    k = rng.randint(a[1], a[2]); hs.append(str(k)); vs.append(mp.mpf(k))
-                else:
-                    h, v = rnd256(a[0], a[1], a[2], rng); hs.append(h); vs.append(v)
-            cases.append((hs, vs))
+        cases = gen_cases(args, rng, n)
         inp = "".join(f"{op} {' '.join(h)}\n" for h, _ in cases)
         res = subprocess.run([exe], input=inp, capture_output=True, text=True, check=True).stdout.split("\n")
         worst, wcase, mis = 0.0, None, 0
