@@ -135,6 +135,28 @@ int main(void) {
         for (int k = 0; k < NR; ++k) { mpfr_clear(g[k]); mpfr_clear(f[k]); }
         mpfr_clear(t);
     }
+    /* B_2k/(2k)! = (-1)^(k+1) 2 zeta(2k) / (2 pi)^(2k), k = 1..140 (Euler-Maclaurin) */
+    {
+        mpfr_t z, tp; mpfr_inits2(PREC, z, tp, (mpfr_ptr)0);
+        mpfr_const_pi(tp, MPFR_RNDN); mpfr_mul_ui(tp, tp, 2, MPFR_RNDN);
+        printf("inline constexpr int kBernFactN = 140;\ninline constexpr std::uint64_t kBernFact[140][8] = {\n");
+        for (int k = 1; k <= 140; ++k) {
+            mpfr_zeta_ui(z, 2 * k, MPFR_RNDN); mpfr_mul_ui(v, z, 2, MPFR_RNDN);
+            mpfr_pow_ui(c, tp, 2 * k, MPFR_RNDN); mpfr_div(v, v, c, MPFR_RNDN);
+            if (k % 2 == 0) mpfr_neg(v, v, MPFR_RNDN);
+            emit_dd(v); printf(",\n");
+        }
+        printf("};\n");
+        /* ln p for the primes p < 64 (zeta's direct sum) */
+        printf("inline constexpr std::uint64_t kLnPrime64[18][8] = {\n");
+        for (int n = 2; n < 64; ++n) {
+            int pr = 1; for (int d = 2; d * d <= n; ++d) if (n % d == 0) pr = 0;
+            if (!pr) continue;
+            mpfr_set_ui(v, n, MPFR_RNDN); mpfr_log(v, v, MPFR_RNDN); emit_dd(v); printf(",\n");
+        }
+        printf("};\n");
+        mpfr_clears(z, tp, (mpfr_ptr)0);
+    }
     printf("\n} // namespace base256::detail_dd::tables\n");
     mpfr_clears(c, v, inv, (mpfr_ptr)0);
     return 0;

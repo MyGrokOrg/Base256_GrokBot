@@ -82,6 +82,9 @@ def IBC(a, b, x):
     with mp.workprec(2000): return mp.betainc(a, b, x, 1, regularized=True)
 
 def ZETA(x): return mp.zeta(x)
+# mpmath's zeta(s, a) loses hundreds of bits at large a; evaluate it at 3000 bits.
+def HZ(s, a):
+    with mp.workprec(3000): return mp.zeta(s, a)
 
 def GL(a, x): return mp.gammainc(a, 0, x)
 def GU(a, x): return mp.gammainc(a, x, mp.inf)
@@ -120,6 +123,10 @@ RANGES = [
     ("gp_near",  "gp", GP, [(100, 3000, False), (100, 3000, False)]),
     ("gq_near",  "gq", GQ, [(100, 3000, False), (100, 3000, False)]),
     ("zeta",     "zeta", ZETA, [(-60, 300, False)]),
+    ("hz",       "hz", HZ, [(1, 60, False), (-20, 20, True)]),
+    ("hz_s1",    "hz", HZ, [(1, 1.01, False), (-5, 5, True)]),
+    ("hz_bigs",  "hz", HZ, [(60, 3000, False), (-3, 10, True)]),
+    ("hz_biga",  "hz", HZ, [(1, 30, False), (20, 300, True)]),
     ("zeta_neg", "zeta", ZETA, [(-3000, -60, False)]),
     ("zeta_01",  "zeta", ZETA, [(-1, 1, False)]),
     ("zeta_tz",  "zeta", ZETA, [("nearnegeven", 1, 500)]),

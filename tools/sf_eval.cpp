@@ -27,6 +27,7 @@ int main() {
         else if (f == "ibeta") r = ibeta(P(a), P(b), P(c));
         else if (f == "ibetac") r = ibetac(P(a), P(b), P(c));
         else if (f == "zeta") r = riemann_zeta(P(a));
+        else if (f == "hz") r = hurwitz_zeta(P(a), P(b));
         else if (f == "gl") r = tgamma_lower(P(a), P(b));
         else if (f == "gu") r = tgamma_upper(P(a), P(b));
         else if (f == "gp") r = gamma_p(P(a), P(b));

@@ -907,23 +907,39 @@ namespace detail_sf {
 namespace detail_sf {
 namespace zeta {
 
-inline constexpr int kN = 128;  // Euler–Maclaurin split point
-// n^{-s} for n = 1 .. kN−1 (products of prime powers; one exp per prime).
-inline void inv_powers(const dd& s, dd* out) {
-    out[1] = dd(float256::one());
-    for (int n = 2; n < kN; ++n) out[n] = dd(float256::zero());
-    for (int n = 2; n < kN; ++n) {
-        int p = 2;
-        while (p * p <= n && n % p) ++p;
-        if (p * p > n) {  // prime
-            out[n] = detail_dd::exp(-(s * detail_dd::log(D(n))));
-        } else {
-            out[n] = out[p] * out[n / p];
-        }
+// B_2k/(2k)!, k >= 1 (MPFR table, k <= 140).
+[[nodiscard]] inline dd bern_fact(int k) { return detail_dd::dd_from_words(detail_dd::tables::kBernFact[k - 1]); }
+
+// Plans Euler–Maclaurin at split point w: the first k <= 140 whose term
+// B_2k/(2k)! (s)_{2k−1} w^{−s−2k+1} is below 2^-506 of the reference
+// 2^-ref_lg · w^{1−s}, estimated in double; −1 if none is.
+[[nodiscard]] inline int em_plan(double s, double w, double ref_lg) {
+    const double l2pw = std::log2(6.283185307179586 * w), lgs = std::lgamma(s), il2 = 1.4426950408889634;
+    for (int k = 1; k <= detail_dd::tables::kBernFactN; ++k) {
+        const double f = 1 + (std::lgamma(s + 2 * k - 1) - lgs) * il2 - 2 * k * l2pw + ref_lg;
+        if (f < -506) return k;
     }
+    return -1;
 }
 
-// ζ(s) for a dd s >= 0, s ≠ 1, given sm1 = s − 1 exactly.
+// Σ_{k=1}^{K} B_2k/(2k)! (s)_{2k−1} w^{−2k} (the Euler–Maclaurin corrections
+// divided by w^{1−s}), stopping early once a term is below 2^-490 of `ref`.
+[[nodiscard]] inline dd em_corr(const dd& s, const dd& w, int K, const dd& ref) {
+    const dd iw = dd(float256::one()) / w;
+    const dd iw2 = iw * iw;
+    dd t = s * iw2, sum{float256::zero()};
+    for (int k = 1; k <= K; ++k) {
+        const dd term = bern_fact(k) * t;
+        sum = sum + term;
+        if (small_rel(term, ref + sum)) break;
+        t = t * (s + D(2 * k - 1)) * (s + D(2 * k)) * iw2;
+    }
+    return sum;
+}
+
+// ζ(s) for a dd s > 0, s ≠ 1, given sm1 = s − 1 exactly. Direct sum to N − 1
+// (n^{−s} from prime powers, one exp per prime, ln p from the table) plus
+// Euler–Maclaurin at the smallest N in {24, 32, …, 64} the plan accepts.
 [[nodiscard]] inline dd pos(const dd& s, const dd& sm1) {
     const dd one{float256::one()};
     if (s.hi >= float256(240)) {
@@ -936,27 +952,91 @@ inline void inv_powers(const dd& s, dd* out) {
         }
         return sum;
     }
-    static thread_local dd pw[kN];
-    inv_powers(s, pw);
-    dd sum{float256::zero()};
-    for (int n = kN - 1; n >= 1; --n) sum = sum + pw[n];
-    // N^{-s}
-    const dd lnN = detail_dd::log(D(kN));
-    const dd Ns = detail_dd::exp(-(s * lnN));
-    sum = sum + Ns * float256(kN) / sm1 + detail_dd::ldexp(Ns, -1);
-    // Σ_k B_2k/(2k)! · s(s+1)…(s+2k−2) · N^{-s-2k+1}
-    const auto& f = detail_dd::inv_factorials();
-    const dd invN = one / D(kN);
-    const dd invN2 = invN * invN;
-    dd t = s * Ns * invN;  // (s)_1 N^{-s-1}
-    for (int k = 1; k <= 61; ++k) {
-        const dd b = detail_gamma::stirling_coef(k - 1) * f[static_cast<std::size_t>(2 * k - 2)];
-        const dd term = b * t;
-        sum = sum + term;
-        if (small_rel(term, sum)) break;
-        t = t * (s + D(2 * k - 1)) * (s + D(2 * k)) * invN2;
+    const double sd = s.hi.to_double();
+    int N = 64, K = 140;
+    for (int c = 24; c <= 64; c += 8) {
+        const int k = em_plan(sd, c, 1 + (1 - sd) * std::log2(double(c)));
+        if (k > 0) { N = c; K = k; break; }
     }
-    return sum;
+    dd pw[64];
+    pw[1] = one;
+    int pi = 0;
+    for (int n = 2; n < N; ++n) {
+        int p = 2;
+        while (p * p <= n && n % p) ++p;
+        if (p * p > n) pw[n] = detail_dd::exp(-(s * detail_dd::dd_from_words(detail_dd::tables::kLnPrime64[pi++])));
+        else pw[n] = pw[p] * pw[n / p];
+    }
+    dd sum{float256::zero()};
+    for (int n = N - 1; n >= 1; --n) sum = sum + pw[n];
+    // N^{1−s} (1/(s−1) + 1/(2N) + Σ_k B_2k/(2k)! (s)_{2k−1} N^{−2k})
+    const dd W = D(N);
+    const dd N1s = detail_dd::exp(-(sm1 * detail_dd::log(W)));
+    const dd br = one / sm1 + one / (W * float256::two());
+    return sum + N1s * (br + em_corr(s, W, K, br + sum / N1s));
+}
+
+// Hurwitz ζ(s, a) = Σ_{n>=0} (n+a)^{−s}, s > 1, a > 0 finite, as m·2^k.
+[[nodiscard]] inline SD hurwitz(const dd& s, const dd& sm1, float256 a) {
+    const dd one{float256::one()};
+    const double sd = s.hi.to_double(), ad = a.to_double();
+    const double lsm1 = std::log2(sm1.hi.to_double());
+    // Option 1: direct sum of nd terms (rest < 2^-506 relative): s log2(1 + nd/a) >= 506 + log2(1 + (a+nd)/(s−1)).
+    long nd = -1;
+    {
+        long lo = 1;
+        while (lo < (1L << 40)) {
+            const double n = double(lo);
+            const double lg = sd * std::log1p(n / ad) * 1.4426950408889634 - std::log2(1 + (ad + n) / sm1.hi.to_double());
+            if (lg >= 506) break;
+            lo *= 2;
+        }
+        if (lo < (1L << 40)) {
+            long hi = lo; lo = lo / 2;  // refine
+            while (hi - lo > 1) {
+                const long mid = (lo + hi) / 2;
+                const double n = double(mid);
+                const double lg = sd * std::log1p(n / ad) * 1.4426950408889634 - std::log2(1 + (ad + n) / sm1.hi.to_double());
+                if (lg >= 506) hi = mid; else lo = mid;
+            }
+            nd = hi;
+        }
+    }
+    // Option 2: N direct terms + Euler–Maclaurin at w = N + a. An exp costs ~20 correction terms.
+    int bestN = -1, bestK = 0;
+    double bestCost = nd > 0 ? double(nd) : 1e300;
+    for (int N : {0, 4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024}) {
+        const int k = em_plan(sd, double(N) + ad, -lsm1);
+        if (k < 0) continue;
+        const double cost = N + k / 20.0;
+        if (cost < bestCost) { bestCost = cost; bestN = N; bestK = k; }
+    }
+    if (bestN < 0 && nd < 0) { bestN = 1024; bestK = detail_dd::tables::kBernFactN; }
+    const dd A{a};
+    const dd la = detail_dd::log(A);
+    if (bestN == 0) {
+        // a^{1−s} (1/(s−1) + 1/(2a) + Σ_k B_2k/(2k)! (s)_{2k−1} a^{−2k})
+        const dd br = one / sm1 + one / (A * float256::two());
+        const dd v = br + em_corr(s, A, bestK, br);
+        return mul(exp_sd(-(sm1 * la)), v);
+    }
+    // Relative to a^{−s}: Σ_{n<N} ((n+a)/a)^{−s} [+ EM tail at w].
+    const long Nt = bestN > 0 ? bestN : nd;
+    dd sum{float256::zero()};
+    for (long n = Nt - 1; n >= 1; --n) {
+        const dd r = (dd(float256::from_int(static_cast<int>(n))) + A) / A;
+        sum = sum + detail_dd::exp(-(s * detail_dd::log(r)));
+    }
+    sum = sum + one;
+    if (bestN > 0) {
+        const dd W = D(bestN) + A;
+        const dd lr = detail_dd::log(W / A);
+        // (w/a)^{−s} · w · (1/(s−1) + 1/(2w) + corrections)
+        const dd f = detail_dd::exp(-(s * lr)) * W;
+        const dd br = one / sm1 + one / (W * float256::two());
+        sum = sum + f * (br + em_corr(s, W, bestK, br));
+    }
+    return mul(exp_sd(-(s * la)), sum);
 }
 
 } // namespace zeta
@@ -996,6 +1076,25 @@ inline void inv_powers(const dd& s, dd* out) {
     detail_sf::SD r = detail_sf::mul(detail_sf::exp_sd(L), g);
     r = detail_sf::mul(r, s * z);
     return detail_sf::out(env, r);
+}
+
+/// Hurwitz zeta function ζ(s, a) = Σ_{n>=0} (n + a)^{−s} for s > 1, a > 0
+/// (GSL's hzeta domain). s = 1 is a pole (+∞, divide-by-zero); s < 1 or a <= 0
+/// is a domain error. ζ(s, 1) = ζ(s).
+[[nodiscard]] inline float256 hurwitz_zeta(float256 s, float256 a) {
+    detail_dd::FnEnv env;
+    using detail_dd::dd;
+    const float256 one = float256::one();
+    if (s.isnan() || a.isnan()) return env.nan2(s, a);
+    if (s < one || a.signbit() || a.iszero()) return env.invalid();
+    if (s == one) return env.pole(false);
+    if (a.isinf()) return env.exact(float256::zero());
+    if (s.isinf()) {  // lim: a^{−s} dominates
+        if (a < one) return env.exact(float256::inf(false));
+        return env.exact(a == one ? one : float256::zero());
+    }
+    if (a == one) return riemann_zeta(s);
+    return detail_sf::out(env, detail_sf::zeta::hurwitz(dd(s), detail_dd::two_sum(s, -one), a));
 }
 
 namespace detail_sf {

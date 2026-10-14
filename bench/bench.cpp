@@ -80,6 +80,7 @@ int main(int argc, char** argv) {
         {"beta", [](float256 x, float256 y) { return beta(x, y); }, 0.1, 50},
         {"ibeta", [](float256 x, float256 y) { return ibeta(x, y, float256(0.4)); }, 0.1, 50},
         {"riemann_zeta", [](float256 x, float256) { return riemann_zeta(x); }, -20, 40},
+        {"hurwitz_zeta", [](float256 x, float256 y) { return hurwitz_zeta(x + float256(1), y); }, 0.1, 50},
         {"gamma_p", [](float256 x, float256 y) { return gamma_p(x, y); }, 0.1, 50},
         {"gamma_q", [](float256 x, float256 y) { return gamma_q(x, y); }, 0.1, 50},
         {"comp_ellint_1", [](float256 x, float256) { return comp_ellint_1(x); }, -0.99, 0.99},

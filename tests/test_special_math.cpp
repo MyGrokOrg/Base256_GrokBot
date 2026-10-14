@@ -42,6 +42,7 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "yn") return yn(std::stoi(a), P(b));
     if (op == "beta") return beta(P(a), P(b));
     if (op == "zeta") return riemann_zeta(P(a));
+    if (op == "hz") return hurwitz_zeta(P(a), P(b));
     if (op == "K") return comp_ellint_1(P(a));
     if (op == "E") return comp_ellint_2(P(a));
     if (op == "Pi") return comp_ellint_3(P(a), P(b));
@@ -82,6 +83,12 @@ const Ref kRefs[] = {
     {"gq", "300", "350", "", "0x17b8e00a4441008a1596f3bf6ae9ae24c900ab8231b361aa3792efbc23a6p-245"},
     {"gl", "40", "1e-3", "", "0x1082a1f50a644df2710567db8f103c38ac8bb24aa1d60ef8a08972dc95f7p-640"},
     {"gq", "3", "600", "", "0x1cbfa6e535e8ea450cf2cea46fb57375e624e40f4e180faed273e6e07950p-1085"},
+    {"hz", "2", "0.5", "", "0x13bd3cc9be45de5a4adc4d9b30118358e10acd47fc1a14450cd044204a79p-234"},
+    {"hz", "3.5", "7", "", "0x1e2990b2b49fd69410e6ef47c4bb75901c4f69b1ccf60197ddf67e7ca5a3p-245"},
+    {"hz", "1.0001", "3", "", "0x138789e393be41f4190c79dd336dab164b8ae96e45d591432f2554333d85p-223"},
+    {"hz", "40", "0.25", "", "0x1000000000000000000000008b61313bdf929d4b549ee9e5bf2a9a6f0672p-156"},
+    {"hz", "2", "1e6", "", "0x10c6f82d72bca9b5a8491f31ff1797a8b780cd7cf0cc31671bacf70c2020p-256"},
+    {"hz", "1500", "1.5", "", "0x1786ed29b7f963c8ff8f5e96fa005ad0e55456795f00cfa6a909cef00e55p-1114"},
     {"zeta", "2", "", "", "0x1a51a6625307d3230e7b1224401759cbd6b911b55022c5b1666b0580634cp-236"},
     {"zeta", "3", "", "", "0x133ba004f0062138371715c59e6907f1b180b7db17493405dd149c7ab12dp-236"},
     {"zeta", "0.5", "", "", "-0x175d9cb07e73fee37e834e422bcb579a2298e52438c62304744275f7ba82p-236"},
@@ -257,6 +264,13 @@ int main() {
     EXPECT(riemann_zeta(float256(-1000)), zero, 0);
     EXPECT(riemann_zeta(inf), one, 0);
     EXPECT(riemann_zeta(-inf), nan, kInv);
+    EXPECT(hurwitz_zeta(one, float256(2)), inf, kDiv);
+    EXPECT(hurwitz_zeta(float256(0.5), float256(2)), nan, kInv);
+    EXPECT(hurwitz_zeta(float256(2), zero), nan, kInv);
+    EXPECT(hurwitz_zeta(float256(2), inf), zero, 0);
+    EXPECT(hurwitz_zeta(inf, float256(0.5)), inf, 0);
+    EXPECT(hurwitz_zeta(inf, one), one, 0);
+    EXPECT(hurwitz_zeta(inf, float256(2)), zero, 0);
     EXPECT(riemann_zeta(nan), nan, 0);
     EXPECT_M(riemann_zeta(float256(700)),
              [](round_mode m) { return m == round_mode::upward ? nextafter(float256::one(), float256::inf(false)) : float256::one(); }, kInx);
