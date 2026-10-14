@@ -835,12 +835,12 @@ inline constexpr int kAsym = 104;     // asymptotic for ζ >= 104 (smallest term
 inline constexpr int kSerNeg = 110;   // x < 0: series while ζ < 110 (cancels ~1.44ζ bits)
 
 // sin ζ, cos ζ for ζ = (2/3)t^{3/2} past dd range (t >= 2^140): ζ·(2/π) mod 4 by an
-// exact multiprecision reduction with the 2/π table. False when ζ needs more of
-// the table than it has (|x| beyond about 2^175000).
+// exact multiprecision reduction with the 2/π table (395264 bits, enough for every
+// finite binary256 x). False if ζ ever needed more of the table than it has.
 [[nodiscard]] inline bool big_phase(float256 t, dd& sz, dd& cz) {
     namespace M = detail_mp;
     const int Q = 3 * ilogb(t) / 2 + 400;
-    if (Q > 263000) return false;
+    if (Q + 64 + 127 > 64 * detail_mp::kTwoOverPiAllWords) return false;
     const M::MP T = M::from_f256(t);
     const M::MP z = M::div_u(M::mul_u(M::mul(T, M::sqrt(T, Q), Q), 2, Q), 3, Q);
     const M::MP y = M::mul(z, M::two_over_pi(Q + 64), Q);
@@ -903,7 +903,9 @@ inline constexpr int kSerNeg = 110;   // x < 0: series while ζ < 110 (cancels ~
     dd ev, od;
     asym_sums(zeta, deriv, 2, ev, od);  // ev = Σ(−1)^k w_{2k}ζ^{-2k}, od = Σ(−1)^k w_{2k+1}ζ^{-2k−1}
     dd sz, cz;
-    if (!(zh >= ldexp(float256::one(), 140) && big_phase(t, sz, cz))) {
+    if (zh >= ldexp(float256::one(), 140)) {
+        if (!big_phase(t, sz, cz)) return SD{dd(float256::nan()), 0};  // past the table: NaN + invalid (unreachable for finite x)
+    } else {
         dd s1, c1, s2, c2;
         sincos_x(zeta.hi, s1, c1);
         sincos_x(zeta.lo, s2, c2);
@@ -935,6 +937,9 @@ inline constexpr int kSerNeg = 110;   // x < 0: series while ζ < 110 (cancels ~
     if (!x.signbit() && x > float256(6000)) {  // ζ > 3e5: beyond the range
         return which >= 2 ? env.overflow(false) : env.underflow(which == 1);
     }
+    // the phase reduction needs 1.5·ilogb|x| + 600 bits of 2/π: NaN + invalid past the table
+    // (the table covers every finite x, so this is a guard only)
+    if (x.signbit() && 3 * ilogb(x) / 2 + 400 + 64 + 127 > 64 * detail_mp::kTwoOverPiAllWords) return env.invalid();
     return out(env, eval(x, which));
 }
 
@@ -943,9 +948,9 @@ inline constexpr int kSerNeg = 110;   // x < 0: series while ζ < 110 (cancels ~
 
 /// Airy functions Ai(x), Bi(x) and their derivatives, any real x. For x < 0
 /// they oscillate; for x below −2^93 the phase ζ = (2/3)|x|^{3/2} is reduced
-/// mod π/2 exactly in multiprecision (cost grows like log2|x|²), so the results
-/// stay correctly rounded down to about −2^175000; below that the 2/π table runs
-/// out and accuracy degrades. Ai, Ai' underflow and Bi,
+/// mod π/2 exactly in multiprecision with a 395264-bit 2/π table (cost grows like
+/// log2|x|²), so the results stay correctly rounded down to the most negative
+/// finite value. Ai, Ai' underflow and Bi,
 /// Bi' overflow above x ≈ 4205. Ai(±∞) = +0, Bi(+∞) = +∞, Bi(−∞) = +0;
 /// Ai'(−∞), Bi'(−∞) are domain errors.
 [[nodiscard]] inline float256 airy_ai(float256 x) { return detail_sf::airy::pub(x, 0); }

@@ -223,7 +223,7 @@ Domain and limits:
 | `polygamma(n, x)`, `trigamma(x)` | x > 0 for n ≥ 1 (x ≤ 0 is not provided) | (−1)^{n+1} n! ζ(n+1, x) | mpmath | 1.2–1.3 ms |
 | `lbeta(a, b)` | a, b > 0 | ln of the scaled B; lnΓ sums above 65536 | ln of MPFR lngamma at 3000 bits, all modes | 127 µs |
 | `tgamma_ratio(a, b)`, `tgamma_delta_ratio(a, δ)` | a, b (a + δ) > 0; correctly rounded while lnΓ < ~2^200 | scaled Γ quotient below 2^20, exp(lnΓ − lnΓ) above | mpmath | 73 µs |
-| `airy_ai`, `airy_bi`, `airy_ai_prime`, `airy_bi_prime` | any x; Ai, Ai' underflow and Bi, Bi' overflow near x ≈ 4205; below −2^93 the phase is reduced mod π/2 exactly in multiprecision (correctly rounded down to about −2^175000, where the 2/π table ends) | Maclaurin series; Steed K_{1/3} (dd argument) for Ai with x in 11–16; asymptotic from ζ = 104 (x > 0) and 110 (x < 0) | MPFR `ai`, all modes; mpmath | 590–730 µs |
+| `airy_ai`, `airy_bi`, `airy_ai_prime`, `airy_bi_prime` | any x; Ai, Ai' underflow and Bi, Bi' overflow near x ≈ 4205; below −2^93 the phase is reduced mod π/2 exactly in multiprecision with a 395264-bit 2/π table (correctly rounded down to the most negative finite value) | Maclaurin series; Steed K_{1/3} (dd argument) for Ai with x in 11–16; asymptotic from ζ = 104 (x > 0) and 110 (x < 0) | MPFR `ai`, all modes; mpmath | 590–730 µs |
 | `lambert_w0`, `lambert_wm1` | W0: x ≥ −1/e; W−1: −1/e ≤ x < 0 (−0 → −∞ pole) | branch-point series or log guess; Halley / Newton in dd | mpmath | 91 µs, 104 µs |
 | `erf_inv`, `erfc_inv` | (−1, 1) and (0, 2); ±1 / 0, 2 are poles; erfc_inv down to the smallest subnormal | second-order Newton steps on the exact-argument dd erf/erfc | mpmath | 120 µs |
 | `dawson(x)` | any x | positive erfi series below 16, asymptotic above | mpmath | 290 µs |

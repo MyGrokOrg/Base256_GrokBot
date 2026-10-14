@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "dd.hpp"
+#include "two_over_pi_ext.hpp"
 
 namespace base256::detail_mp {
 
@@ -186,7 +187,13 @@ inline Consts& consts() { static Consts c; return c; }
     MP r = c.ln2; norm(r, P); return r;
 }
 
-// π = 2 / (2/π) from the Payne–Hanek table (264192 bits).
+// Word k of the 2/π fraction bits (two_over_pi.hpp, then two_over_pi_ext.hpp).
+inline constexpr int kTwoOverPiAllWords = detail_dd::kTwoOverPiWords + detail_dd::kTwoOverPiExtWords;
+[[nodiscard]] inline std::uint64_t two_over_pi_word(int k) {
+    return k < detail_dd::kTwoOverPiWords ? detail_dd::kTwoOverPi[k] : detail_dd::kTwoOverPiExt[k - detail_dd::kTwoOverPiWords];
+}
+
+// π = 2 / (2/π) from the 2/π table (395264 bits).
 [[nodiscard]] inline MP pi(int P) {
     Consts& c = consts();
     std::lock_guard<std::mutex> g(c.mu);
@@ -195,22 +202,22 @@ inline Consts& consts() { static Consts c; return c; }
     std::vector<std::uint32_t> limbs;
     limbs.reserve(static_cast<std::size_t>(2 * words));
     for (int i = words - 1; i >= 0; --i) {
-        limbs.push_back(static_cast<std::uint32_t>(detail_dd::kTwoOverPi[i]));
-        limbs.push_back(static_cast<std::uint32_t>(detail_dd::kTwoOverPi[i] >> 32));
+        limbs.push_back(static_cast<std::uint32_t>(two_over_pi_word(i)));
+        limbs.push_back(static_cast<std::uint32_t>(two_over_pi_word(i) >> 32));
     }
     MP t; t.m = BigInt::from_limbs(limbs); t.e = -64L * words;  // 2/π
     c.pi = div(from_u64(2), t, P + 32); c.P_pi = P;
     MP r = c.pi; norm(r, P); return r;
 }
 
-// 2/π to P bits straight from the Payne–Hanek table (P < 264000).
+// 2/π to P bits straight from the table (P <= 64·kTwoOverPiAllWords − 127).
 [[nodiscard]] inline MP two_over_pi(int P) {
     const int words = (P + 127) / 64;
     std::vector<std::uint32_t> limbs;
     limbs.reserve(static_cast<std::size_t>(2 * words));
     for (int i = words - 1; i >= 0; --i) {
-        limbs.push_back(static_cast<std::uint32_t>(detail_dd::kTwoOverPi[i]));
-        limbs.push_back(static_cast<std::uint32_t>(detail_dd::kTwoOverPi[i] >> 32));
+        limbs.push_back(static_cast<std::uint32_t>(two_over_pi_word(i)));
+        limbs.push_back(static_cast<std::uint32_t>(two_over_pi_word(i) >> 32));
     }
     MP t; t.m = BigInt::from_limbs(limbs); t.e = -64L * words;
     norm(t, P); return t;
