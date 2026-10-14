@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.19.0
+
+- **`hurwitz_zeta(s, a)` now takes all real s ≠ 1** (a > 0). For s < 1 it uses analytic continuation: Euler–Maclaurin at N + a, scaled by (N + a)^-s, while that converges. For s ≤ −89 it uses Hurwitz's formula, with a shifted into (0, 1] by its integer part. s = 0 gives 1/2 − a exactly. With a = +∞ the result is 0 for s > 1 and −∞ for s < 1, and s = −∞ is a domain error. For s < 1 the result is correctly rounded except next to zeros of ζ(s, a) in a, where the error is absolute, about 2^-470 of the largest term.
+- **Bessel Y/K for x in 30…120** (µs/call at μ = 3.3, 4.18.0 → 4.19.0):
+
+  | x | Y before | Y after | K before | K after |
+  |---|---:|---:|---:|---:|
+  | 60 | 1377 | 1154 | 2764 | 835 |
+  | 100 | 2305 | 1121 | 1908 | 904 |
+  | 119 | 2376 | 1122 | 1817 | 1009 |
+
+  Steed's CF1 and CF2 use a division-free Wallis recurrence (CF2 in complex form). For 30 ≤ x < 120, K comes from the Wronskian I_μK_{μ+1} + I_{μ+1}K_μ = 1/x together with the I power series and the K ratio from CF2. Temme now runs to x < 56 (Y) and 30 (K). The target was well under 1 ms, but Y still takes about 1.1 ms and K near 120 about 1.0 ms. I also tried exponentially improved (hyper-)asymptotics; they reach only about 2^-303 at x = 60, so they are not used.
+- **`base256_bench`** (range 0.1…50, mostly unaffected): `cyl_neumann` 711 µs, `cyl_bessel_k` 601 µs, `riemann_zeta` 500 µs, `hurwitz_zeta` 1.87 ms. `hurwitz_zeta` timings for single arguments: (2, 0.5) 2.7 ms, (20, 3) 3.8 ms, (1000, 0.5) 29 µs, (1000, 30) 0.52 ms, (0.5, 2) 2.6 ms, (−10, 0.3) 54 µs, (−150, 0.75) 0.20 ms, (−500, 100) 77 µs. For s > 1 with moderate a, most of the time goes into the roughly 56 − a direct terms that Euler–Maclaurin needs before e^{-2π(N+a)} drops below 2^-506.
+- **Verification:**
+  - `mpfr_ulp` in all modes, plus the special_math, mpfr_diff and fastpath tests, with GCC and clang `-Werror`.
+  - `sf_check` against mpmath found 0 misroundings, max 0.5 ulp.
+  - New ranges: y_steed, k_wr, hz_01, hz_neg, hz_vneg, hz_negba.
+- **Header size and compile time:** `include/` is 646 KB (636 KB before). Including `base256.hpp` costs about the same as 4.18.0, within noise (best of 3, `-std=c++23`): g++ -O0 1.08 → 1.06 s, -O2 1.03 → 1.18 s; clang++ -O0 1.20 → 1.26 s, -O2 1.19 → 1.23 s.
+
 ## 4.18.0
 
 - **Faster special functions** (ns/call, `base256_bench`, 4.17.0 → 4.18.0):
