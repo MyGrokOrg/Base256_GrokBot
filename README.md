@@ -164,7 +164,7 @@ Exceptions and limits:
 
 ## Special functions
 
-`#include <base256/special_math.hpp>`, which `base256.hpp` also includes. These functions use the C++17 `<cmath>` special-math names and argument order, such as `cyl_bessel_j(ν, x)`, `ellint_3(k, ν, φ)` and `sph_bessel(n, x)`. Boost names are used where `<cmath>` has none: `ibeta`, `ibetac`, `tgamma_lower`, `tgamma_upper`, `gamma_p`, `gamma_q`.
+`#include <base256/special_math.hpp>` (and `special_math_ext.hpp`, see below), which `base256.hpp` also includes. These functions use the C++17 `<cmath>` special-math names and argument order, such as `cyl_bessel_j(ν, x)`, `ellint_3(k, ν, φ)` and `sph_bessel(n, x)`. Boost names are used where `<cmath>` has none: `ibeta`, `ibetac`, `tgamma_lower`, `tgamma_upper`, `gamma_p`, `gamma_q`.
 
 How they behave:
 - Like the elementary functions, each one is evaluated in double-float256 and rounded once in the current mode.
@@ -207,6 +207,33 @@ Domain and limits:
   - `ellint_3` uses the C++17 sign convention (1 − ν sin²θ).
 
 **Speed.** These functions cost 18 µs to 0.7 ms per call (`hurwitz_zeta` about 1.9 ms) (see the Performance table), well above the elementary functions. Most of the time goes into the dd recurrences and continued fractions.
+
+### More special functions (4.20.0)
+
+`special_math_ext.hpp` (also included by `base256.hpp`) adds the rest of C++17 special math and the common extras. They work the same way: dd evaluation, one rounding in the current mode, IEEE flags, NaN propagation, domain errors give NaN with `invalid`, poles give ±∞ with `divbyzero`. In `sf_check` against mpmath at 1500–2000 bits, every function below rounded correctly in round-to-nearest (max 0.5 ulp, 0 misroundings, 60–300 cases per range). Where MPFR has the function, `mpfr_ulp` also checked all five modes: ≤ 1 ulp directed, correct direction, exact flags. Cost is ns/call from `base256_bench` over the range shown.
+
+| Function | Domain / limits | Method | Reference | Cost |
+|---|---|---|---|---:|
+| `legendre(l, x)`, `assoc_legendre(l, m, x)`, `sph_legendre(l, m, θ)` | P_l any real x (C++17 asks \|x\| ≤ 1); P_l^m \|x\| ≤ 1, no Condon–Shortley phase; m > l → 0 | three-term recurrence in dd, rescaled; exact dyadic results and ties are detected | MPFR recurrence for P_l, all modes; mpmath for all | 27 µs (l = 20), 34 µs |
+| `laguerre(n, x)`, `assoc_laguerre(n, m, x)`, `hermite(n, x)` | any real x (C++17 asks x ≥ 0 for Laguerre) | recurrence | MPFR recurrence for L_n, H_n, all modes; mpmath | 41 µs (n = 30), 18 µs |
+| `expint(x)` (Ei), `expint(n, x)` (E_n) | Ei: x ≠ 0 (Ei(0) = −∞ pole); E_n: x ≥ 0, x = 0 a pole for n ≤ 1 | series, Wallis CF, asymptotic from x = 360 | MPFR `eint`, all modes; mpmath | 324 µs, 350 µs |
+| `sinint`, `cosint`, `sinhint`, `coshint` | Si, Shi any x; Ci, Chi x ≥ 0 (0 is a pole); Shi/Chi overflow above ≈ 181705 | series below 80, complex CF of E1(ix), asymptotic from 360 | mpmath | 300–330 µs |
+| `logint(x)` | x ≥ 0, li(1) = −∞ pole | Ei(ln x) with ln x kept in dd | MPFR `li`, all modes | 168 µs |
+| `digamma(x)` | any x; ±0 poles, negative integers domain errors | shift to x ≥ 60 + asymptotic; reflection for x < 0 | MPFR `digamma`, all modes; mpmath | 157 µs |
+| `polygamma(n, x)`, `trigamma(x)` | x > 0 for n ≥ 1 (x ≤ 0 is not provided) | (−1)^{n+1} n! ζ(n+1, x) | mpmath | 1.2–1.3 ms |
+| `lbeta(a, b)` | a, b > 0 | ln of the scaled B; lnΓ sums above 65536 | ln of MPFR lngamma at 3000 bits, all modes | 127 µs |
+| `tgamma_ratio(a, b)`, `tgamma_delta_ratio(a, δ)` | a, b (a + δ) > 0; correctly rounded while lnΓ < ~2^200 | scaled Γ quotient below 2^20, exp(lnΓ − lnΓ) above | mpmath | 73 µs |
+| `airy_ai`, `airy_bi`, `airy_ai_prime`, `airy_bi_prime` | any x; Ai, Ai' underflow and Bi, Bi' overflow near x ≈ 4960; below about −2^110 the phase is only good to ~2^-474·ζ | Maclaurin series; Steed K_{1/3} (dd argument) for Ai with x in 11–16; asymptotic from ζ = 104 (x > 0) and 110 (x < 0) | MPFR `ai`, all modes; mpmath | 590–730 µs |
+| `lambert_w0`, `lambert_wm1` | W0: x ≥ −1/e; W−1: −1/e ≤ x < 0 (−0 → −∞ pole) | branch-point series or log guess; Halley / Newton in dd | mpmath | 91 µs, 104 µs |
+| `erf_inv`, `erfc_inv` | (−1, 1) and (0, 2); ±1 / 0, 2 are poles; erfc_inv down to the smallest subnormal | second-order Newton steps on the exact-argument dd erf/erfc | mpmath | 120 µs |
+| `dawson(x)` | any x | positive erfi series below 16, asymptotic above | mpmath | 290 µs |
+| `fresnel_s`, `fresnel_c` | any x (normalised: ∫ sin(πt²/2)) | series below 4.5; complex erfc CF; asymptotic from 12, phase πx²/2 reduced exactly | mpmath | 350 µs |
+| `dilog(x)` | x ≤ 1 (x > 1 is complex: domain error) | Bernoulli series in −ln(1−x), reflection and inversion | MPFR `li2`, all modes; mpmath | 70 µs |
+| `polylog(n, x)` | integer n ≥ 0; n ≤ 1: x < 1; n ≥ 3: \|x\| ≤ 1 only | power series; ζ-series in ln x near 1; duplication for x < −1/2 | mpmath | 0.9 ms (n = 3) |
+| `dirichlet_eta(s)` | any real s; overflows below −30000 | (1 − 2^{1−s}) ζ(s), the factor via expm1 (no loss at s = 1) | mpmath | 497 µs |
+| `bernoulli_b2n(n)` | B_2n, overflows from n = 13704 | MPFR B_2k/(2k)! table (k ≤ 140), else 2(2n)! ζ(2n)/(2π)^{2n} | mpmath | — |
+
+Not provided: Euler numbers, polylog for non-integer order or \|x\| > 1 with n ≥ 3, polygamma at x ≤ 0.
 
 ## Performance
 

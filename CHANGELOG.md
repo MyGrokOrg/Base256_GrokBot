@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.20.0
+
+- **New header `special_math_ext.hpp`** (included by `base256.hpp`), with the rest of C++17 special math and common extras:
+  - C++17: `legendre`, `assoc_legendre`, `sph_legendre`, `laguerre`, `assoc_laguerre`, `hermite`, `expint` (Ei).
+  - Exponential and trigonometric integrals: `expint(n, x)` (E_n), `sinint`, `cosint`, `sinhint`, `coshint`, `logint`.
+  - Gamma family: `digamma`, `trigamma`, `polygamma(n, x)` (x > 0), `lbeta`, `tgamma_ratio`, `tgamma_delta_ratio`.
+  - Airy: `airy_ai`, `airy_bi`, `airy_ai_prime`, `airy_bi_prime`.
+  - `lambert_w0`, `lambert_wm1`, `erf_inv`, `erfc_inv`, `dawson`, `fresnel_s`, `fresnel_c`.
+  - `dilog`, `polylog(n, x)` (integer n), `dirichlet_eta`, `bernoulli_b2n`.
+- **Accuracy:** `sf_check` against mpmath (1500–2000 bits) found 0 misroundings, max 0.5 ulp, in every new range. `mpfr_ulp` checks `expint`/`eint`, `logint`/`li`, `digamma`, `lbeta`, `airy_ai`/`ai`, `dilog`/`li2` and the orthogonal polynomials in all five modes: ≤ 1 ulp directed, 0 misroundings, exact flags. `mpfr_ulp` also emulates round-to-nearest-away ties now. Domains and limits are in README "More special functions".
+- **Cost** (`base256_bench`, µs/call): polynomials 18–41, Ei/E_n 324/350, Si/Ci/Shi/Chi 300–330, li 168, digamma 157, polygamma 1.2–1.3 ms, lbeta 127, Airy 590–730, Lambert W 91–104, erf_inv 120, Dawson 290, Fresnel 350, dilog 70, polylog(3, ·) 900, eta 497.
+
 ## 4.19.0
 
 - **`hurwitz_zeta(s, a)` now takes all real s ≠ 1** (a > 0). For s < 1 it uses analytic continuation: Euler–Maclaurin at N + a, scaled by (N + a)^-s, while that converges. For s ≤ −89 it uses Hurwitz's formula, with a shifted into (0, 1] by its integer part. s = 0 gives 1/2 − a exactly. With a = +∞ the result is 0 for s > 1 and −∞ for s < 1, and s = −∞ is a domain error. For s < 1 the result is correctly rounded except next to zeros of ζ(s, a) in a, where the error is absolute, about 2^-470 of the largest term.
