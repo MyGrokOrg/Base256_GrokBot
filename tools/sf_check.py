@@ -142,7 +142,23 @@ def selftest():
             assert abs(LEG(n, x) - mp.legendre(n, x)) < mp.mpf(2)**-500
     print("selftest ok")
 
+def EI(x):
+    with mp.workprec(1500): return mp.ei(x)
+def EN(n, x):
+    with mp.workprec(1500): return mp.expint(int(n), x)
+
 RANGES = [
+    ("ei",       "ei", EI, [(-10, 6, True)]),
+    ("ei_neg",   "ei", EI, [(-400, 0, False)]),
+    ("ei_mid",   "ei", EI, [(0, 500, False)]),
+    ("ei_big",   "ei", EI, [(9, 17.4, True)]),
+    ("ei_tiny",  "ei", EI, [(-300, -10, True)]),
+    ("ei_root",  "ei", EI, [(0.37, 0.375, False)]),
+    ("e1",       "en", EN, [("int", 1, 1), (-10, 8, True)]),
+    ("en",       "en", EN, [("int", 0, 30), (-10, 8, True)]),
+    ("en_mid",   "en", EN, [("int", 2, 200), (0, 80, False)]),
+    ("en_bign",  "en", EN, [("int", 200, 5000), (-20, 10, True)]),
+    ("en_tiny",  "en", EN, [("int", 1, 30), (-300, -10, True)]),
     ("leg",      "leg", LEG, [("int", 0, 60), (-1, 1, False)]),
     ("leg_big",  "leg", LEG, [("int", 100, 1000), (-1, 1, False)]),
     ("leg_out",  "leg", LEG, [("int", 0, 60), (0, 40, True)]),

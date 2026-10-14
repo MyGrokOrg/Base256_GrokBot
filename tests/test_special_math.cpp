@@ -60,6 +60,8 @@ static float256 eval(const std::string& op, const std::string& a, const std::str
     if (op == "sleg") return sph_legendre(static_cast<unsigned>(std::stoul(a)), static_cast<unsigned>(std::stoul(b)), P(c));
     if (op == "lag") return laguerre(static_cast<unsigned>(std::stoul(a)), P(b));
     if (op == "alag") return assoc_laguerre(static_cast<unsigned>(std::stoul(a)), static_cast<unsigned>(std::stoul(b)), P(c));
+    if (op == "ei") return expint(P(a));
+    if (op == "en") return expint(static_cast<unsigned>(std::stoul(a)), P(b));
     if (op == "her") return hermite(static_cast<unsigned>(std::stoul(a)), P(b));
     std::cerr << "unknown op " << op << "\n";
     return float256::qnan();
@@ -149,6 +151,16 @@ const Ref kRefs[] = {
     {"alag", "10", "3", "7.25", "0x1d390c949e9199749cfa2aa85ae0b3bb96bf1c4cca7d02d5ddb8e13e6eedp-233"},
     {"her", "9", "1.1", "", "-0x1930840feb40bc6eecd8ecfcd437b660e0d1a2b0aabe6b465b3f520ba1b1p-223"},
     {"her", "300", "-17.3", "", "-0x11189bb4fd03c1512c112159ed8c053bee4cddbbb0d36f1a98674a5b49a2p+1148"},
+    {"ei", "0.372", "", "", "-0x1033ce1ed625f0fd9b6f871ae626add65326b89cebe23fc2337a57d6040ep-245"},
+    {"ei", "-3.5", "", "", "-0x1c8cb8abc9972f364d969c13aa13dd4a855d56ac15d749ae88ee11629ec7p-244"},
+    {"ei", "250.25", "", "", "0x10d49cd8d00217342e4cd5e25700f1b0251b0b878c2da983dc3845e97345p+117"},
+    {"ei", "5000", "", "", "0x123962c79035c18f5e1b6260299879a2098c92c28dd6b13549dd7422cac1p+6965"},
+    {"ei", "1e-40", "", "", "-0x16e1ad10a9caeeb1ab6921e6ec30a4e38dbbdbcf36722cc6b33b673dd204p-230"},
+    {"en", "1", "45.5", "", "0x1c3961401a4edffb2ac7914bca032333c73f740cd7682cd169f71f0b83bdp-308"},
+    {"en", "3", "0.125", "", "0x19858949a0b7dcb149efeca22dd62c963d134028c9d0c2caf204ee59544cp-238"},
+    {"en", "40", "12", "", "0x101846da169cf1ceaeb1b6a4ee18a58a0c3ec2f3736104b16680087275f1p-259"},
+    {"en", "1000", "2", "", "0x11b88d8cfd04cd96e9f4daf406c3ac6659c2aa739c12ea6e6fc4ecf424d7p-249"},
+    {"en", "0", "3", "", "0x10fe75dddf2074863019576d0b00b355a2b63da267aecbb2c5f42dfa153ep-242"},
     {"ibetac", "30", "2", "0.0625", "0x1ffffffffffffffffffffffffffffc5c0000000000000000000000000000p-237"},
 };
 
@@ -381,6 +393,25 @@ int main() {
         CHECK(same(legendre(l, float256(-0.37)), (l & 1) ? -legendre(l, float256(0.37)) : legendre(l, float256(0.37))));
         CHECK(same(hermite(l, float256(-2.5)), (l & 1) ? -hermite(l, float256(2.5)) : hermite(l, float256(2.5))));
     }
+
+    // Exponential integrals.
+    EXPECT(expint(zero), -inf, kDiv);
+    EXPECT(expint(-zero), -inf, kDiv);
+    EXPECT(expint(inf), inf, 0);
+    EXPECT(expint(-inf), -zero, 0);
+    EXPECT(expint(nan), nan, 0);
+    EXPECT(expint(1u, zero), inf, kDiv);
+    EXPECT(expint(0u, zero), inf, kDiv);
+    EXPECT(expint(3u, zero), float256(0.5), 0);
+    EXPECT(expint(5u, inf), zero, 0);
+    EXPECT(expint(2u, -one), nan, kInv);
+    EXPECT(expint(1u, -inf), -inf, 0);
+    EXPECT_M(expint(float256(190000)),
+             [](round_mode m) { return down(m) ? float256::max() : float256::inf(false); }, base256::fe_overflow | kInx);
+    EXPECT_M(expint(float256(-185000)),
+             [](round_mode m) { return (m == round_mode::downward) ? -float256::denorm_min() : -float256::zero(); },
+             base256::fe_underflow | kInx);
+    CHECK(same(expint(1u, float256(-2.5)), -expint(float256(2.5))));
 
     std::cout << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;

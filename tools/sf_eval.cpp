@@ -44,6 +44,8 @@ int main() {
         else if (f == "lag") r = laguerre(static_cast<unsigned>(std::stoul(a)), P(b));
         else if (f == "alag") r = assoc_laguerre(static_cast<unsigned>(std::stoul(a)), static_cast<unsigned>(std::stoul(b)), P(c));
         else if (f == "her") r = hermite(static_cast<unsigned>(std::stoul(a)), P(b));
+        else if (f == "ei") r = expint(P(a));
+        else if (f == "en") r = expint(static_cast<unsigned>(std::stoul(a)), P(b));
 #ifdef SF_MORE
         SF_MORE
 #endif

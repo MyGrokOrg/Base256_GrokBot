@@ -37,6 +37,7 @@ F = {
     "gq": lambda a, x: mp.gammainc(a, x, mp.inf, regularized=True),
     "ibeta": lambda a, b, x: mp.betainc(a, b, 0, x, regularized=True),
     "ibetac": lambda a, b, x: mp.betainc(a, b, x, 1, regularized=True),
+    "ei": mp.ei, "en": lambda n, x: mp.expint(int(n), x),
     "leg": LEG, "aleg": ALEG, "sleg": SLEG, "lag": LAG, "alag": ALAG, "her": HER,
 }
 CASES = [
@@ -81,6 +82,8 @@ CASES = [
     ("sleg", "5", "2", "0.7"), ("sleg", "120", "60", "2.9"), ("sleg", "10", "0", "1e-30"),
     ("lag", "6", "2.5"), ("lag", "400", "1000.5"), ("alag", "10", "3", "7.25"),
     ("her", "9", "1.1"), ("her", "300", "-17.3"),
+    ("ei", "0.372"), ("ei", "-3.5"), ("ei", "250.25"), ("ei", "5000"), ("ei", "1e-40"),
+    ("en", "1", "45.5"), ("en", "3", "0.125"), ("en", "40", "12"), ("en", "1000", "2"), ("en", "0", "3"),
 ]
 
 def main():

@@ -1,7 +1,8 @@
 #pragma once
 /// More special functions (included by base256.hpp): the C++17 orthogonal
 /// polynomials (legendre, assoc_legendre, sph_legendre, laguerre,
-/// assoc_laguerre, hermite). Each evaluates in double-float256 (~474 bits)
+/// assoc_laguerre, hermite) and the exponential integrals expint (Ei) and
+/// expint(n, x) (E_n). Each evaluates in double-float256 (~474 bits)
 /// and rounds once in the caller's mode with IEEE flags. See README "Special
 /// functions" for measured accuracy, domains and costs.
 
@@ -188,6 +189,184 @@ inline void rescale(dd& p0, dd& p1, int& k) {
     if (n == 0) return env.exact(float256::one());
     if (x.isinf()) return env.exact((n & 1) ? x : float256::inf(false));
     return detail_sf::poly::out_snap(env, detail_sf::poly::hermite_sd(n, x), (n & 1) && x.signbit());
+}
+
+namespace detail_sf {
+namespace eint {
+
+// S(x) = Σ_{k>=1} x^k/(k·k!), so Ei(x) = γ + ln|x| + S(x) and E1(t) = −γ − ln t − S(−t).
+// Once the terms decrease (k > |x|) and fall below 2^-245 of the sum, the rest
+// is summed in float256.
+[[nodiscard]] inline dd s_series(float256 x) {
+    dd term{float256::one()}, sum{float256::zero()};
+    const float256 ax = abs(x);
+    std::uint64_t k = 1;
+    for (;; ++k) {
+        const float256 K = float256::from_uint(k);
+        term = term * x / K;
+        const dd add = term / K;
+        sum = sum + add;
+        if (K > ax && f256_tail(add, sum)) break;
+    }
+    float256 tf = term.hi, st{};
+    for (++k;; ++k) {
+        const float256 K = float256::from_uint(k);
+        tf = tf * x / K;
+        const float256 add = tf / K;
+        st = st + add;
+        if (small_rel(dd(add), sum)) break;
+    }
+    return sum + dd(st);
+}
+
+inline constexpr int kEiAsym = 360;  // Ei asymptotic series from here (min term < 2^-500)
+
+// Ei(x) for x >= kEiAsym: e^x/x Σ k!/x^k.
+[[nodiscard]] inline SD ei_asym(float256 x) {
+    dd term{float256::one()}, sum{float256::one()};
+    std::uint64_t k = 1;
+    for (;; ++k) {
+        term = term * float256::from_uint(k) / x;
+        sum = sum + term;
+        if (f256_tail(term, sum)) break;
+    }
+    float256 tf = term.hi, st{};
+    for (++k;; ++k) {
+        tf = tf * float256::from_uint(k) / x;
+        st = st + tf;
+        if (small_rel(dd(tf), sum)) break;
+    }
+    sum = sum + dd(st);
+    SD e = exp_sd(dd(x));
+    return mul(e, sum / x);
+}
+
+// The continued fraction E_n(x) = e^{-x} / (b0 + a1/(b1 + a2/(b2 + ...))),
+// b_k = x + n + 2k, a_k = −k(n − 1 + k) (division-free Wallis form, rescaled).
+[[nodiscard]] inline dd en_cf(std::uint64_t n, float256 x) {
+    const float256 nn = float256::from_uint(n);
+    dd A0{float256::one()}, B0{float256::zero()};
+    dd A1 = detail_dd::two_sum(x, nn), B1{float256::one()};
+    dd h = A1, hprev = h;
+    for (std::uint64_t k = 1;; ++k) {
+        const float256 K = float256::from_uint(k);
+        const dd b = detail_dd::two_sum(x, nn + K + K);
+        const dd a = -(detail_dd::two_prod(K, nn - float256::one() + K));
+        const dd A2 = b * A1 + a * A0, B2 = b * B1 + a * B0;
+        A0 = A1; B0 = B1; A1 = A2; B1 = B2;
+        if ((k & 7) == 0) {
+            const int e = ilogb(A1.hi);
+            if (e > 1000 || e < -1000) {
+                A0 = detail_dd::ldexp(A0, -e); A1 = detail_dd::ldexp(A1, -e);
+                B0 = detail_dd::ldexp(B0, -e); B1 = detail_dd::ldexp(B1, -e);
+            }
+            h = A1 / B1;
+            if (near_one(h / hprev)) break;
+            hprev = h;
+        }
+    }
+    return h;
+}
+
+// E_n(x) for x > 0 by the series
+//   E_n(x) = (−x)^{n−1}/(n−1)! (ψ(n) − ln x) − Σ_{k≠n−1} (−x)^k / (k! (k−n+1)),
+// ψ(n) = −γ + H_{n−1}. Used for x < 40 (it cancels about 2.9x bits).
+[[nodiscard]] inline dd en_series(std::uint64_t n, float256 x) {
+    const dd one{float256::one()};
+    dd sum{float256::zero()}, term = one;  // term = (−x)^k/k!
+    const float256 nx = -x;
+    std::uint64_t k = 0;
+    for (;; ++k) {
+        const float256 K = float256::from_uint(k);
+        if (k > 0) term = term * nx / K;
+        if (k + 1 != n) {
+            const dd add = term / (K - float256::from_uint(n - 1));
+            sum = sum - add;
+            if (K > x && k + 1 > n && f256_tail(add, sum)) break;
+        } else {
+            dd psi = -euler_gamma();
+            for (std::uint64_t j = 1; j < n; ++j) psi = psi + one / float256::from_uint(j);
+            sum = sum + term * (psi - detail_dd::log(dd(x)));
+        }
+    }
+    // float256 tail (k + 1 > n here, so k − n + 1 > 0)
+    float256 tf = term.hi, st{};
+    for (++k;; ++k) {
+        const float256 K = float256::from_uint(k);
+        tf = tf * nx / K;
+        const float256 add = tf / (K - float256::from_uint(n - 1));
+        st = st - add;
+        if (small_rel(dd(add), sum)) break;
+    }
+    return sum + dd(st);
+}
+
+// Measured costs (µs): the fraction about 20000/(x + n/8), the series about
+// 120 + 15x + 3n. The series is only used below x = 40.
+[[nodiscard]] inline bool en_use_cf(std::uint64_t n, float256 x) {
+    if (x >= float256(40)) return true;
+    const double xd = x.to_double(), nd = static_cast<double>(n);
+    return 20000.0 / (xd + nd / 8) < 120 + 15 * xd + 3 * nd;
+}
+
+// E_n(x), x > 0, as m·2^k.
+[[nodiscard]] inline SD en_sd(std::uint64_t n, float256 x) {
+    if (n == 0) return mul(exp_sd(-dd(x)), dd(float256::one()) / x);  // e^{-x}/x
+    if (en_use_cf(n, x)) {
+        const dd f = en_cf(n, x);
+        return mul(exp_sd(-dd(x)), dd(float256::one()) / f);
+    }
+    return norm({en_series(n, x), 0});
+}
+
+// Ei(x), x != 0 finite, as m·2^k.
+[[nodiscard]] inline SD ei_sd(float256 x) {
+    if (x.signbit()) {
+        SD e = en_sd(1, -x);
+        e.m = -e.m;
+        return e;
+    }
+    if (x >= float256(kEiAsym)) return ei_asym(x);
+    return norm({euler_gamma() + detail_dd::log(dd(x)) + s_series(x), 0});
+}
+
+} // namespace eint
+} // namespace detail_sf
+
+/// Exponential integral Ei(x) = −PV∫_{−x}^∞ e^{−t}/t dt (C++17 expint), any
+/// real x: Ei(0) = −∞ (pole), Ei(−∞) = −0, Ei(+∞) = +∞. Overflows above x ≈ 181704.
+[[nodiscard]] inline float256 expint(float256 x) {
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.iszero()) return env.pole(true);
+    if (x.isinf()) return env.exact(x.signbit() ? -float256::zero() : x);
+    if (x > float256(190000)) return env.overflow(false);
+    if (x < float256(-190000)) return env.underflow(true);
+    return detail_sf::out(env, detail_sf::eint::ei_sd(x));
+}
+
+/// Generalized exponential integral E_n(x) = ∫_1^∞ e^{−xt}/t^n dt (Boost's
+/// expint(n, x)) for x >= 0; E_n(0) = 1/(n − 1) for n >= 2 and a pole for
+/// n <= 1. E_1(x) for x < 0 is −Ei(−x) (the real part, as in GSL); other
+/// n with x < 0 are a domain error.
+[[nodiscard]] inline float256 expint(unsigned n, float256 x) {
+    detail_dd::FnEnv env;
+    if (x.isnan()) return env.nan(x);
+    if (x.signbit() && !x.iszero()) {
+        if (n != 1) return env.invalid();
+        if (x.isinf()) return env.exact(-float256::inf(false));
+        if (x < float256(-190000)) return env.overflow(true);
+        const detail_sf::SD e = detail_sf::eint::ei_sd(-x);
+        return detail_sf::out(env, {-e.m, e.k});
+    }
+    if (x.iszero()) {
+        if (n <= 1) return env.pole(false);
+        const detail_dd::dd q = detail_dd::dd(float256::one()) / float256::from_uint(n - 1ull);
+        return env.round(q.hi, q.lo, 0, q.lo.iszero() ? 0 : 2);
+    }
+    if (x.isinf()) return env.exact(float256::zero());
+    if (x > float256(190000)) return env.underflow(false);
+    return detail_sf::out(env, detail_sf::eint::en_sd(n, x));
 }
 
 } // namespace base256

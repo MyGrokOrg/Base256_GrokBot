@@ -263,6 +263,13 @@ void report(const char* name, const Stat& st, double bound, int& bad) {
 }
 
 int mpfr_lngamma_abs(mpfr_ptr r, mpfr_srcptr x, mpfr_rnd_t rnd) { int sg; return mpfr_lgamma(r, &sg, x, rnd); }
+// E_1(x) = −Ei(−x) (mpfr_eint gives −E_1(−x) for negative arguments).
+int mpfr_e1(mpfr_ptr r, mpfr_srcptr x, mpfr_rnd_t rnd) {
+    mpfr_t nx; mpfr_init2(nx, mpfr_get_prec(x)); mpfr_neg(nx, x, MPFR_RNDN);
+    const int t = mpfr_eint(r, nx, rnd);
+    mpfr_neg(r, r, MPFR_RNDN); mpfr_clear(nx);
+    return -t;
+}
 
 struct Fn {
     const char* name;
@@ -340,6 +347,9 @@ int main(int argc, char** argv) {
         {"zetan",  [](float256 x){return riemann_zeta(x);}, mpfr_zeta, 8, 14, true, false, 1, 0, 4},
         {"lgamma2",[](float256 x){return lgamma(x);},mpfr_lngamma_abs, -236, -1, true, true, 1, 0, 5},
         {"lgamma",[](float256 x){return lgamma(x);},mpfr_lngamma,-10, 20, true, false, 1, 0},
+        {"expint", [](float256 x){return expint(x);}, mpfr_eint, -20, 9, true, true, 1, 0},
+        {"ei_big", [](float256 x){return expint(x);}, mpfr_eint, 9, 17.5, true, true, 1, 0},
+        {"e1",     [](float256 x){return expint(1u, x);}, mpfr_e1, -20, 8, true, false, 1, 0},
     };
     const bool all_fns = argc <= 4 || std::string(argv[4]).empty() || std::string(argv[4]) == "all";
     if (!all_fns) { std::string only = argv[4]; std::erase_if(fns, [&](const Fn& f){ return only.find(f.name) == std::string::npos; }); }
