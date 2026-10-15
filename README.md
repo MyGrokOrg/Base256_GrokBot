@@ -190,18 +190,18 @@ Over 1500 cases × 5 modes per MPFR-checked function, no result was misrounded. 
 Methods:
 - **Bessel:** power series for x < 120. For Y and K, Temme's series below x = 56 (Y) and 30 (K). Above that, up to 120, Y uses division-free Steed CF1/CF2, and K uses the I series with the Wronskian. The Temme gamma factors come from an MPFR Taylor table of 1/Γ(1+μ). Terms below 2^-245 of a sum are finished in float256. Hankel and large-x expansions from 120 up, with forward recurrence (Y, K, and J for ν < x) or CF1 plus downward recurrence (J for ν ≥ x).
 - **Zeta:** Euler–Maclaurin for x ≥ 0 at the smallest N in 24…64 whose remainder estimate is below 2^-506, with B_2k/(2k)! and ln p from MPFR tables. The functional equation handles x < 0. `hurwitz_zeta` picks by estimated cost between a direct sum and N terms plus Euler–Maclaurin at N + a. For s < 1 it uses the analytic continuation of the same expansion, and Hurwitz's formula for s ≤ −89.
-- **Incomplete gamma:** the series for x < max(a + 1, 36), otherwise a division-free (Wallis) continued fraction. A small-a form handles the upper part.
+- **Incomplete gamma:** the series for x < max(a + 1, 36), otherwise a division-free (Wallis) continued fraction. A small-a form handles the upper part. Γ(a, x) for a ≤ 0: for x < 36 and a ≥ −1000, Γ(a) − γ(a, x) with the two poles at a = −round(−a) cancelled analytically (so a = 0 and negative integers need no special case); otherwise the continued fraction.
 - **Incomplete beta:** division-free (Wallis) continued fraction.
 - **Elliptic:** AGM for K and E, and Bulirsch's `cel` for complete Π. Carlson R_F, R_D and R_J handle the rest, stopping duplication at 2^-40 and finishing with a degree-12 Taylor tail.
 
 Domain and limits:
-- **Bessel:** ν ≥ 0 and x ≥ 0 for `cyl_*`, `sph_*` and `yn`. Negative values are a domain error. `jn` accepts any n and any x.
+- **Bessel:** ν ≥ 0 for `cyl_*`, `sph_*` and `yn`. Since 4.23.0, x < 0 works where the value is real: `cyl_bessel_j` and `cyl_bessel_i` for integer ν (C_ν(−x) = (−1)^ν C_ν(x)), and `sph_bessel`/`sph_neumann` for every x (y_n(±0) is a pole). Non-integer ν for J and I, and every x < 0 for `cyl_neumann` and `cyl_bessel_k`, are complex: NaN with `invalid`. `jn` accepts any n and any x.
   - J and Y have *absolute* error ~2^-470 relative to their envelope, so a result within ~2^-200 of a zero can lose relative accuracy.
   - Cost grows with ν (recurrences take ν steps) and with x for ν > x (CF1 takes ~x steps).
 - **`beta`:** x, y > 0. Zero is a pole and negative values are a domain error. Above about 2^200 the ln-gamma difference loses accuracy (2^-474 · x ln x); this was checked only up to 2^60.
 - **`ibeta`/`ibetac`:** a, b > 0 and 0 ≤ x ≤ 1. The continued fraction needs ~√max(a, b) iterations, so very large a or b is slow.
 - **`riemann_zeta`:** below −30000 it overflows. ζ(−2n) is exactly +0, ζ(1) is a pole and ζ(−∞) is a domain error. `hurwitz_zeta(s, a)` takes all real s ≠ 1 and a > 0. s = 1 is a pole, a ≤ 0 or s = −∞ is a domain error, ζ(0, a) = 1/2 − a exactly, and a = +∞ gives 0 (s > 1) or −∞ (s < 1). For s < 1 next to zeros in a the dd sum cancels; since 4.22.0 a multiprecision fallback (`detail/mp.hpp`) redoes it, so results stay correctly rounded there, and ζ(−2n, ½) is exactly 0. It takes about 2–4 ms for s > 1 with a ≲ 50.
-- **Incomplete gamma:** a > 0 and x ≥ 0 (Γ(a, x) for a ≤ 0 is not provided). Large a costs ~√a iterations.
+- **Incomplete gamma:** a > 0 and x ≥ 0 for `tgamma_lower`, `gamma_p` and `gamma_q`. Since 4.23.0 `tgamma_upper` also takes a ≤ 0 (including a = 0 and negative integers) for x > 0, correctly rounded in all modes; there Γ(a, 0) = +∞ (pole), x < 0 and a = −∞ are domain errors, and it takes 0.2–0.8 ms (up to ~7 ms for a within 2^-60 of a negative integer near −1000). Large a > 0 costs ~√a iterations.
 - **Elliptic:** |k| ≤ 1. `comp_ellint_1(±1)`, `comp_ellint_3(k, 1)` and F(±1, φ) for |φ| ≥ π/2 are poles.
   - `ellint_3` needs 1 − ν sin²φ > 0, and ν < 1 when |φ| > π/2. Cauchy principal values (ν > 1) are not supported.
   - `ellint_3` uses the C++17 sign convention (1 − ν sin²θ).
@@ -220,7 +220,7 @@ Domain and limits:
 | `sinint`, `cosint`, `sinhint`, `coshint` | Si, Shi any x; Ci, Chi x ≥ 0 (0 is a pole); Shi/Chi overflow above ≈ 181705 | series below 80, complex CF of E1(ix), asymptotic from 360 | mpmath | 300–330 µs |
 | `logint(x)` | x ≥ 0, li(1) = −∞ pole | Ei(ln x) with ln x kept in dd | MPFR `li`, all modes | 168 µs |
 | `digamma(x)` | any x; ±0 poles, negative integers domain errors | shift to x ≥ 60 + asymptotic; reflection for x < 0 | MPFR `digamma`, all modes; mpmath | 157 µs |
-| `polygamma(n, x)`, `trigamma(x)` | x > 0 for n ≥ 1 (x ≤ 0 is not provided) | (−1)^{n+1} n! ζ(n+1, x) | mpmath | 1.2–1.3 ms |
+| `polygamma(n, x)`, `trigamma(x)` | any x (since 4.23.0); poles at 0, −1, −2, …: odd n +∞, even n −∞ at +0, +∞ at −0, domain error at negative integers | (−1)^{n+1} n! ζ(n+1, x); x < 0 by the reflected Hurwitz sum in multiprecision (correct next to zeros and poles) | mpmath | 1.2–1.3 ms (x > 0), ~13 ms (x < 0) |
 | `lbeta(a, b)` | a, b > 0 | ln of the scaled B; lnΓ sums above 65536 | ln of MPFR lngamma at 3000 bits, all modes | 127 µs |
 | `tgamma_ratio(a, b)`, `tgamma_delta_ratio(a, δ)` | a, b (a + δ) > 0; correctly rounded while lnΓ < ~2^200 | scaled Γ quotient below 2^20, exp(lnΓ − lnΓ) above | mpmath | 73 µs |
 | `airy_ai`, `airy_bi`, `airy_ai_prime`, `airy_bi_prime` | any x; Ai, Ai' underflow and Bi, Bi' overflow near x ≈ 4205; below −2^93 the phase is reduced mod π/2 exactly in multiprecision with a 395264-bit 2/π table (correctly rounded down to the most negative finite value) | Maclaurin series; Steed K_{1/3} (dd argument) for Ai with x in 11–16; asymptotic from ζ = 104 (x > 0) and 110 (x < 0) | MPFR `ai`, all modes; mpmath | 590–730 µs |
@@ -233,7 +233,7 @@ Domain and limits:
 | `dirichlet_eta(s)` | any real s; overflows below −30000 | (1 − 2^{1−s}) ζ(s), the factor via expm1 (no loss at s = 1) | mpmath | 497 µs |
 | `bernoulli_b2n(n)` | B_2n, overflows from n = 13704 | MPFR B_2k/(2k)! table (k ≤ 140), else 2(2n)! ζ(2n)/(2π)^{2n} | mpmath | — |
 
-Not provided: Euler numbers, polylog for non-integer order or \|x\| > 1 with n ≥ 3, polygamma at x ≤ 0.
+Not provided: Euler numbers, polylog for non-integer order or \|x\| > 1 with n ≥ 3.
 
 ## Performance
 
@@ -308,6 +308,6 @@ Run-to-run noise is about ±10% for the basic operations. `fma` has not changed 
 
 Dual-licensed: you may use this software under either the **MIT License** ([LICENSE](LICENSE)) or **THE BEER-WARE LICENSE** (Revision 42, [LICENSE-BEERWARE](LICENSE-BEERWARE)), at your option.
 
-**4.22.0**: relative accuracy at the edge cases: `lgamma` next to its negative zeros, `hurwitz_zeta` next to zeros in a, Airy for x < −2^93. **4.19.0**: `hurwitz_zeta` for all real s ≠ 1, faster Bessel Y/K for x in 30–120. **4.18.0**: faster special functions, `hurwitz_zeta`. **4.17.0**: special functions (`special_math.hpp`). **4.16.0**: `tgamma`/`lgamma` with 140 MPFR Stirling coefficients and shift 64. **4.15.0**: MPFR table-driven `log`, `atan`, `sin`/`cos`, `erf`/`erfc`. **4.8.0**: rounding modes and exception flags, exact `fmod`/`remainder`. **4.7.0**: correctness fixes found by MPFR differential testing. See [CHANGELOG](CHANGELOG.md).
+**4.23.0**: new domains: `tgamma_upper` for a ≤ 0, `polygamma` for x ≤ 0, Bessel J/I (integer ν) and spherical Bessel for x < 0; Airy correctly rounded for every negative finite x (the 2/π table now covers the whole exponent range). **4.22.0**: relative accuracy at the edge cases: `lgamma` next to its negative zeros, `hurwitz_zeta` next to zeros in a, Airy for x < −2^93. **4.19.0**: `hurwitz_zeta` for all real s ≠ 1, faster Bessel Y/K for x in 30–120. **4.18.0**: faster special functions, `hurwitz_zeta`. **4.17.0**: special functions (`special_math.hpp`). **4.16.0**: `tgamma`/`lgamma` with 140 MPFR Stirling coefficients and shift 64. **4.15.0**: MPFR table-driven `log`, `atan`, `sin`/`cos`, `erf`/`erfc`. **4.8.0**: rounding modes and exception flags, exact `fmod`/`remainder`. **4.7.0**: correctness fixes found by MPFR differential testing. See [CHANGELOG](CHANGELOG.md).
 
 Created by Craig D. Mansfield, PhD, EI (MyGrokOrg).

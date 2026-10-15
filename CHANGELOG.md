@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 4.23.0
 
 - `tgamma_upper(a, x)` now takes a ≤ 0 (a = 0, negative integers, negative non-integers) for x > 0, correctly rounded in all 5 modes with exact flags (previously a domain error). For x < 36 and a ≥ −1000 it uses Γ(a) − γ(a, x) with N = round(−a), e = a + N, and the two poles at a = −N cancelled analytically: Γ(a, x) = (−1)^N x^e expm1(L)/(e·N!) − x^a Σ_{n≠N} (−x)^n/(n!(a+n)), L = lnΓ(1+e) − Σ_{k≤N} ln(1 − e/k) − e ln x (e = 0 gives ψ(N+1) − ln x). Otherwise it uses the Legendre continued fraction, which converges fast there for a ≤ 0. Γ(a, 0) = +∞ with divide-by-zero, Γ(a, +∞) = +0 exactly, x < 0 and a = −∞ are invalid; x > 2^1000 underflows, and for a < −2^1000 the result overflows (x < 1) or underflows (x > 1), except Γ(a, 1) = e^{−1}/(1 − a). `tgamma_lower`, `gamma_p` and `gamma_q` still require a > 0. Cost: 0.2–0.8 ms for most arguments, up to ~7 ms for a within 2^-60 of a negative integer near −1000. New sf_check ranges, round-to-nearest 40 cases each, seed 1, and `modes` 20 cases each, seed 2, all with 0 misrounded and 0 flag errors:
   - `gu_neg` (a ∈ (−60, 0), x = 2^[−20, 5]): max 0.491 ulp; `modes` max RNE 0.476, RZ 0.943, RU 0.982, RD 0.943 ulp.
