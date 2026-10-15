@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 4.24.0
 
 - Per-call timings of the speedups above (README "Performance", 4.24.0 table): `base256_bench 1.0`, g++-14 14.2.0, `-O3 -DNDEBUG -std=c++23` (CMake Release), on the shared 8-core box ("Intel(R) Xeon(R) Processor"), pinned with `taskset -c 5`, ≥ 1 s per item over 64 arguments, median of 3 runs, 7da2567 and 76f07bb interleaved with the same `bench.cpp`.
   - `polygamma(1/2/3, x ∈ [−50, −0.1])`: 11.4/11.0/10.6 ms → 465/486/501 µs. `polygamma(10, x ∈ [−20, −0.1])`: 12.7 ms → 615 µs. `polygamma(3, x ∈ [0.1, 50])`: 1.20 ms → 270 µs. `trigamma`: 1.24 ms → 255 µs. `hurwitz_zeta(3, a)`: 1.12 ms → 266 µs.
@@ -22,7 +22,7 @@
   | clang++-19 special | 5.249 → 5.527 (+5.3 %) | 3.798 → 3.905 (+2.8 %) |
   | clang++-19 igamma | 3.188 → 3.238 (+1.5 %) | 2.265 → 2.279 (+0.6 %) |
 
-  The box sd is 0.04–0.16 s, so its include-only and arith changes are about one sd. On the CI runner (sd ≤ 0.05 s) include-only is +3 % for both compilers, from the decimal fast path in `float256.hpp`, and `special` is +4.7 % (g++) and +5.3 % (clang). The `special` figure also includes the Bessel fix of 92396d0, which was +2.4 % / +2.5 % on its own.
+  The box sd is 0.04–0.16 s, so its include-only and arith changes are about one sd. On the CI runner (sd ≤ 0.05 s) include-only is +3 % for both compilers (the cause was not isolated; `float256.hpp`, `bigint.hpp`, `mp.hpp` and both special-function headers changed), and `special` is +4.7 % (g++) and +5.3 % (clang). The `special` figure also includes the Bessel fix of 92396d0, which was +2.4 % / +2.5 % on its own.
 - **Speed: decimal output at the extreme exponents, about 1000× faster (shortest and `e` formats), 3× for long `fixed` output.** Before, every conversion multiplied or divided by an exact 5^|k| BigInt (|k| up to ~79000, a 180000-bit number built 13 powers of 5 at a time), and `to_string` did that 3–4 times per call.
   - For |k| ≥ 160, `dec_floor_scaled` (`to_string`, `format`, `to_chars`, `std::format`, `operator<<`) and the interval checks of the shortest search now use a 640-bit lower bound of 5^|k| (binary powering, truncated down, relative error below 2^-600). They answer only when that bound decides the digits, or the comparison, exactly. Otherwise, or with more than ~140 digits, they fall back to the exact BigInt path, which is unchanged (`dec_floor_scaled_exact`). Exact ties cannot occur there (they would need 5^|k| to divide a 256-bit significand or a < 10^140 digit string), so the fallback is only for values within ~2^-600 relative of a boundary.
   - `BigInt::to_dec` splits large integers by 10^(9·2^i) (Knuth division) down to 48 limbs instead of dividing the whole number by 10^9 per 9 digits (`format(fixed, 0)` of 2^262140: 78,913 digits).
