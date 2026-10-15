@@ -117,10 +117,24 @@ def HZ(s, a):
         if r2 == 0 or abs(r1 - r2) <= mp.mpf(2)**-700 * abs(r2): return r2
     with mp.workprec(3000): return mp.zeta(s, a)
 
-def GL(a, x): return mp.gammainc(a, 0, x)
-def GU(a, x): return mp.gammainc(a, x, mp.inf)
-def GP(a, x): return mp.gammainc(a, 0, x, regularized=True)
-def GQ(a, x): return mp.gammainc(a, x, mp.inf, regularized=True)
+def _igam(a, x, upper, reg):
+    """Incomplete gamma reference. When the complementary part is below the
+    working precision of the whole (Γ(a) or 1), the value would come back as
+    exactly Γ(a) or 1 (wrongly "exact", e.g. Q(2652, 283.7) = 1 − 2^-5141):
+    then whole − complement is formed at a precision that keeps the complement."""
+    p = mp.mp.prec
+    main = mp.gammainc(a, x, mp.inf, regularized=reg) if upper else mp.gammainc(a, 0, x, regularized=reg)
+    comp = mp.gammainc(a, 0, x, regularized=reg) if upper else mp.gammainc(a, x, mp.inf, regularized=reg)
+    whole = mp.mpf(1) if reg else mp.gamma(a)
+    if comp != 0 and abs(comp) < abs(whole) * mp.mpf(2)**(40 - p):
+        with mp.workprec(int(-mp.log(abs(comp) / abs(whole), 2)) + p + 64):
+            whole = mp.mpf(1) if reg else mp.gamma(a)
+            return whole - comp
+    return main
+def GL(a, x): return _igam(a, x, False, False)
+def GU(a, x): return _igam(a, x, True, False)
+def GP(a, x): return _igam(a, x, False, True)
+def GQ(a, x): return _igam(a, x, True, True)
 def GUN(a, x):
     """Γ(a, x) for a <= 0: mpmath at two working precisions (REFPREC+300 and
     +600), which must agree to 2^-REFPREC relative (guards internal cancellation)."""

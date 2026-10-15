@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- sf_check: the incomplete-gamma references (`gl`, `gu`, `gp`, `gq`, a > 0) now keep the complementary part when it is below the working precision of the whole (Γ(a) or 1). Before, such a value came back as exactly Γ(a) or 1, and the check counted the library's correct result as wrong. The first local trial of the nightly fuzz found this: seed 20261014, range `gq_near`, Q(2652.0, 283.74) = 1 − 2^-5141.4, where the reference said "exactly 1, no flags", while the library correctly returned 1 − ulp in RZ/RD with `inexact`. The library is unchanged. With the fixed reference, `modes` 40 cases per range, seed 1, over `gl`, `gu`, `gp`, `gq`, `gq_mid`, `gp_mid`, `gu_mid`, `gq_tinya`, `gu_tinya`: 0 misrounded, 0 flag errors.
+
 ## 4.23.0
 
 - `tgamma_upper(a, x)` now takes a ≤ 0 (a = 0, negative integers, negative non-integers) for x > 0, correctly rounded in all 5 modes with exact flags (previously a domain error). For x < 36 and a ≥ −1000 it uses Γ(a) − γ(a, x) with N = round(−a), e = a + N, and the two poles at a = −N cancelled analytically: Γ(a, x) = (−1)^N x^e expm1(L)/(e·N!) − x^a Σ_{n≠N} (−x)^n/(n!(a+n)), L = lnΓ(1+e) − Σ_{k≤N} ln(1 − e/k) − e ln x (e = 0 gives ψ(N+1) − ln x). Otherwise it uses the Legendre continued fraction, which converges fast there for a ≤ 0. Γ(a, 0) = +∞ with divide-by-zero, Γ(a, +∞) = +0 exactly, x < 0 and a = −∞ are invalid; x > 2^1000 underflows, and for a < −2^1000 the result overflows (x < 1) or underflows (x > 1), except Γ(a, 1) = e^{−1}/(1 − a). `tgamma_lower`, `gamma_p` and `gamma_q` still require a > 0. Cost: 0.2–0.8 ms for most arguments, up to ~7 ms for a within 2^-60 of a negative integer near −1000. New sf_check ranges, round-to-nearest 40 cases each, seed 1, and `modes` 20 cases each, seed 2, all with 0 misrounded and 0 flag errors:
