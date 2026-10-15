@@ -678,6 +678,7 @@ inline constexpr int kAsymW = 60;  // asymptotic series at w >= 60: the k = 140 
         // the small argument's first term apart (exact if a power of two)
         M::MP E;
         if (hexact) E = M::ldexp(one, -static_cast<long>(n + 1) * (H.top() - 1));
+        else if (const std::uint32_t si = Z::small_uint(S)) E = Z::pow_neg_int(H, si, Q);
         else E = Z::pow_neg(H, S, Q);
         if (sgn_h) E = M::neg(E);
         const M::MP H1 = M::add(H, one, 1 << 22);

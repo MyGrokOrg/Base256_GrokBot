@@ -1236,9 +1236,26 @@ namespace zeta {
     const dd C = neg ? W : A;
     const dd lc = neg ? detail_dd::log(C) : la;
     dd sum{float256::zero()};
+    // integer s in [2, 512] (polygamma, trigamma, ζ(n, a)): (c/(n+a))^s by binary
+    // powering, about (s + 2·log2 s)·2^-476 relative, against a log and an exp
+    // (error ~2^-474·s·ln((n+a)/c)) that cost ~20 dd multiplications each
+    const bool sint = !neg && s.lo.iszero() && s.hi == trunc(s.hi) && s.hi <= float256(512);
+    const unsigned si = sint ? static_cast<unsigned>(s.hi.to_double()) : 0;
     for (long n = Nt - 1; n >= 0; --n) {
         if (n == 0 && !neg) { sum = sum + one; break; }
-        const dd r = (dd(float256::from_int(static_cast<int>(n))) + A) / C;
+        const dd na = dd(float256::from_int(static_cast<int>(n))) + A;
+        if (sint) {
+            dd b = C / na, p = one;
+            for (unsigned e = si;;) {
+                if (e & 1) p = p * b;
+                e >>= 1;
+                if (e == 0) break;
+                b = b * b;
+            }
+            sum = sum + p;
+            continue;
+        }
+        const dd r = na / C;
         sum = sum + detail_dd::exp(-(s * detail_dd::log(r)));
     }
     if (bestN > 0) {
@@ -1323,6 +1340,31 @@ inline constexpr int kReflS = 89;
 namespace zmp {
 namespace M = detail_mp;
 [[nodiscard]] inline M::MP pow_neg(const M::MP& x, const M::MP& s, int Q) { return M::exp(M::neg(M::mul(s, M::log(x, Q), Q)), Q); }
+// s as an integer in [1, 2^20] if it is one exactly, else 0.
+[[nodiscard]] inline std::uint32_t small_uint(const M::MP& s) {
+    if (s.zero() || s.neg || s.top() > 21) return 0;
+    auto m = s.m;
+    if (s.e < 0) {
+        if (m.shr_sticky(static_cast<int>(-s.e))) return 0;  // fraction bits
+    } else {
+        m.shl(static_cast<int>(s.e));
+    }
+    return m.limb(0);
+}
+// x^{−s} for an integer s >= 1 by binary powering and one division: about
+// 2·log2(s) roundings of 2^-(Q+32) and one of 2^-Q, against an exp and a log
+// (each several multiplications at Q bits) in pow_neg.
+[[nodiscard]] inline M::MP pow_neg_int(const M::MP& x, std::uint32_t s, int Q) {
+    const int Q2 = Q + 32;
+    M::MP r = M::from_u64(1), b = x;
+    for (std::uint32_t e = s;;) {
+        if (e & 1) r = M::mul(r, b, Q2);
+        e >>= 1;
+        if (e == 0) break;
+        b = M::mul(b, b, Q2);
+    }
+    return M::div(M::from_u64(1), r, Q);
+}
 [[nodiscard]] inline M::MP absmax(const M::MP& a, const M::MP& b) { return M::cmp_abs(a, b) >= 0 ? a : b; }
 // t − 2·round(t/2) ∈ [−1, 1] (exact).
 [[nodiscard]] inline M::MP mod2(M::MP t) {
@@ -1346,6 +1388,8 @@ inline void sincos_pi(const M::MP& t, int Q, M::MP& s, M::MP& c) {
 [[nodiscard]] inline M::MP em_mp(const M::MP& S, const M::MP& A, double sd, double ad, int P, M::MP& big) {
     const int Q = P + 64;
     const M::MP one = M::from_u64(1);
+    const std::uint32_t si = small_uint(S);  // integer s (polygamma): powers without exp/log
+    auto pow_neg = [&](const M::MP& x, const M::MP& s, int q) { return si ? pow_neg_int(x, si, q) : zmp::pow_neg(x, s, q); };
     if (sd > 0.5 * P + 50) {
         M::MP sum;
         big = M::MP{};

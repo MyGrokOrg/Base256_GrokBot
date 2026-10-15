@@ -284,6 +284,8 @@ inline void sincos(const MP& x, int P, MP& s, MP& c) {
 struct Bern {
     std::mutex mu;
     std::vector<BigInt> T;  // T[k], k >= 1
+    std::vector<MP> F;      // F[k] = B_2k/(2k)! truncated to FP[k] bits (0: not yet)
+    std::vector<int> FP;
 };
 inline Bern& bern() { static Bern b; return b; }
 [[nodiscard]] inline MP bern_fact(int k, int P) {
@@ -291,6 +293,13 @@ inline Bern& bern() { static Bern b; return b; }
     BigInt Tk;
     {
         std::lock_guard<std::mutex> g(B.mu);
+        // cached at >= P bits: truncating that to P bits gives the same value as
+        // dividing at P bits (both are the exact quotient truncated to P bits)
+        if (static_cast<int>(B.FP.size()) > k && B.FP[static_cast<std::size_t>(k)] >= P) {
+            MP r = B.F[static_cast<std::size_t>(k)];
+            norm(r, P);
+            return r;
+        }
         if (static_cast<int>(B.T.size()) <= k) {
             // recompute up to n = 2k (amortized)
             const int n = 2 * k + 8;
@@ -317,7 +326,13 @@ inline Bern& bern() { static Bern b; return b; }
     den.mul(p2);
     MP num; num.m = Tk; num.neg = (k % 2) == 0;
     MP d; d.m = den; d.e = 2 * k;
-    return div(num, d, P);
+    MP r = div(num, d, P);
+    {
+        std::lock_guard<std::mutex> g(B.mu);
+        if (static_cast<int>(B.FP.size()) <= k) { B.F.resize(static_cast<std::size_t>(k) + 1); B.FP.resize(static_cast<std::size_t>(k) + 1, 0); }
+        if (B.FP[static_cast<std::size_t>(k)] < P) { B.F[static_cast<std::size_t>(k)] = r; B.FP[static_cast<std::size_t>(k)] = P; }
+    }
+    return r;
 }
 
 // ln Γ(x), x > 0: shift to y >= 0.12 P + 16, then Stirling.
