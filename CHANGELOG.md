@@ -6,7 +6,10 @@
   - `polygamma(1/2/3, x ∈ [−50, −0.1])`: 11.4/11.0/10.6 ms → 465/486/501 µs. `polygamma(10, x ∈ [−20, −0.1])`: 12.7 ms → 615 µs. `polygamma(3, x ∈ [0.1, 50])`: 1.20 ms → 270 µs. `trigamma`: 1.24 ms → 255 µs. `hurwitz_zeta(3, a)`: 1.12 ms → 266 µs.
   - Unchanged (non-integer s): `hurwitz_zeta` 1.63 → 1.67 ms (s ∈ [1.1, 51]), 1.74 → 1.70 ms (s ∈ [2, 4], a ∈ [0.4, 0.8]), 1.21 → 1.21 ms (s < 1). `digamma` 145 → 144 µs, `riemann_zeta` 443 → 429 µs.
   - Decimal at the extreme exponents: `to_string` 31.4 ms → 34.3 µs (x·2^262140), 31.8 ms → 30.5 µs (x·2^-262370), 31.6 ms → 31.5 µs (x·2^-262000). `format(scientific, 75)` 10.2 ms → 5.37 µs and 10.1 ms → 4.41 µs. `to_chars` 31.3 ms → 34.8 µs. `format(fixed, 0)` of x·2^262140 (78,913 digits) 119 → 40.2 ms.
-  - `to_string` of x ∈ [1, 2) (exact path in both): 4.21 → 4.39 µs (+4 %, outside the 3-run spread, not investigated).
+  - `to_string` of x ∈ [1, 2) (exact path in both): 4.21 → 4.39 µs (+4 %).
+    - Investigated afterwards: it is noise, not a slowdown. Callgrind (2000 calls, g++-14 `-O3`) counts 132,814,701 instructions for 7da2567 and 131,141,095 for 4.24.0 (−1.3 %), with identical malloc/free costs. The only new work on this path is one |k| < 160 early-out per conversion step and an empty vector.
+    - Re-measured with the same method: full item list, median of 3 interleaved pinned runs, 4.62 µs (4.51–4.71) vs 5.00 µs (4.52–5.08), overlapping. Ten interleaved runs of the item alone: medians 4.51 µs (4.44–5.10) vs 4.55 µs (4.42–5.19), +1.0 %. Standalone loop: 4.00–4.33 vs 4.06–4.26 µs.
+    - No code change. Output re-checked on 9f9d15a: `test_format` passes, and the 800-value side-by-side against 7da2567 is still identical.
 - Compile time with these changes, `tools/compile_time.py` against the 4.23.0 baseline ad368d3, threshold +10 % (warn only), 0 warnings in both runs. Headers 797,147 → 812,196 bytes (+1.9 %). CPU s, ad368d3 → 76f07bb:
 
   | TU | CI job of run 38688772366 (mean of 5) | dev box (mean of 10) |

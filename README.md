@@ -356,7 +356,11 @@ Run-to-run noise is about ±10% for the basic operations. `fma` has not changed 
 | `format(fixed, 0)` (78,913 digits) | x·2^262140 | 119 ms | 40.2 ms | 2.95× |
 | `to_string` | x ∈ [1, 2) | 4.21 µs | 4.39 µs | 0.96× |
 
-The last row is the ordinary case (decimal exponent 0, exact path in both versions). Its 4 % difference is larger than the spread of the three runs (4.1–4.2 vs 4.3–4.5 µs) and was not investigated further.
+The last row is the ordinary case (decimal exponent 0, exact path in both versions). Its 4 % is benchmark noise, not a slowdown:
+- Callgrind over 2000 calls (x in [1, 2), g++-14 `-O3`) counts 132,814,701 instructions for 7da2567 and 131,141,095 for 4.24.0 (−1.3 %). malloc/free costs are identical (7,664,080 / 11,774,000 Ir).
+- The only extra work for this case is one early-out comparison (|k| < 160) in `dec_floor_scaled` and in the shortest search, plus an empty, never-allocating vector. `BigInt::to_dec` now calls the old loop (`to_dec_simple`) out of line through a size check.
+- Re-measured with the same method, the full item list (median of 3 interleaved runs, pinned to core 5) gave 4.62 µs (4.51–4.71) vs 5.00 µs (4.52–5.08), with overlapping ranges. Ten interleaved runs of this item alone gave medians of 4.51 µs (4.44–5.10) vs 4.55 µs (4.42–5.19), +1.0 %. Outliers near 5.1 µs occur in both binaries on the shared box.
+- A standalone loop (one TU, 64 values, 5 interleaved runs) gave 4.00–4.33 vs 4.06–4.26 µs.
 
 ## Notes on specific functions
 
