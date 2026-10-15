@@ -93,10 +93,20 @@ def SYN(n, x): return (-1) ** (int(n) + 1) * SY(n, -x)
 
 def BETA(a, b): return mp.beta(a, b)
 # mpmath's betainc can lose bits to cancellation; evaluate it at 2000 bits.
-def IB(a, b, x):
-    with mp.workprec(2000): return mp.betainc(a, b, 0, x, regularized=True)
-def IBC(a, b, x):
-    with mp.workprec(2000): return mp.betainc(a, b, x, 1, regularized=True)
+# When the complement is below that precision the value would come back as exactly
+# 1 (wrongly "exact"; found by the nightly fuzz, seed 4231, ibeta_skw/ibeta_big):
+# then 1 − complement is formed at a precision that keeps it, with the complement
+# taken as a lower integral, I_{1−x}(b, a) (1 − x is exact at this precision).
+def _ib(a, b, x, upper):
+    p = max(mp.mp.prec, 2000)
+    with mp.workprec(p):
+        main = mp.betainc(a, b, x, 1, regularized=True) if upper else mp.betainc(a, b, 0, x, regularized=True)
+        comp = mp.betainc(a, b, 0, x, regularized=True) if upper else mp.betainc(b, a, 0, 1 - x, regularized=True)
+    if comp != 0 and abs(comp) < mp.mpf(2)**(40 - p):
+        with mp.workprec(int(-mp.log(abs(comp), 2)) + p + 64): return 1 - comp
+    return main
+def IB(a, b, x): return _ib(a, b, x, False)
+def IBC(a, b, x): return _ib(a, b, x, True)
 
 def ZETA(x): return mp.zeta(x)
 # mpmath's zeta(s, a) loses hundreds of bits at large a; evaluate it at 3000 bits.
