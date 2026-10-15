@@ -1,0 +1,290 @@
+{
+ "ref": "ad368d3",
+ "version": "4.23.0",
+ "threshold": 0.1,
+ "note": "Measured on the shared dev box (8 cores, other jobs running), CPU seconds user+sys, -std=c++23 -O2 -c, mean of 10; the CI job re-measures 'ref' next to the working tree on its own runner and compares there, so these absolute numbers are documentation only.",
+ "historical": {
+  "airy_table_575231d": {
+   "header_bytes_before": 734091,
+   "header_bytes_after": 784705,
+   "two_over_pi_ext_hpp_bytes": 49779,
+   "include_only_g++14_O2_wall_mean8_s": {
+    "before": 0.956,
+    "after": 0.98
+   },
+   "header_growth_bytes": 50614,
+   "comment": "+50,614 bytes in total: 49,779 for detail/two_over_pi_ext.hpp, 835 in mp.hpp and special_math_ext.hpp"
+  },
+  "igamma_a_le_0_6bed0c1": {
+   "header_bytes_before": 792300,
+   "header_bytes_after": 797147,
+   "header_growth_bytes": 4847
+  }
+ },
+ "results": {
+  "ad368d3 (4.23.0)": {
+   "header_bytes": 797147,
+   "n": 10,
+   "times": {
+    "g++-14 include_only": {
+     "mean": 1.1293,
+     "sd": 0.1038,
+     "wall": 1.1313,
+     "wall_sd": 0.1016
+    },
+    "g++-14 arith": {
+     "mean": 1.2925,
+     "sd": 0.0437,
+     "wall": 1.2931,
+     "wall_sd": 0.0439
+    },
+    "g++-14 math": {
+     "mean": 2.8304,
+     "sd": 0.0938,
+     "wall": 2.8385,
+     "wall_sd": 0.1023
+    },
+    "g++-14 special": {
+     "mean": 5.336,
+     "sd": 0.1817,
+     "wall": 5.3415,
+     "wall_sd": 0.1821
+    },
+    "g++-14 igamma": {
+     "mean": 3.0821,
+     "sd": 0.1149,
+     "wall": 3.0866,
+     "wall_sd": 0.1149
+    },
+    "clang++-19 include_only": {
+     "mean": 1.2435,
+     "sd": 0.0479,
+     "wall": 1.2442,
+     "wall_sd": 0.0479
+    },
+    "clang++-19 arith": {
+     "mean": 1.2661,
+     "sd": 0.0523,
+     "wall": 1.2667,
+     "wall_sd": 0.0523
+    },
+    "clang++-19 math": {
+     "mean": 2.184,
+     "sd": 0.0697,
+     "wall": 2.1861,
+     "wall_sd": 0.0715
+    },
+    "clang++-19 special": {
+     "mean": 4.0348,
+     "sd": 0.1348,
+     "wall": 4.0363,
+     "wall_sd": 0.1346
+    },
+    "clang++-19 igamma": {
+     "mean": 2.4113,
+     "sd": 0.1384,
+     "wall": 2.4311,
+     "wall_sd": 0.1401
+    }
+   }
+  },
+  "1638edf (before tgamma_upper a<=0)": {
+   "header_bytes": 792300,
+   "n": 10,
+   "times": {
+    "g++-14 include_only": {
+     "mean": 1.1018,
+     "sd": 0.0669,
+     "wall": 1.104,
+     "wall_sd": 0.0661
+    },
+    "g++-14 arith": {
+     "mean": 1.2915,
+     "sd": 0.0527,
+     "wall": 1.2926,
+     "wall_sd": 0.0524
+    },
+    "g++-14 math": {
+     "mean": 2.8718,
+     "sd": 0.1367,
+     "wall": 2.8754,
+     "wall_sd": 0.1368
+    },
+    "g++-14 special": {
+     "mean": 5.3585,
+     "sd": 0.2711,
+     "wall": 5.3627,
+     "wall_sd": 0.2725
+    },
+    "g++-14 igamma": {
+     "mean": 2.9536,
+     "sd": 0.1152,
+     "wall": 2.9573,
+     "wall_sd": 0.1137
+    },
+    "clang++-19 include_only": {
+     "mean": 1.2651,
+     "sd": 0.1643,
+     "wall": 1.2657,
+     "wall_sd": 0.1643
+    },
+    "clang++-19 arith": {
+     "mean": 1.259,
+     "sd": 0.0668,
+     "wall": 1.2598,
+     "wall_sd": 0.0668
+    },
+    "clang++-19 math": {
+     "mean": 2.2018,
+     "sd": 0.0843,
+     "wall": 2.2026,
+     "wall_sd": 0.0843
+    },
+    "clang++-19 special": {
+     "mean": 4.0666,
+     "sd": 0.3532,
+     "wall": 4.2674,
+     "wall_sd": 0.7814
+    },
+    "clang++-19 igamma": {
+     "mean": 2.3162,
+     "sd": 0.0553,
+     "wall": 2.3703,
+     "wall_sd": 0.1533
+    }
+   }
+  },
+  "575231d (Airy 2/pi table)": {
+   "header_bytes": 784705,
+   "n": 10,
+   "times": {
+    "g++-14 include_only": {
+     "mean": 1.0679,
+     "sd": 0.085,
+     "wall": 1.0694,
+     "wall_sd": 0.084
+    },
+    "g++-14 arith": {
+     "mean": 1.4463,
+     "sd": 0.389,
+     "wall": 1.4484,
+     "wall_sd": 0.3936
+    },
+    "g++-14 math": {
+     "mean": 2.8462,
+     "sd": 0.1213,
+     "wall": 2.8507,
+     "wall_sd": 0.1209
+    },
+    "g++-14 special": {
+     "mean": 5.1071,
+     "sd": 0.3074,
+     "wall": 5.1317,
+     "wall_sd": 0.3033
+    },
+    "g++-14 igamma": {
+     "mean": 2.9708,
+     "sd": 0.138,
+     "wall": 2.9771,
+     "wall_sd": 0.1377
+    },
+    "clang++-19 include_only": {
+     "mean": 1.2219,
+     "sd": 0.0622,
+     "wall": 1.2225,
+     "wall_sd": 0.0622
+    },
+    "clang++-19 arith": {
+     "mean": 1.2464,
+     "sd": 0.0475,
+     "wall": 1.2469,
+     "wall_sd": 0.0476
+    },
+    "clang++-19 math": {
+     "mean": 2.1989,
+     "sd": 0.0769,
+     "wall": 2.1998,
+     "wall_sd": 0.0767
+    },
+    "clang++-19 special": {
+     "mean": 3.8172,
+     "sd": 0.1599,
+     "wall": 3.853,
+     "wall_sd": 0.1693
+    },
+    "clang++-19 igamma": {
+     "mean": 2.3079,
+     "sd": 0.0847,
+     "wall": 2.31,
+     "wall_sd": 0.0836
+    }
+   }
+  },
+  "3904fad (before Airy table)": {
+   "header_bytes": 734091,
+   "n": 10,
+   "times": {
+    "g++-14 include_only": {
+     "mean": 1.0945,
+     "sd": 0.093,
+     "wall": 1.0959,
+     "wall_sd": 0.0926
+    },
+    "g++-14 arith": {
+     "mean": 2.104,
+     "sd": 2.4999,
+     "wall": 2.2302,
+     "wall_sd": 2.8958
+    },
+    "g++-14 math": {
+     "mean": 2.8663,
+     "sd": 0.1106,
+     "wall": 2.8823,
+     "wall_sd": 0.1211
+    },
+    "g++-14 special": {
+     "mean": 5.023,
+     "sd": 0.2095,
+     "wall": 5.0475,
+     "wall_sd": 0.2429
+    },
+    "g++-14 igamma": {
+     "mean": 2.9039,
+     "sd": 0.114,
+     "wall": 2.9078,
+     "wall_sd": 0.1141
+    },
+    "clang++-19 include_only": {
+     "mean": 1.2097,
+     "sd": 0.082,
+     "wall": 1.2107,
+     "wall_sd": 0.0817
+    },
+    "clang++-19 arith": {
+     "mean": 1.2394,
+     "sd": 0.0615,
+     "wall": 1.2402,
+     "wall_sd": 0.0617
+    },
+    "clang++-19 math": {
+     "mean": 2.2056,
+     "sd": 0.0684,
+     "wall": 2.2065,
+     "wall_sd": 0.0686
+    },
+    "clang++-19 special": {
+     "mean": 3.8874,
+     "sd": 0.1345,
+     "wall": 4.0665,
+     "wall_sd": 0.5713
+    },
+    "clang++-19 igamma": {
+     "mean": 2.3513,
+     "sd": 0.1636,
+     "wall": 2.376,
+     "wall_sd": 0.1478
+    }
+   }
+  }
+ }
+}

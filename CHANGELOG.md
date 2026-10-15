@@ -2,9 +2,27 @@
 
 ## Unreleased
 
+- Compile-time measurement: `tools/compile_time.py` compiles representative TUs (`include_only`: `base256.hpp`; `arith`: `float256.hpp` arithmetic; `math`: `math.hpp` exp/log/sin/pow/atan; `special`: Bessel, Airy, polygamma, Hurwitz ζ, Γ(a, x), ζ; `igamma`: `tgamma_upper` only) with g++-14 and clang++-19, `-std=c++23 -O2 -c`. It reports the mean ± sd of N runs of compiler CPU time (user + sys), the wall-clock mean, and the header bytes. Other git revisions can be measured in the same interleaved run. The baseline for 4.23.0 (`ad368d3`) is in `tools/compile_time_baseline.json`. The new CI job `compile-time` measures the baseline revision next to the pushed tree on the same runner (mean of 5). It prints a `::warning::` and never fails when a TU's mean CPU time grows by more than 10 % or the headers by more than 10 %.
+- Compile-time baseline, measured on the shared 8-core dev box (another job was running, so sd ≈ 0.05–0.15 s; one 3904fad cell was disturbed). CPU s, mean of 10:
+
+  | | 3904fad (before Airy table) | 575231d (Airy table) | 1638edf (before Γ(a≤0)) | ad368d3 = 4.23.0 |
+  |---|---|---|---|---|
+  | header bytes | 734,091 | 784,705 | 792,300 | 797,147 |
+  | g++-14 include_only | 1.095 | 1.068 | 1.102 | 1.129 |
+  | g++-14 arith | (2.104 ± 2.5, disturbed) | 1.446 | 1.292 | 1.292 |
+  | g++-14 math | 2.866 | 2.846 | 2.872 | 2.830 |
+  | g++-14 special | 5.023 | 5.107 | 5.359 | 5.336 |
+  | g++-14 igamma | 2.904 | 2.971 | 2.954 | 3.082 |
+  | clang++-19 include_only | 1.210 | 1.222 | 1.265 | 1.244 |
+  | clang++-19 arith | 1.239 | 1.246 | 1.259 | 1.266 |
+  | clang++-19 math | 2.206 | 2.199 | 2.202 | 2.184 |
+  | clang++-19 special | 3.887 | 3.817 | 4.067 | 4.035 |
+  | clang++-19 igamma | 2.351 | 2.308 | 2.316 | 2.411 |
+
+  The Airy 2/π table (575231d) added 50,614 header bytes: 49,779 for `detail/two_over_pi_ext.hpp` and 835 in `mp.hpp` and `special_math_ext.hpp` (784,705 bytes in total; the "+49,779" quoted with 575231d was the table file alone). The earlier include-only measurement, g++-14 -O2 wall time, mean of 8, gave 0.956 s → 0.980 s. In this run the include-only and special TUs moved within about one sd. Γ(a, x) for a ≤ 0 (6bed0c1) added 4,847 header bytes. The `igamma` TU went from 2.954 to 3.082 s with g++-14 (+4.3 %) and from 2.316 to 2.411 s with clang++-19 (+4.1 %), about one sd. Include-only changed by +2.4 % (g++) and −1.7 % (clang), which is noise.
 - Nightly fuzz workflow `.github/workflows/fuzz.yml` (cron 03:17 UTC and `workflow_dispatch` with inputs `seed`, `cases`, `mpfr_cases`). Without a seed it uses the UTC date (YYYYMMDD), shown in the run summary. It runs every `sf_check` range (230, including the 4.23.0 ones) in `modes` (all 5 modes, exact flags, 2000-bit mpmath reference), split over 16 matrix jobs, plus `mpfr_ulp` in strict mode and `mpfr_diff` against MPFR. Any misrounded result or flag error fails the job and is printed as a `FAIL` line with the function or range, input bits, mode, expected and got value and flags, and the seed. Logs are uploaded as artifacts and the FAIL lines are collected in the run summary.
 - sf_check: `--list`; `SF_RANGE_SEED=1` seeds each range from (seed, range name), so its cases do not depend on the filter or shard; `SF_SHARD=i/K`; `SF_TIMING=1`; `SF_MAXFAIL`. `modes` now prints every failing (case, mode) as a `FAIL` line (up to 50 per range) instead of only the first, reports a reference that raises as `REFERR` (skipped, not a failure), reports an evaluator crash as `CRASH` (exit 2), and ends with a `SUMMARY` line. Without the new variables the cases and figures are unchanged.
-- mpfr_ulp: `bound_check` = 2 (strict): any misrounded result, flag error or direction error fails, and each is printed as a `FAIL` line with the seed. New function `tgamma_upper_neg` (Γ(a, x), a ∈ (−60, 0], a third of them 0 or negative integers, against `mpfr_gamma_inc` at 3000 bits), also in the ctest list. Local trial, seed 20261014, 400 cases per function, strict, all 83 functions: 0 misrounded, 0 flag errors, 0 direction errors.
+- mpfr_ulp: `bound_check` = 2 (strict): any misrounded result, flag error or direction error fails, and each is printed as a `FAIL` line with the seed. New function `tgamma_upper_neg` (Γ(a, x), a ∈ (−60, 0], a third of them 0 or negative integers, against `mpfr_gamma_inc` at 3000 bits), also in the ctest list. Local trial, seed 20261014, 400 cases per function, strict, all 82 functions: 0 misrounded, 0 flag errors, 0 direction errors.
 - sf_check: the incomplete-gamma references (`gl`, `gu`, `gp`, `gq`, a > 0) now keep the complementary part when it is below the working precision of the whole (Γ(a) or 1). Before, such a value came back as exactly Γ(a) or 1, and the check counted the library's correct result as wrong. The first local trial of the nightly fuzz found this: seed 20261014, range `gq_near`, Q(2652.0, 283.74) = 1 − 2^-5141.4, where the reference said "exactly 1, no flags", while the library correctly returned 1 − ulp in RZ/RD with `inexact`. The library is unchanged. With the fixed reference, `modes` 40 cases per range, seed 1, over `gl`, `gu`, `gp`, `gq`, `gq_mid`, `gp_mid`, `gu_mid`, `gq_tinya`, `gu_tinya`: 0 misrounded, 0 flag errors.
 
 ## 4.23.0

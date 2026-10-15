@@ -50,3 +50,21 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  compile-time:
+    # Compile time (gcc-14, clang-19, -O2, mean of 5) of representative TUs and the
+    # header size, measured next to the baseline revision in
+    # tools/compile_time_baseline.json on the same runner. Warns (never fails)
+    # when a TU's mean grows more than 10 % or the headers more than 10 %.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install clang-19
+        run: sudo apt-get update && sudo apt-get install -y clang-19
+      - name: Measure
+        run: |
+          python3 tools/compile_time.py --cxx g++-14,clang++-19 -n 5 --threshold 0.10 \
+            --compare tools/compile_time_baseline.json | tee compile-time.log
+          { echo '### Compile time (warn-only, threshold +10 %)'; grep -v '^::' compile-time.log; } >> "$GITHUB_STEP_SUMMARY"

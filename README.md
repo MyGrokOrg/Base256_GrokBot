@@ -132,6 +132,20 @@ FAIL flags fn=cbrt in=… mode=RU got=… flags=0x10 want=… flags=0x10 seed=3
 
 and collected in the run summary; the full logs are uploaded as artifacts (`fuzz-sf-shard*`, `fuzz-mpfr_ulp`, `fuzz-mpfr_diff`). Reproduce a range locally with `SF_RANGE_SEED=1 python3 tools/sf_check.py build/sf_eval CASES SEED RANGE modes`, or `build/mpfr_ulp CASES SEED 2 FUNCTION`. A reference that raises in mpmath is reported as `REFERR` and skipped, not counted as a failure.
 
+### Compile time
+
+`python3 tools/compile_time.py [--cxx g++-14,clang++-19] [-n 8] [--ref REV] [--compare tools/compile_time_baseline.json]` measures the compile time (compiler CPU time and wall clock, `-std=c++23 -O2 -c`, mean ± sd of N) of representative TUs and the header size. The CI job `compile-time` compares the pushed tree with the 4.23.0 baseline revision on the same runner. It warns, but does not fail, when a TU gets more than 10 % slower or the headers grow more than 10 %. 4.23.0 on the dev box (CPU s, mean of 10):
+
+| TU | g++-14 | clang++-19 |
+|---|---|---|
+| `include_only` (`base256.hpp`) | 1.13 | 1.24 |
+| `arith` (`float256.hpp`) | 1.29 | 1.27 |
+| `math` (`math.hpp`) | 2.83 | 2.18 |
+| `special` (Bessel, Airy, polygamma, ζ, Γ(a, x)) | 5.34 | 4.04 |
+| `igamma` (`tgamma_upper`) | 3.08 | 2.41 |
+
+The headers total 797,147 bytes: +50,614 for the Airy 2/π table in 4.23.0 (49,779 of them in `detail/two_over_pi_ext.hpp`) and +4,847 for Γ(a, x) with a ≤ 0. Earlier include-only measurement for the Airy table: 0.956 s → 0.980 s (g++-14 -O2 wall, mean of 8). See the CHANGELOG for the per-revision table.
+
 ## Rounding modes and exception flags
 
 ```cpp
