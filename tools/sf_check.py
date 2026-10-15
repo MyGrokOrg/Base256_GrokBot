@@ -2,6 +2,13 @@
 """Accuracy check of the special functions against mpmath (independent reference).
 
 usage: sf_check.py EVAL_BINARY [cases_per_range] [seed] [filter] [modes]
+       sf_check.py --list                 (range names, one per line)
+
+Environment (used by the nightly fuzz workflow):
+  SF_RANGE_SEED=1  reseed per range from (seed, range name), so a range's cases
+                   do not depend on the filter or shard it runs in.
+  SF_SHARD=i/K     run only the ranges whose index in RANGES is i mod K.
+  SF_MAXFAIL=n     in "modes", print at most n FAIL lines per range (default 50).
 
 With "modes" as the fifth argument, every case is evaluated in all five
 rounding modes (SF_MODES=1) and checked against the correctly rounded value
@@ -664,24 +671,61 @@ def _round_b256(v, mode):
         r = mp.inf if to_inf else mp.ldexp((1 << P) - 1, EMAX - (P - 1))
     return s * r, flags
 
-def check_modes(exe, rng, n, flt):
+def _hexs(v):
+    return str(v) if (mp.isinf(v) or mp.isnan(v)) else to_hex(v)
+
+def selected(flt):
+    """(index, range) pairs chosen by the filter and SF_SHARD."""
+    import os
+    shard = os.environ.get("SF_SHARD", "")
+    si, sk = (int(t) for t in shard.split("/")) if shard else (0, 1)
+    out = []
+    for idx, rg in enumerate(RANGES):
+        name = rg[0]
+        if idx % sk != si: continue
+        if flt and flt not in name.split(",") and not any(name.startswith(f) for f in flt.split(",")):
+            continue
+        out.append(rg)
+    return out
+
+def range_rng(rng, seed, name):
+    import os
+    return random.Random(f"{seed}:{name}") if os.environ.get("SF_RANGE_SEED") == "1" else rng
+
+def check_modes(exe, rng, n, flt, seed=1):
+    """Every case in all five modes against the correctly rounded 2000-bit
+    reference, with flags. Prints one FAIL line per wrong (case, mode) with the
+    range, operation, input bits, mode, expected and got value and flags and the
+    seed; exits 1 on any misrounded result or flag error (2 if the evaluator
+    crashed). A reference that raises is reported as REFERR and skipped."""
     import os
     REFPREC[0] = 2000
     mp.mp.prec = 2000
     env = dict(os.environ, SF_MODES="1")
-    bad_total = 0
-    for name, op, ref, args in RANGES:
-        if flt and flt not in name.split(",") and not any(name.startswith(f) for f in flt.split(",")):
-            continue
-        cases = gen_cases(args, rng, n)
+    maxfail = int(os.environ.get("SF_MAXFAIL", "50"))
+    bad_total = referr_total = 0
+    crashed = False
+    import time
+    for name, op, ref, args in selected(flt):
+        t0 = time.time()
+        cases = gen_cases(args, range_rng(rng, seed, name), n)
         inp = "".join(f"{op} {' '.join(h)}\n" for h, _ in cases)
-        res = subprocess.run([exe], input=inp, capture_output=True, text=True, check=True, env=env).stdout.split("\n")
+        pr = subprocess.run([exe], input=inp, capture_output=True, text=True, env=env)
+        if pr.returncode != 0:
+            print(f"CRASH range={name} op={op} rc={pr.returncode} seed={seed} stderr={pr.stderr.strip()[:500]!r}", flush=True)
+            crashed = True
+            continue
+        res = pr.stdout.split("\n")
         worst = [0.0] * 5
-        mis = flagerr = 0
-        first = None
+        mis = flagerr = referr = shown = 0
         for (hs, vs), r in zip(cases, res):
             parts = r.split()
-            want = ref(*vs)
+            try:
+                want = ref(*vs)
+            except Exception as ex:  # reference failure: not a library error
+                referr += 1
+                print(f"REFERR range={name} op={op} in={','.join(hs)} seed={seed} {type(ex).__name__}: {str(ex)[:200]}", flush=True)
+                continue
             for i, m in enumerate(MODES):
                 got = parse_hex(parts[2 * i]); gf = int(parts[2 * i + 1])
                 exp_v, exp_f = round_b256(want, m)
@@ -690,13 +734,21 @@ def check_modes(exe, rng, n, flt):
                 same = (got == exp_v) or (mp.isnan(got) and mp.isnan(exp_v))
                 if not same: mis += 1
                 if (gf & 0x1F) != exp_f and same: flagerr += 1
-                if (not same or (gf & 0x1F) != exp_f) and first is None:
-                    first = (m, hs, parts[2 * i], gf, to_hex(exp_v) if not mp.isinf(exp_v) else str(exp_v), exp_f)
+                if (not same or (gf & 0x1F) != exp_f) and shown < maxfail:
+                    shown += 1
+                    kind = "misround" if not same else "flags"
+                    print(f"FAIL {kind} range={name} op={op} in={','.join(hs)} mode={m} "
+                          f"got={parts[2 * i]} flags={gf & 0x1F:#x} want={_hexs(exp_v)} flags={exp_f:#x} "
+                          f"ulp={err:.3g} seed={seed}", flush=True)
         bad = mis + flagerr
         bad_total += bad
+        referr_total += referr
         print(f"{name:10s} n={n} max ulp " + " ".join(f"{m} {w:.3g}" for m, w in zip(MODES, worst)) +
-              f" | misrounded {mis}, flag errors {flagerr}" + (f"  first {first}" if bad else ""), flush=True)
-    sys.exit(1 if bad_total else 0)
+              f" | misrounded {mis}, flag errors {flagerr}" + (f", reference errors {referr}" if referr else "") +
+              (f"  [{time.time() - t0:.0f} s]" if os.environ.get("SF_TIMING") == "1" else ""), flush=True)
+    print(f"SUMMARY seed={seed} cases={n} misrounded+flag errors={bad_total} reference errors={referr_total}"
+          + (" CRASH" if crashed else ""), flush=True)
+    sys.exit(2 if crashed else (1 if bad_total else 0))
 
 def gen_cases(args, rng, n):
     cases = []
@@ -742,17 +794,23 @@ def gen_cases(args, rng, n):
 def main():
     if sys.argv[1] == "--selftest":
         selftest(); return
+    if sys.argv[1] == "--list":
+        print("\n".join(r[0] for r in RANGES)); return
     exe = sys.argv[1]
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 200
-    rng = random.Random(int(sys.argv[3]) if len(sys.argv) > 3 else 1)
+    seed = int(sys.argv[3]) if len(sys.argv) > 3 else 1
+    rng = random.Random(seed)
     flt = sys.argv[4] if len(sys.argv) > 4 else ""
     if len(sys.argv) > 5 and sys.argv[5] == "modes":
-        check_modes(exe, rng, n, flt); return
+        check_modes(exe, rng, n, flt, seed); return
+    import os
     bad_total = 0
     for name, op, ref, args in RANGES:
         if flt and flt not in name:
             continue
-        cases = gen_cases(args, rng, n)
+        if os.environ.get("SF_SHARD") and (name, op, ref, args) not in selected(""):
+            continue
+        cases = gen_cases(args, range_rng(rng, seed, name), n)
         inp = "".join(f"{op} {' '.join(h)}\n" for h, _ in cases)
         res = subprocess.run([exe], input=inp, capture_output=True, text=True, check=True).stdout.split("\n")
         worst, wcase, mis = 0.0, None, 0

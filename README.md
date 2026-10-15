@@ -113,7 +113,24 @@ cmake --build build && ctest --test-dir build --output-on-failure
 ./build/mpfr_ulp 5000 42 1     # elementary-function ulp check: cases per function, seed, fail over bound
 ./build/mpfr_ulp 5000 42 0 "sin cos"   # report only, selected functions
 python3 tools/sf_check.py build/sf_eval 200 1   # special functions vs mpmath (pip install mpmath)
+python3 tools/sf_check.py build/sf_eval 20 1 "" modes   # all 5 modes + flags, every range
 ```
+
+### Nightly fuzz
+
+`.github/workflows/fuzz.yml` runs every night (03:17 UTC) and on demand (`workflow_dispatch`, inputs `seed`, `cases`, `mpfr_cases`). Without a seed it uses the UTC date (`YYYYMMDD`) and logs it in the run summary. It runs:
+
+- every `sf_check` range (230 in 4.23.0, including the 4.23.0 `gu_neg*`, `pg_neg*`, Bessel `*_neg*` and Airy `*_full` ranges) in `modes`: all five rounding modes against the correctly rounded 2000-bit mpmath value, with exact flags, `cases` per range (default 12). The ranges are split over 16 matrix jobs (`SF_SHARD=i/16`), and each range is seeded from (seed, range name) (`SF_RANGE_SEED=1`), so a range gives the same cases in any shard or filter.
+- `mpfr_ulp` in strict mode (`bound_check` = 2) over all its functions, including `tgamma_upper_neg` for a ≤ 0, and `mpfr_diff` (arithmetic, conversions) against MPFR, all five modes with flags.
+
+Any misrounded result, flag error (or, for `mpfr_ulp`, direction error) fails the job. Each one is printed as a line such as
+
+```
+FAIL misround range=gq_near op=gq in=0x14b8…p-225,0x11bb…p-228 mode=RZ got=… flags=0x10 want=… flags=0x0 ulp=0.5 seed=20261014
+FAIL flags fn=cbrt in=… mode=RU got=… flags=0x10 want=… flags=0x10 seed=3
+```
+
+and collected in the run summary; the full logs are uploaded as artifacts (`fuzz-sf-shard*`, `fuzz-mpfr_ulp`, `fuzz-mpfr_diff`). Reproduce a range locally with `SF_RANGE_SEED=1 python3 tools/sf_check.py build/sf_eval CASES SEED RANGE modes`, or `build/mpfr_ulp CASES SEED 2 FUNCTION`. A reference that raises in mpmath is reported as `REFERR` and skipped, not counted as a failure.
 
 ## Rounding modes and exception flags
 

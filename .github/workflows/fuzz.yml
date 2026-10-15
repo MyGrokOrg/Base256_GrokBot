@@ -1,0 +1,139 @@
+name: Nightly fuzz
+
+# Random accuracy checks of every special-function range in tools/sf_check.py
+# against mpmath (2000-bit reference) and of the elementary/special functions and
+# arithmetic against MPFR, in all five rounding modes with exact IEEE flags.
+# Any misrounded result or flag error fails the run; the FAIL lines give the
+# function, input bits, mode, expected and got value and flags, and the seed.
+# Reproduce one failure locally with the command printed at the top of its log.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"   # 03:17 UTC daily
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Seed (empty: derived from the UTC date, YYYYMMDD)"
+        required: false
+        default: ""
+      cases:
+        description: "sf_check cases per range (all 5 modes each)"
+        required: false
+        default: "12"
+      mpfr_cases:
+        description: "mpfr_ulp cases per function (mpfr_diff runs 10x this per operation)"
+        required: false
+        default: "2000"
+
+env:
+  SF_SHARDS: 16
+  MPMATH_VERSION: "1.4.1"
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    outputs:
+      seed: ${{ steps.s.outputs.seed }}
+      cases: ${{ steps.s.outputs.cases }}
+      mpfr_cases: ${{ steps.s.outputs.mpfr_cases }}
+    steps:
+      - id: s
+        run: |
+          seed="${{ github.event.inputs.seed }}"
+          [ -n "$seed" ] || seed=$(date -u +%Y%m%d)
+          cases="${{ github.event.inputs.cases }}"; [ -n "$cases" ] || cases=12
+          mcases="${{ github.event.inputs.mpfr_cases }}"; [ -n "$mcases" ] || mcases=2000
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "cases=$cases" >> "$GITHUB_OUTPUT"
+          echo "mpfr_cases=$mcases" >> "$GITHUB_OUTPUT"
+          echo "Fuzz seed: $seed (sf_check $cases cases/range, mpfr_ulp $mcases cases/function)"
+          echo "### Fuzz seed \`$seed\` — sf_check $cases cases/range × 5 modes, mpfr_ulp $mcases cases/function" >> "$GITHUB_STEP_SUMMARY"
+
+  sf_check:
+    needs: seed
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install mpmath
+        run: pip install "mpmath==${MPMATH_VERSION}"
+      - name: Build sf_eval
+        run: |
+          CXX=$(command -v g++-14 || command -v g++)
+          cmake -B build -DCMAKE_CXX_COMPILER=$CXX -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target sf_eval -j4
+      - name: sf_check (all modes, flags)
+        env:
+          SF_RANGE_SEED: "1"
+          SF_SHARD: ${{ matrix.shard }}/16
+          SF_TIMING: "1"
+        run: |
+          set -o pipefail
+          seed=${{ needs.seed.outputs.seed }}; cases=${{ needs.seed.outputs.cases }}
+          log=fuzz-sf-shard${{ matrix.shard }}.log
+          {
+            echo "seed=$seed cases=$cases shard=$SF_SHARD"
+            echo "reproduce one range R: SF_RANGE_SEED=1 python3 tools/sf_check.py build/sf_eval $cases $seed R modes"
+          } | tee "$log"
+          python3 tools/sf_check.py build/sf_eval "$cases" "$seed" "" modes 2>&1 | tee -a "$log"
+      - name: Failure summary
+        if: failure()
+        run: |
+          log=fuzz-sf-shard${{ matrix.shard }}.log
+          { echo "#### sf_check shard ${{ matrix.shard }} (seed ${{ needs.seed.outputs.seed }})"; echo '```'
+            grep -E '^(FAIL|CRASH|REFERR|SUMMARY)' "$log" | head -60; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^(FAIL|CRASH)' "$log" | head -10 | while read -r l; do echo "::error::$l"; done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-sf-shard${{ matrix.shard }}
+          path: fuzz-sf-shard${{ matrix.shard }}.log
+
+  mpfr:
+    needs: seed
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [mpfr_ulp, mpfr_diff]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install MPFR
+        run: sudo apt-get update && sudo apt-get install -y libmpfr-dev
+      - name: Build
+        run: |
+          CXX=$(command -v g++-14 || command -v g++)
+          cmake -B build -DCMAKE_CXX_COMPILER=$CXX -DCMAKE_BUILD_TYPE=Release -DBASE256_MPFR_TESTS=ON
+          cmake --build build --target ${{ matrix.tool }} -j4
+      - name: Run ${{ matrix.tool }} (all modes, flags)
+        run: |
+          set -o pipefail
+          seed=${{ needs.seed.outputs.seed }}; n=${{ needs.seed.outputs.mpfr_cases }}
+          log=fuzz-${{ matrix.tool }}.log
+          if [ "${{ matrix.tool }}" = mpfr_ulp ]; then
+            cmd="build/mpfr_ulp $n $seed 2 all"
+          else
+            cmd="build/mpfr_diff $((n * 10)) $seed"
+          fi
+          echo "seed=$seed reproduce: $cmd" | tee "$log"
+          $cmd 2>&1 | tee -a "$log"
+      - name: Failure summary
+        if: failure()
+        run: |
+          log=fuzz-${{ matrix.tool }}.log
+          { echo "#### ${{ matrix.tool }} (seed ${{ needs.seed.outputs.seed }})"; echo '```'
+            grep -E -A6 '^(FAIL|MISMATCH)|OVER BOUND|failures=' "$log" | head -80; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^(FAIL|MISMATCH)' "$log" | head -10 | while read -r l; do echo "::error::$l"; done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-${{ matrix.tool }}
+          path: fuzz-${{ matrix.tool }}.log

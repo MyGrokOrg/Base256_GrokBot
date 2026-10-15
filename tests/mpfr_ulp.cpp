@@ -1,5 +1,9 @@
 // Measures elementary-function error in ulps against MPFR (exact reference
 // at 1100 bits). Usage: mpfr_ulp [cases_per_fn] [seed] [bound_check] ["fn list"] [modes 1..5]
+// bound_check=2 (strict, used by the nightly fuzz workflow): any misrounded
+// result, flag error or direction error fails, and every such (case, mode) is
+// printed as a FAIL line with the function, input bits, mode, expected and got
+// value and flags, and the seed (at most 50 lines per function).
 // Every case is evaluated in each rounding mode (RNE, RNA, RZ, RU, RD) and
 // checked for value (vs. MPFR rounded in that mode), direction and flags.
 // With bound_check=1 the program exits nonzero if any function exceeds its
@@ -137,6 +141,10 @@ constexpr base256::round_mode kModes[5] = {base256::round_mode::to_nearest_even,
 constexpr mpfr_rnd_t kMpfrModes[5] = {MPFR_RNDN, MPFR_RNDNA, MPFR_RNDZ, MPFR_RNDU, MPFR_RNDD};
 const char* const kModeNames[5] = {"RNE", "RNA", "RZ", "RU", "RD"};
 int g_modes = 5;  // how many of kModes to test
+bool g_strict = false;
+const char* g_fn = "";
+unsigned long long g_seed = 1;
+long g_shown = 0;  // FAIL lines printed for the current function
 
 struct Expected {
     bool inexact, overflow, tiny;
@@ -196,6 +204,9 @@ struct Stat {
     long flag_bad = 0, dir_bad = 0, cases = 0;
     std::string first_bad;
     bool failed(double bound) const {
+        if (g_strict) {
+            for (long v : misround) if (v) return true;
+        }
         for (int m = 0; m < 5; ++m) if (worst[m] > (m < 2 ? bound : 1.0)) return true;  // directed: at most 1 ulp (=1 only at a binade edge)
         return flag_bad > 0 || dir_bad > 0;
     }
@@ -218,6 +229,19 @@ void check_case(Stat& st, const std::function<float256()>& call, mpfr_srcptr ref
         to_mpfr(ym, y);
         const bool same = (mpfr_nan_p(ym) && mpfr_nan_p(o)) || (mpfr_equal_p(ym, o) && mpfr_signbit(ym) == mpfr_signbit(o));
         if (!same) ++st.misround[m];
+        unsigned want = 0;
+        if (ex.inexact) want |= base256::fe_inexact;
+        if (ex.overflow) want |= base256::fe_overflow;
+        if (ex.tiny && ex.inexact) want |= base256::fe_underflow;
+        if (g_strict && (!same || fl != want) && g_shown < 50) {
+            ++g_shown;
+            char* ws = nullptr;
+            mpfr_asprintf(&ws, "%Ra", o);
+            std::printf("FAIL %s fn=%s in=%s mode=%s got=%s flags=%#x want=%s flags=%#x seed=%llu\n",
+                        !same ? "misround" : "flags", g_fn, where.c_str(), kModeNames[m], y.to_hex_string().c_str(), fl, ws,
+                        want, g_seed);
+            mpfr_free_str(ws);
+        }
         double err = 0;
         // (an overflow saturated to the largest finite value in a directed mode is not an ulp error)
         if (!ex.overflow && !mpfr_inf_p(ym) && !mpfr_nan_p(ym) && !mpfr_inf_p(o)) err = ulp_err(y, const_cast<mpfr_ptr>(ref));
@@ -235,10 +259,6 @@ void check_case(Stat& st, const std::function<float256()>& call, mpfr_srcptr ref
             }
         }
         if (err > st.worst[m]) st.worst[m] = err;
-        unsigned want = 0;
-        if (ex.inexact) want |= base256::fe_inexact;
-        if (ex.overflow) want |= base256::fe_overflow;
-        if (ex.tiny && ex.inexact) want |= base256::fe_underflow;
         if (fl != want) {
             ++st.flag_bad;
             if (st.first_bad.empty()) {
@@ -291,8 +311,11 @@ struct Fn {
 
 int main(int argc, char** argv) {
     const long n = argc > 1 ? std::atol(argv[1]) : 2000;
-    rng.seed(argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 1);
+    g_seed = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 1;
+    rng.seed(g_seed);
     const bool check = argc > 3 && std::atoi(argv[3]) != 0;
+    g_strict = argc > 3 && std::atoi(argv[3]) == 2;
+    if (g_strict) std::printf("mpfr_ulp strict seed=%llu cases=%ld\n", g_seed, n);
     if (argc > 5) g_modes = std::atoi(argv[5]) < 1 ? 1 : std::atoi(argv[5]) > 5 ? 5 : std::atoi(argv[5]);
     using namespace base256;
     std::vector<Fn> fns = {
@@ -372,6 +395,7 @@ int main(int argc, char** argv) {
     int bad = 0;
     for (const Fn& f : fns) {
         Stat st;
+        g_fn = f.name; g_shown = 0;
         for (long i = 0; i < n; ++i) {
             float256 x = rnd_in(f.lo, f.hi, f.logscale);
             if (f.gen == 4) x = -x;
@@ -406,6 +430,7 @@ int main(int argc, char** argv) {
         mpfr_t ym;
         mpfr_init2(ym, 1100);
         Stat st;
+        g_fn = "pow"; g_shown = 0;
         for (long i = 0; i < n; ++i) {
             const float256 x = rnd_in(-64, 64, true);
             float256 y = rnd_in(-2000, 2000, false);
@@ -422,6 +447,7 @@ int main(int argc, char** argv) {
         mpfr_t ym;
         mpfr_init2(ym, 1100);
         Stat st;
+        g_fn = "atan2"; g_shown = 0;
         for (long i = 0; i < n; ++i) {
             float256 y = rnd_in(-300, 300, true), x = rnd_in(-300, 300, true);
             if (rng() & 1) y = -y;
@@ -441,6 +467,7 @@ int main(int argc, char** argv) {
         mpfr_t am, bm;
         mpfr_inits2(1100, am, bm, (mpfr_ptr)0);
         Stat st;
+        g_fn = name; g_shown = 0;
         for (long i = 0; i < n; ++i) {
             float256 a, b;
             gen(a, b);
@@ -502,6 +529,20 @@ int main(int argc, char** argv) {
     };
     two_arg("tgamma_lower", ig_gen, [](float256 a, float256 b) { return base256::tgamma_lower(a, b); }, ig_ref(0));
     two_arg("tgamma_upper", ig_gen, [](float256 a, float256 b) { return base256::tgamma_upper(a, b); }, ig_ref(1));
+    // Γ(a, x) for a <= 0 (4.23.0): a in (−60, 0] (a third negative integers or 0), x log-uniform in [2^-20, 2^6).
+    two_arg("tgamma_upper_neg", [&](float256& a, float256& b) {
+                a = (rng() % 3 == 0) ? float256::from_int(-rnd_int(0, 60)) : -rnd_in(-8, 6, true);
+                b = rnd_in(-20, 6, true);
+            },
+            [](float256 a, float256 b) { return base256::tgamma_upper(a, b); },
+            [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr x) {
+                mpfr_t u;
+                mpfr_init2(u, 3000);
+                mpfr_gamma_inc(u, a, x, MPFR_RNDN);
+                const int t = mpfr_set(r, u, MPFR_RNDN);
+                mpfr_clear(u);
+                return t == 0 ? 1 : t;
+            });
     two_arg("gamma_p", ig_gen, [](float256 a, float256 b) { return base256::gamma_p(a, b); }, ig_ref(2));
     two_arg("gamma_q", ig_gen, [](float256 a, float256 b) { return base256::gamma_q(a, b); }, ig_ref(3));
     // Orthogonal polynomials of integer degree n in [0, 40]: exact references from
