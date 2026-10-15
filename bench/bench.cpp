@@ -12,6 +12,7 @@ using base256::float256;
 
 namespace {
 volatile unsigned g_sink;
+float256 out_len(const std::string& s) { return float256(static_cast<double>(s.size() + static_cast<unsigned char>(s[s.size() / 2]))); }
 void sink(float256 x) { g_sink = g_sink + static_cast<unsigned>(x.signbit()) + static_cast<unsigned>(x.isnan()); }
 
 struct Item {
@@ -81,6 +82,9 @@ int main(int argc, char** argv) {
         {"ibeta", [](float256 x, float256 y) { return ibeta(x, y, float256(0.4)); }, 0.1, 50},
         {"riemann_zeta", [](float256 x, float256) { return riemann_zeta(x); }, -20, 40},
         {"hurwitz_zeta", [](float256 x, float256 y) { return hurwitz_zeta(x + float256(1), y); }, 0.1, 50},
+        {"hurwitz_zeta(3,a)", [](float256, float256 y) { return hurwitz_zeta(float256(3), y); }, 0.1, 50},
+        {"hurwitz_zeta(s<1)", [](float256 x, float256 y) { return hurwitz_zeta(x, y + float256(20.5)); }, -20, 0.9},
+        {"hurwitz_zeta(2..4,a<1)", [](float256 x, float256 y) { return hurwitz_zeta(x, y * float256(0.2)); }, 2, 4},
         {"legendre(20,x)", [](float256 x, float256) { return legendre(20, x); }, -1, 1},
         {"hermite(30,x)", [](float256 x, float256) { return hermite(30, x); }, -10, 10},
         {"laguerre(30,x)", [](float256 x, float256) { return laguerre(30, x); }, 0, 50},
@@ -95,6 +99,10 @@ int main(int argc, char** argv) {
         {"digamma", [](float256 x, float256) { return digamma(x); }, -20, 50},
         {"trigamma", [](float256 x, float256) { return trigamma(x); }, 0.1, 50},
         {"polygamma(3,x)", [](float256 x, float256) { return polygamma(3, x); }, 0.1, 50},
+        {"polygamma(1,x<0)", [](float256 x, float256) { return polygamma(1, x); }, -50, -0.1},
+        {"polygamma(2,x<0)", [](float256 x, float256) { return polygamma(2, x); }, -50, -0.1},
+        {"polygamma(3,x<0)", [](float256 x, float256) { return polygamma(3, x); }, -50, -0.1},
+        {"polygamma(10,x<0)", [](float256 x, float256) { return polygamma(10, x); }, -20, -0.1},
         {"lbeta", [](float256 x, float256 y) { return lbeta(x, y); }, 0.1, 50},
         {"tgamma_ratio", [](float256 x, float256 y) { return tgamma_ratio(x, y); }, 0.1, 50},
         {"airy_ai", [](float256 x, float256) { return airy_ai(x); }, -50, 50},
@@ -118,6 +126,15 @@ int main(int argc, char** argv) {
         {"ellint_1", [](float256 x, float256 y) { return ellint_1(x, y * float256(3)); }, -0.99, 0.99},
         {"ellint_2", [](float256 x, float256 y) { return ellint_2(x, y * float256(3)); }, -0.99, 0.99},
         {"ellint_3", [](float256 x, float256 y) { return ellint_3(x, y * float256(0.5), y * float256(1.5)); }, -0.99, 0.99},
+        // Decimal output at the extreme exponents (x in [1, 2) scaled to near max / deep subnormal).
+        {"to_string(~2^262140)", [](float256 x, float256) { return out_len(ldexp(x, 262140).to_string()); }, 1, 2},
+        {"to_string(~2^-262370)", [](float256 x, float256) { return out_len(ldexp(x, -262370).to_string()); }, 1, 2},
+        {"to_string(~2^-262000)", [](float256 x, float256) { return out_len(ldexp(x, -262000).to_string()); }, 1, 2},
+        {"format(e,75)(~2^262140)", [](float256 x, float256) { return out_len(ldexp(x, 262140).format(std::chars_format::scientific, 75)); }, 1, 2},
+        {"format(e,75)(~2^-262370)", [](float256 x, float256) { return out_len(ldexp(x, -262370).format(std::chars_format::scientific, 75)); }, 1, 2},
+        {"format(f,0)(~2^262140)", [](float256 x, float256) { return out_len(ldexp(x, 262140).format(std::chars_format::fixed, 0)); }, 1, 2},
+        {"to_chars(~2^262140)", [](float256 x, float256) { char b[100]; const auto r = to_chars(b, b + 100, ldexp(x, 262140)); return float256(static_cast<double>(r.ptr - b)); }, 1, 2},
+        {"to_string(1..2)", [](float256 x, float256) { return out_len(x.to_string()); }, 1, 2},
     };
     std::printf("%-12s %14s\n", "function", "ns/call");
     for (const Item& it : items) {
