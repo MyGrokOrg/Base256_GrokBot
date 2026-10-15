@@ -145,6 +145,8 @@ const Ref kRefs[] = {
     {"hz", "40", "0.25", "", "0x1000000000000000000000008b61313bdf929d4b549ee9e5bf2a9a6f0672p-156"},
     {"hz", "2", "1e6", "", "0x10c6f82d72bca9b5a8491f31ff1797a8b780cd7cf0cc31671bacf70c2020p-256"},
     {"hz", "1500", "1.5", "", "0x1786ed29b7f963c8ff8f5e96fa005ad0e55456795f00cfa6a909cef00e55p-1114"},
+    // s in (−128, −127] with the last bit set: 1 − s is not a float256 (hz_vneg, seed 2, SF_RANGE_SEED=1)
+    {"hz", "-0x1fcef6d02a34436af90379951a2759aa38e9c36f67a82a869ff5c4d876c3p-230", "0x1dc0356c32c6efaba38152cf6f3fa98463506e5792824c29b4fbb44f03bcp-235", "", "-0x1d729c2580b7c9860abaf8049e1b4b082d11f275940e5e80dee1f8d6666ep+134"},
     {"zeta", "2", "", "", "0x1a51a6625307d3230e7b1224401759cbd6b911b55022c5b1666b0580634cp-236"},
     {"zeta", "3", "", "", "0x133ba004f0062138371715c59e6907f1b180b7db17493405dd149c7ab12dp-236"},
     {"zeta", "0.5", "", "", "-0x175d9cb07e73fee37e834e422bcb579a2298e52438c62304744275f7ba82p-236"},

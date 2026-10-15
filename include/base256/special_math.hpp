@@ -1264,16 +1264,19 @@ inline constexpr int kReflS = 89;
 [[nodiscard]] inline SD hurwitz_refl(float256 s, float256 a, double* cancel = nullptr) {
     const dd one{float256::one()};
     if (cancel) *cancel = 0;
-    const float256 sig = float256::one() - s;  // exact (|s| >= 89)
+    // σ = 1 − s as an exact dd: in float256 it needs 238 bits when |s| + 1 crosses
+    // a power of two (s ∈ (−128, −127], (−256, −255], … with the last bit set),
+    // and the rounded σ cost up to ~650 ulps (hz_vneg, s = −127.2338…).
+    const dd Sg = detail_dd::two_sum(float256::one(), -s);
     float256 m = ceil(a) - float256::one();
     if (m.signbit()) m = float256::zero();
     const float256 b = a - m;  // exact, in (0, 1]
-    // S = Σ cos(πσ/2 − 2πnb) n^{−σ} = Σ [cos(πσ/2) cos(2πnb) + sin(πσ/2) sin(2πnb)] n^{−σ}
+    // S = Σ cos(πσ/2 − 2πnb) n^{−σ} = Σ [cos(πσ/2) cos(2πnb) + sin(πσ/2) sin(2πnb)] n^{−σ},
+    // with sin(πσ/2) = cos(πs/2) and cos(πσ/2) = sin(πs/2) (s/2 is exact)
     dd sa, ca, st, ct;
-    sincos_pi(ldexp(sig, -1), sa, ca);
+    sincos_pi(ldexp(s, -1), ca, sa);
     sincos_pi(b + b, st, ct);
     dd cn = ct, sn = st, S{float256::zero()};
-    const dd Sg{sig};
     dd pw[50];
     int pi = 0;
     for (int n = 1; n < 50; ++n) {
