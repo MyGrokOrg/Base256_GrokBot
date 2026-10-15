@@ -243,6 +243,83 @@ int main() {
     (void)float256(2.5).to_integer<int>();
     CHECK(fenv::test_flags() == 0);
 
+    // --- decimal fast path at large decimal exponents (|k| >= kDecFastK) -------
+    // dec_floor_scaled_fast and cmp_dec_bin_fast must agree with the exact BigInt
+    // versions whenever they answer, and answer for almost every input.
+    {
+        namespace D = base256::detail;
+        std::mt19937_64 g(77);
+        int floor_cases = 0, floor_answered = 0, floor_bad = 0;
+        for (int i = 0; i < 300; ++i) {
+            D::u256 sig;
+            for (auto& w : sig.d) w = g();
+            if (i % 7 == 0) { sig = D::u256{}; sig.set_bit(255); sig.set_bit(static_cast<int>(g() % 255)); }  // few bits set
+            if (i % 11 == 0) sig = sig >> static_cast<int>(1 + g() % 200);                                 // subnormal-like
+            if (i % 2 == 0) sig.set_bit(255);
+            const int wexp = (i % 3 == 0) ? 262143 - static_cast<int>(g() % 400)
+                           : (i % 3 == 1) ? -262142 - static_cast<int>(g() % 240)
+                                          : static_cast<int>(g() % 200000) - 100000;
+            const int ndig = 3 + static_cast<int>(g() % 140);
+            const int n10 = static_cast<int>(std::floor(wexp * 0.30102999566398119521));
+            const int k = n10 - ndig + 1 + static_cast<int>(g() % 5) - 2;
+            if (k < D::kDecFastK && k > -D::kDecFastK) continue;
+            ++floor_cases;
+            D::BigInt q;
+            bool st = false;
+            if (!D::dec_floor_scaled_fast(sig, wexp, k, q, st)) continue;
+            ++floor_answered;
+            const auto ex = D::dec_floor_scaled_exact(sig, wexp, k);
+            if (!(ex.first == q) || ex.second != st) ++floor_bad;
+        }
+        CHECK(floor_cases > 150);
+        CHECK_EQ(floor_bad, 0);
+        CHECK(floor_answered >= floor_cases * 9 / 10);
+        // comparisons, including bounds within a few ulps of c·10^q
+        int cmp_cases = 0, cmp_answered = 0, cmp_bad = 0;
+        for (int i = 0; i < 200; ++i) {
+            const int q = (i % 2 ? 1 : -1) * (D::kDecFastK + static_cast<int>(g() % 79000));
+            std::string cd(1 + g() % 80, '0');
+            for (auto& ch : cd) ch = static_cast<char>('0' + g() % 10);
+            cd[0] = static_cast<char>('1' + g() % 9);
+            const D::BigInt c = D::BigInt::from_dec(cd);
+            // B·2^E: c·10^q rounded to 240 bits, then nudged by a few units
+            const float256 v = float256::parse(cd + "e" + std::to_string(q)).value_or(float256::zero());
+            if (v.iszero() || v.isinf()) continue;
+            int ev = 0;
+            const float256 f = ldexp(frexp(v, &ev), 237);  // integer < 2^237
+            D::BigInt B = D::BigInt::from_dec(f.format(std::chars_format::fixed, 0));
+            B.shl(3);
+            const unsigned nudge = static_cast<unsigned>(g() % 9);
+            if (nudge < 4) B.sub(D::BigInt{nudge}); else B.add_u32(nudge - 4);
+            const int E = ev - 237 - 3;
+            ++cmp_cases;
+            const int fast = D::cmp_dec_bin_fast(c, q, B, E, D::pow5_lower(static_cast<unsigned>(q < 0 ? -q : q)));
+            if (fast == 2) continue;
+            ++cmp_answered;
+            if (fast != D::cmp_dec_bin(c, q, B, E)) ++cmp_bad;
+        }
+        CHECK(cmp_cases > 150);
+        CHECK_EQ(cmp_bad, 0);
+        CHECK(cmp_answered >= cmp_cases * 9 / 10);
+        std::cout << "decimal fast path: floor " << floor_answered << "/" << floor_cases << " answered, " << floor_bad
+                  << " wrong; cmp " << cmp_answered << "/" << cmp_cases << " answered, " << cmp_bad << " wrong\n";
+    }
+    // round trip of format(e, 75) and to_string at the extreme exponents, all modes for the flags
+    {
+        std::mt19937_64 g(78);
+        int bad = 0;
+        for (int i = 0; i < 300; ++i) {
+            const float256 x = rnd(g);
+            if (!x.isfinite() || x.iszero()) continue;
+            if (float256::parse(x.format(std::chars_format::scientific, 75)).value_or(float256::zero()) != x) ++bad;
+            if (float256::parse(x.to_string()).value_or(float256::zero()) != x) ++bad;
+            char buf[128];
+            const auto r = base256::to_chars(buf, buf + sizeof buf, x);
+            if (r.ec != std::errc{} || float256::parse(std::string(buf, r.ptr)).value_or(float256::zero()) != x) ++bad;
+        }
+        CHECK_EQ(bad, 0);
+    }
+
     // --- totalOrder -------------------------------------------------------------
     CHECK(base256::total_order(-float256::zero(), float256::zero()));
     CHECK(!base256::total_order(float256::zero(), -float256::zero()));

@@ -1946,8 +1946,121 @@ inline std::optional<float256> float256::parse(std::string_view s) {
 
 namespace detail {
 
-// floor(|v| / 10^k) for v = sig * 2^(wexp - 255), plus whether it was inexact.
-inline std::pair<BigInt, bool> dec_floor_scaled(const u256& sig, int wexp, int k) {
+// Decimal conversion at large decimal exponents. The exact path multiplies or
+// divides by 5^|k| as a BigInt (|k| up to ~79000, i.e. 180000-bit numbers, built
+// limb by limb: ~10 ms per power). For |k| >= kDecFastK the paths below use a
+// 640-bit lower bound of 5^|k| instead and only answer when that decides the
+// result exactly; otherwise (a value within ~2^-470 relative of a decimal
+// boundary, or more than ~140 digits) they report failure and the caller takes
+// the exact path. Exact decimal ties cannot occur there: c·10^q = B·2^E with
+// c < 10^140, B < 2^256 would need 5^|q| to divide B (q > 0) or c (q < 0).
+inline constexpr int kDecFastK = 160;
+inline constexpr int kPow5Bits = 640;
+struct Pow5Lower {
+    BigInt m;     // 5^n ∈ [m·2^e, m·2^e·(1 + 2^-600)] for n < 2^24
+    int e = 0;
+};
+// Binary powering, truncating every product to kPow5Bits bits (always down,
+// so a lower bound). Squaring doubles the relative error of the base, so after
+// j <= 24 squarings it is below 2^(j+2−kPow5Bits); the products add up to
+// < 2^(28−kPow5Bits) < 2^-600 in total.
+inline Pow5Lower pow5_lower(unsigned n) {
+    Pow5Lower r;
+    r.m = BigInt{1};
+    BigInt b{5};
+    int be = 0;
+    auto trunc = [](BigInt& x, int& e) {
+        const int bl = x.bit_length();
+        if (bl > kPow5Bits) { x.shr(bl - kPow5Bits); e += bl - kPow5Bits; }
+    };
+    for (unsigned k = n;;) {
+        if (k & 1) { r.m.mul(b); r.e += be; trunc(r.m, r.e); }
+        k >>= 1;
+        if (k == 0) break;
+        const BigInt t = b;
+        b.mul(t);
+        be *= 2;
+        trunc(b, be);
+    }
+    return r;
+}
+// X << sh for a signed shift (right shifts truncate).
+inline BigInt shift_signed(BigInt x, long sh) {
+    if (sh > 0) x.shl(static_cast<int>(sh));
+    else if (sh < 0) x.shr(static_cast<int>(-sh));
+    return x;
+}
+// floor(|v| / 10^k), v = sig·2^(wexp−255), |k| >= kDecFastK, with the sticky bit.
+inline bool dec_floor_scaled_fast(const u256& sig, int wexp, int k, BigInt& q, bool& sticky) {
+    constexpr int G = 128;  // guard bits below the integer part
+    if (k < kDecFastK && k > -kDecFastK) return false;
+    if (k >= (1 << 24) || k <= -(1 << 24)) return false;
+    const BigInt S = BigInt::from_u256(sig);
+    if (k > 0) {
+        // v = S·2^t / 5^k, t = wexp − 255 − k; 5^k ∈ [m2^e, m2^e(1+δ)]
+        // U = S·2^(t+G−e)/m >= v·2^G >= U(1 − δ); Z = floor(U)
+        const Pow5Lower p = pow5_lower(static_cast<unsigned>(k));
+        const long sh = static_cast<long>(wexp) - 255 - k + G - p.e;
+        BigInt num = S, den = p.m;
+        if (sh >= 0) num.shl(static_cast<int>(sh)); else den.shl(static_cast<int>(-sh));
+        BigInt Z = num;
+        (void)Z.divmod(den);
+        if (Z.bit_length() > 600) return false;
+        // v·2^G ∈ [Z − 1 − Z·2^-600, Z + 1): floor(v) is Z >> G if the low end agrees
+        BigInt lo = Z;
+        BigInt d = Z; d.shr(600); d.add_u32(1);
+        if (lo < d) return false;
+        lo.sub(d);
+        BigInt zq = Z; zq.shr(G);
+        lo.shr(G);
+        if (!(lo == zq)) return false;
+        q = std::move(zq);
+        sticky = true;  // 5^k > 2^256 > sig: v is never an integer
+        return true;
+    }
+    const int pk = -k;
+    const long te2 = static_cast<long>(wexp) - 255 + pk;
+    if (te2 >= 0) return false;  // v an integer with ~te2 bits more than the digits asked: exact path
+    // v = S·5^pk / 2^sh: an integer iff 2^sh divides S (5^pk is odd)
+    const long sh = -te2;
+    sticky = sh > static_cast<long>(sig.ctz());
+    if (!sticky) return false;  // exact multiple: the bound below would straddle it
+    const Pow5Lower p = pow5_lower(static_cast<unsigned>(pk));
+    BigInt X = S;
+    X.mul(p.m);
+    // v·2^G ∈ [X·2^(e−sh+G), X·2^(e−sh+G)·(1+δ)]; Z = floor of the low end
+    const BigInt Z = shift_signed(X, p.e - sh + G);
+    if (Z.bit_length() > 600) return false;
+    BigInt hi = Z; BigInt d = Z; d.shr(600); hi.add(d); hi.add_u32(2);
+    BigInt zq = Z; zq.shr(G);
+    hi.shr(G);
+    if (!(hi == zq)) return false;
+    q = std::move(zq);
+    return true;
+}
+// sign(c·10^q − B·2^E) for |q| >= kDecFastK, or 2 if the 640-bit bound does not decide it.
+inline int cmp_dec_bin_fast(const BigInt& c, int q, const BigInt& B, int E, const Pow5Lower& p) {
+    // q > 0: c·5^q·2^q vs B·2^E: L = c·m·2^(e+q) <= lhs <= L(1+δ).
+    // q < 0: c·2^q vs B·5^|q|·2^E (both sides times 5^|q|): the bound is on the right.
+    BigInt X = q > 0 ? c : B;
+    X.mul(p.m);
+    const long xe = static_cast<long>(p.e) + (q > 0 ? q : E);  // the bounded side: X·2^xe
+    const BigInt& Y = q > 0 ? B : c;
+    const long ye = q > 0 ? E : q;                               // the exact side: Y·2^ye
+    // align to integers: X·2^(xe−mn), Y·2^(ye−mn)
+    const long mn = xe < ye ? xe : ye;
+    const BigInt Xs = shift_signed(X, xe - mn), Ys = shift_signed(Y, ye - mn);
+    BigInt Xu = Xs; BigInt d = Xs; d.shr(600); Xu.add(d); Xu.add_u32(1);
+    int s;
+    if (Ys < Xs) s = 1;          // bounded side > exact side
+    else if (Xu < Ys) s = -1;
+    else return 2;
+    return q > 0 ? s : -s;       // s compares the bounded side with the exact side
+}
+
+// floor(|v| / 10^k) for v = sig * 2^(wexp - 255), plus whether it was inexact,
+// with exact BigInt arithmetic.
+inline std::pair<BigInt, bool> dec_floor_scaled_exact(const u256& sig, int wexp, int k) {
     BigInt num = BigInt::from_u256(sig);
     bool sticky = false;
     if (k >= 0) {
@@ -1966,6 +2079,12 @@ inline std::pair<BigInt, bool> dec_floor_scaled(const u256& sig, int wexp, int k
         else sticky = num.shr_sticky(-te2);
     }
     return {std::move(num), sticky};
+}
+inline std::pair<BigInt, bool> dec_floor_scaled(const u256& sig, int wexp, int k) {
+    BigInt q;
+    bool st = false;
+    if (dec_floor_scaled_fast(sig, wexp, k, q, st)) return {std::move(q), st};
+    return dec_floor_scaled_exact(sig, wexp, k);
 }
 
 // Increment decision for decimal rounding given the first discarded digit.
@@ -2122,12 +2241,35 @@ inline float256::DecimalDigits float256::decimal_shortest() const {
         if (q0 >= 0) { den.mul_pow5(static_cast<unsigned>(q0)); den.shl(q0); }
         else { num.mul_pow5(static_cast<unsigned>(-q0)); num.shl(-q0); }
     };
+    // The exact bounds are built only if a check needs them (at large |q| the
+    // 640-bit test in cmp_dec_bin_fast decides, see kDecFastK).
     BigInt loN, loD, hiN, hiD;
-    scaled(loB, loE, loN, loD);
-    scaled(hiB, hiE, hiN, hiD);
+    bool have_exact = false;
+    std::vector<std::pair<int, Pow5Lower>> p5;  // the reference returned is used before the next call
+    auto pow5 = [&](int q) -> const Pow5Lower& {
+        for (const auto& e : p5) if (e.first == q) return e.second;
+        p5.emplace_back(q, pow5_lower(static_cast<unsigned>(q < 0 ? -q : q)));
+        return p5.back().second;
+    };
     auto ok = [&](const DecimalDigits& d) {
         const int q = d.exp10 - static_cast<int>(d.digits.size()) + 1;
         if (q < q0) return false;
+        if ((q >= kDecFastK || q <= -kDecFastK) && q < (1 << 24) && q > -(1 << 24)) {
+            const BigInt c = BigInt::from_dec(d.digits);
+            const Pow5Lower& p = pow5(q);
+            const int cl = cmp_dec_bin_fast(c, q, loB, loE, p);
+            const int ch = cl == 2 ? 2 : cmp_dec_bin_fast(c, q, hiB, hiE, p);
+            if (cl != 2 && ch != 2) {
+                const bool above_lo = even ? cl >= 0 : cl > 0;
+                const bool below_hi = even ? ch <= 0 : ch < 0;
+                return above_lo && below_hi;
+            }
+        }
+        if (!have_exact) {
+            scaled(loB, loE, loN, loD);
+            scaled(hiB, hiE, hiN, hiD);
+            have_exact = true;
+        }
         const BigInt c = BigInt::from_dec(d.digits + std::string(static_cast<std::size_t>(q - q0), '0'));
         BigInt l = c, h = c;
         l.mul(loD);
@@ -2297,9 +2439,13 @@ inline std::string float256::format(std::chars_format fmt, int precision) const 
     // general
     if (precision < 0) {
         const DecimalDigits d = decimal_shortest();
-        const std::string f = render_fixed(d.digits, d.exp10, 0);
         const std::string e = render_sci(d.digits, d.exp10, 0);
-        return sign + (f.size() <= e.size() ? f : e);
+        // length of render_fixed(d.digits, d.exp10, 0), without building it (78914
+        // characters at the top of the range)
+        const long nd = static_cast<long>(d.digits.size()), x = d.exp10;
+        const long flen = x >= 0 ? (x + 1 >= nd ? x + 1 : nd + 1) : 2 + (-x - 1) + nd;
+        if (flen <= static_cast<long>(e.size())) return sign + render_fixed(d.digits, d.exp10, 0);
+        return sign + e;
     }
     const int P = precision == 0 ? 1 : precision;
     DecimalDigits d = decimal_significant(P, mode);
