@@ -796,11 +796,68 @@ enum class BesselKind { J, Y, I, K };
     }
     return false;
 }
+// |x|^n·2^s/D, when it lies exactly on the 238-bit grid (a binary256 number,
+// or a midpoint between two), as hi + lo (lo = 0 or half an ulp of hi) times 2^k.
+// The first series term of J/I and j_n for tiny x is such a monomial; there the
+// dd evaluation (error ~2^-470) can sit on the wrong side of the grid point,
+// while the true value is off it by only ~x^2 (~2^-600), so the tail decides
+// the rounding and the point itself must be exact.
+[[nodiscard]] inline bool exact_monomial(float256 x, unsigned n, int s, const detail::BigInt& D, float256& hi,
+                                         float256& lo, int& k) {
+    if (n == 0 || n > 60 || x.iszero() || !x.isfinite()) return false;
+    const auto w = abs(x).raw_bits();
+    const long be = static_cast<long>((w[3] >> 44) & 0x7FFFF);
+    std::vector<std::uint32_t> limbs;
+    for (int i = 0; i < 4; ++i) {
+        std::uint64_t v = w[i];
+        if (i == 3) v = (v & 0xFFFFFFFFFFFULL) | (be ? (1ULL << 44) : 0);
+        limbs.push_back(static_cast<std::uint32_t>(v));
+        limbs.push_back(static_cast<std::uint32_t>(v >> 32));
+    }
+    detail::BigInt M = detail::BigInt::from_limbs(limbs);
+    long E = (be ? be : 1) - 262143 - 236;
+    while (!M.is_zero() && !M.bit(0)) { M.shr(1); ++E; }
+    // A 238-bit quotient needs M^n <= 2^238·D: skip long significands early.
+    if (static_cast<long>(M.bit_length() - 1) * n > 238 + D.bit_length()) return false;
+    detail::BigInt N(1);
+    for (unsigned i = 0; i < n; ++i) N.mul(M);
+    detail::BigInt Dd = D;
+    long Et = E * static_cast<long>(n) + s;
+    while (!Dd.is_zero() && !Dd.bit(0)) { Dd.shr(1); --Et; }
+    const detail::BigInt rem = N.divmod(Dd);
+    if (!rem.is_zero() || N.bit_length() > 238) return false;
+    while (!N.bit(0)) { N.shr(1); ++Et; }
+    const bool mid = N.bit_length() == 238;
+    if (mid) { N.shr(1); ++Et; }  // (Q − 1)/2, Q odd: 237 bits
+    float256 h{};
+    for (int i = N.limb_count() - 1; i >= 0; --i) h = h + ldexp(float256::from_uint(N.limb(i)), 32 * i);
+    if (Et < -400000 || Et > 400000) return false;
+    k = static_cast<int>(Et);
+    if (mid) { hi = ldexp(h, 1); lo = float256::one(); --k; }  // (2·(Q−1)/2 + 1)·2^(k−1)
+    else { hi = h; lo = float256::zero(); }
+    return true;
+}
 // J or I for x so small that the series is its first term: (x/2)^ν/Γ(ν+1)·(1 ∓ tiny).
 [[nodiscard]] inline bool bessel_tiny(detail_dd::FnEnv& env, BesselKind kind, float256 nu, float256 x, float256& r) {
-    if ((kind != BesselKind::J && kind != BesselKind::I) || ilogb(x) >= -300) return false;
+    if ((kind != BesselKind::J && kind != BesselKind::I) || ilogb(x) >= -120) return false;
+    const int tail = kind == BesselKind::J ? -1 : +1;  // x > 0 here (x < 0 is reflected)
+    // Below 2^-120 the correction x²/(4(ν+1)) is under a quarter ulp, so an exact
+    // grid-point first term rounds by the tail alone.
+    if (nu == trunc(nu) && nu >= float256::one() && nu <= float256(60)) {
+        // integer ν: (x/2)^ν/ν! can be exactly representable (e.g. J_1 = x/2·(1 − x²/8))
+        const unsigned n = static_cast<unsigned>(nu.to_double());
+        detail::BigInt fact(1);
+        for (unsigned i = 2; i <= n; ++i) fact.mul_u32(i);
+        float256 hi, lo;
+        int k = 0;
+        if (exact_monomial(x, n, -static_cast<int>(n), fact, hi, lo, k)) {
+            r = env.round(hi, lo, k, tail);
+            return true;
+        }
+    }
+    if (ilogb(x) >= -300) return false;
     SD v = bessel::series(dd(nu), x, kind == BesselKind::J ? -1 : 1);
-    r = out(env, v, kind == BesselKind::J ? -1 : +1);
+    r = out(env, v, tail);
     return true;
 }
 } // namespace detail_sf
@@ -879,6 +936,14 @@ namespace detail_sf {
     if (x.iszero()) {
         if (second) return env.pole(true);
         return env.exact(n == 0 ? float256::one() : float256::zero());
+    }
+    if (!second && ilogb(x) < -120 && n >= 1) {
+        // j_n(x) = x^n/(2n+1)!!·(1 − x²/(2(2n+3)) + …): exact first term, if on the grid
+        detail::BigInt df(1);
+        for (unsigned i = 3; i <= 2 * n + 1; i += 2) df.mul_u32(i);
+        float256 hi, lo;
+        int k = 0;
+        if (exact_monomial(x, n, 0, df, hi, lo, k)) return env.round(hi, lo, k, -1);
     }
     SD v = second ? bessel::y(nu, x) : (ilogb(x) < -300 ? bessel::series(dd(nu), x, -1) : bessel::j(nu, x));
     v = mul(v, detail_dd::sqrt(detail_dd::pi() / (dd(x) * float256::two())));

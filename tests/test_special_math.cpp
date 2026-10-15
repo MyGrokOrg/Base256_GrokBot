@@ -423,6 +423,30 @@ int main() {
              [](round_mode m) { return down(m) ? nextafter(float256::one(), float256::zero()) : float256::one(); }, kInx);
     EXPECT_M(cyl_bessel_i(zero, ldexp(one, -400)),
              [](round_mode m) { return m == round_mode::upward ? nextafter(float256::one(), float256::inf(false)) : float256::one(); }, kInx);
+    // Tiny x with an exactly representable first term: the x² correction alone decides
+    // the directed roundings (J_1(x) = x/2·(1 − x²/8), I_1 = x/2·(1 + x²/8), j_n = x^n/(2n+1)!!·(1 − …)).
+    {
+        const float256 h = ldexp(one, -301), up = float256::inf(false), dn = float256::zero();
+        EXPECT_M(cyl_bessel_j(one, ldexp(one, -300)), [&](round_mode m) { return down(m) ? nextafter(h, dn) : h; }, kInx);
+        EXPECT_M(cyl_bessel_j(one, -ldexp(one, -300)),
+                 [&](round_mode m) { return (m == round_mode::toward_zero || m == round_mode::upward) ? -nextafter(h, dn) : -h; }, kInx);
+        EXPECT_M(cyl_bessel_j(one, ldexp(one, -200)),
+                 [&](round_mode m) { const float256 v = ldexp(one, -201); return down(m) ? nextafter(v, dn) : v; }, kInx);
+        EXPECT_M(cyl_bessel_i(one, ldexp(one, -300)), [&](round_mode m) { return m == round_mode::upward ? nextafter(h, up) : h; }, kInx);
+        EXPECT_M(cyl_bessel_j(float256(2), ldexp(float256(3), -200)),
+                 [&](round_mode m) { const float256 v = ldexp(float256(9), -403); return down(m) ? nextafter(v, dn) : v; }, kInx);
+        EXPECT_M(sph_bessel(2, ldexp(float256(15), -300)),
+                 [&](round_mode m) { const float256 v = ldexp(float256(15), -600); return down(m) ? nextafter(v, dn) : v; }, kInx);
+        EXPECT_M(sph_bessel(1, -ldexp(float256(3), -200)),
+                 [&](round_mode m) { const float256 v = -ldexp(one, -200); return (m == round_mode::toward_zero || m == round_mode::upward) ? nextafter(v, up) : v; }, kInx);
+        // J_2 at a 238-bit midpoint: (2^237 + …)² · 2^-603, just below it
+        const float256 xm = P("0x16a09e667f3bcc908b2fb1366ea958400000000000000000000000000000p-418");
+        const float256 lo = P("0x10000000000000000000000000000098e43a5c61cbf104e7967d96e51760p-602");
+        const float256 hi = P("0x10000000000000000000000000000098e43a5c61cbf104e7967d96e51761p-602");
+        EXPECT_M(cyl_bessel_j(float256(2), xm), [&](round_mode m) { return m == round_mode::upward ? hi : lo; }, kInx);
+        EXPECT_M(cyl_bessel_i(float256(2), xm),
+                 [&](round_mode m) { return (m == round_mode::toward_zero || m == round_mode::downward) ? lo : hi; }, kInx);
+    }
     // Overflow / underflow.
     EXPECT_M(cyl_bessel_i(zero, float256(200000)),
              [](round_mode m) { return down(m) ? float256::max() : float256::inf(false); }, base256::fe_overflow | kInx);

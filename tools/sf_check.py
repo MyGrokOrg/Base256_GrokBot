@@ -90,6 +90,7 @@ def JN(n, x): return (-1) ** int(n) * mp.besselj(n, -x)
 def IN(n, x): return (-1) ** int(n) * mp.besseli(n, -x)
 def SJN(n, x): return (-1) ** int(n) * SJ(n, -x)
 def SYN(n, x): return (-1) ** (int(n) + 1) * SY(n, -x)
+def SJA(n, x): return SJ(n, x) if x > 0 else SJN(n, x)
 
 def BETA(a, b): return mp.beta(a, b)
 # mpmath's betainc can lose bits to cancellation; evaluate it at 2000 bits.
@@ -636,6 +637,9 @@ RANGES = [
     ("i_negx",   "i", IN, [("int", 0, 30), (-150, 0, False)]),
     ("i_negtiny","i", IN, [("int", 0, 10), ("negexp", -400, -8)]),
     ("sph_jneg", "sj", SJN, [("int", 0, 20), (-50, 0, False)]),
+    ("j_tinyex", "j", JN, [("int", 1, 8), ("shortm", 125, 600, 6)]),
+    ("i_tinyex", "i", IN, [("int", 1, 8), ("shortm", 125, 600, 6)]),
+    ("sph_tinyex","sj", SJA, [("int", 1, 8), ("shortm", 125, 600, 6)]),
     ("sph_yneg", "sy", SYN, [("int", 0, 20), (-50, 0, False)]),
     ("sph_j",   "sj", SJ, [("int", 0, 20), (0, 50, False)]),
     ("sph_y",   "sy", SY, [("int", 0, 20), (0, 50, False)]),
@@ -784,6 +788,12 @@ def gen_cases(args, rng, n):
                 v = mp.mpf(rng.randint(a[1], a[2])) + mp.ldexp(rng.choice([-1, 1]), -rng.randint(20, 200))
                 if v < 0: v = -v
                 h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
+            elif a[0] == "shortm":
+                # ±m·2^-k, m odd with at most a[3] bits, k in [a[1], a[2]]: tiny arguments
+                # whose leading series term can land exactly on the binary256 grid
+                m = 2 * rng.randint(0, (1 << (a[3] - 1)) - 1) + 1
+                v = mp.ldexp(m, -rng.randint(a[1], a[2])) * rng.choice([-1, 1])
+                hs.append(to_hex(v)); vs.append(v)
             elif a[0] == "negint":
                 k = rng.randint(a[1], a[2]); hs.append(str(-k)); vs.append(mp.mpf(-k))
             elif a[0] == "const":
