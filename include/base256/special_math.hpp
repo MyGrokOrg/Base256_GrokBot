@@ -1523,12 +1523,117 @@ namespace igamma {
     return exp_sd(detail_gamma::lgamma_pos_dd(dd(a)));
 }
 
+// a − b for m·2^k values (the smaller one shifted; far below the larger it is dropped).
+[[nodiscard]] inline SD sd_sub(const SD& a, const SD& b) {
+    if (b.m.hi.iszero()) return a;
+    if (a.m.hi.iszero()) return {-b.m, b.k};
+    if (a.k >= b.k) {
+        if (a.k - b.k > 1200) return a;
+        return norm({a.m - detail_dd::ldexp(b.m, b.k - a.k), a.k});
+    }
+    if (b.k - a.k > 1200) return {-b.m, b.k};
+    return norm({detail_dd::ldexp(a.m, a.k - b.k) - b.m, b.k});
+}
+// Γ(a, x) for a <= 0, 0 < x < 36, a >= −1000 (as m·2^k). With N = round(−a),
+// e = a + N ∈ [−1/2, 1/2] (exact):
+//   Γ(a, x) = (−1)^N x^e expm1(L)/(e N!) − x^a Σ_{n>=0, n≠N} (−x)^n/(n!(a+n)),
+//   L = lnΓ(1+e) − Σ_{k=1}^N ln(1 − e/k) − e ln x,
+// which is Γ(a) − γ(a, x) with the two poles at a = −N cancelled analytically
+// (e = 0, a negative integer or zero: expm1(L)/e → ψ(N+1) − ln x). The rest
+// cancels at most ~x^N e^x (N+x)/N! < 2^110 of the ~2^-474 working precision.
+[[nodiscard]] inline SD upper_nonpos_series(float256 a, const dd& X, const dd& lx) {
+    const float256 one = float256::one();
+    const float256 nf = floor(-a + float256::half());
+    const int N = static_cast<int>(nf.to_double());
+    const float256 e = a + nf;  // exact (Sterbenz)
+    dd fact{one};
+    for (int k = 2; k <= N; ++k) fact = fact * D(k);
+    dd q;  // expm1(L)/e
+    if (e.iszero()) {
+        dd h{float256::zero()};
+        for (int k = N; k >= 1; --k) h = h + dd(one) / D(k);
+        q = h - euler_gamma() - lx;
+    } else {
+        const dd E{e};
+        const dd lg = ilogb(e) < -100 ? detail_gamma::lgamma_near_1_2(e, false)
+                                      : detail_gamma::lgamma_pos_dd(detail_dd::two_sum(one, e));
+        dd sl{float256::zero()};  // Σ ln(1 − e/k)
+        if (ilogb(e) < -60) {
+            // −Σ_j e^j H_N^(j)/j, j <= 9 (e^10 < 2^-600)
+            dd hj[10]{};
+            for (int k = N; k >= 1; --k) {
+                const dd r = dd(one) / D(k);
+                dd rp = r;
+                for (int j = 1; j <= 9; ++j) { hj[j] = hj[j] + rp; rp = rp * r; }
+            }
+            dd ej = E;
+            for (int j = 1; j <= 9 && N > 0; ++j) {
+                sl = sl - ej * hj[j] / D(j);
+                ej = ej * E;
+            }
+        } else if (N > 0) {
+            dd p{one};
+            for (int k = 1; k <= N; ++k) p = p * (dd(one) - E / D(k));
+            sl = detail_dd::log(p);
+        }
+        const dd L = lg - sl - E * lx;
+        q = detail_dd::expm1(L) / E * detail_dd::exp(E * lx);
+    }
+    dd t1 = q / fact;
+    if (N & 1) t1 = -t1;
+    // S = Σ_{n≠N} (−x)^n/(n!(a+n)); stop once n > N, n > 2x and the term is
+    // 2^-620 below the largest partial term.
+    const dd A{a};
+    dd term{one}, S{float256::zero()};
+    int big = -1000000;
+    for (int n = 0; n < 100000; ++n) {
+        if (n > 0) term = -(term * X) / D(n);
+        if (n != N) {
+            const dd tn = term / (A + D(n));
+            S = S + tn;
+            if (!tn.hi.iszero()) {
+                const int lt = ilogb(tn.hi);
+                if (lt > big) big = lt;
+                if (n > N && dd(D(n)).hi > X.hi + X.hi && lt < big - 620) break;
+            } else if (n > N) break;
+        }
+    }
+    const SD xa = exp_sd(A * lx);
+    return sd_sub(norm({t1, 0}), mul(xa, S));
+}
+// Upper incomplete gamma Γ(a, x) for a <= 0 (finite or −0), x not NaN.
+[[nodiscard]] inline float256 upper_nonpos(float256 a, float256 x) {
+    detail_dd::FnEnv env;
+    if (a.isinf()) return env.invalid();
+    if (x.signbit() && !x.iszero()) return env.invalid();
+    if (x.iszero()) return env.pole(false);      // ∫_0 t^{a−1} diverges
+    if (x.isinf()) return env.exact(float256::zero());
+    const float256 one = float256::one();
+    const float256 two1000 = ldexp(one, 1000);
+    if (x > two1000) return env.underflow(false);  // < e^{−x}
+    const dd X{x};
+    if (-a > two1000) {
+        // x^a overflows (x < 1) or underflows (x > 1) by more than 2^(2^763);
+        // at x = 1, Γ(a, 1) = e^{−1}/(1 − a)·(1 + O(a^-2)).
+        if (x < one) return env.overflow(false);
+        if (x > one) return env.underflow(false);
+        return out(env, mul(exp_sd(-X), dd(one) / (X - dd(a))));
+    }
+    const dd lx = detail_dd::log(X);
+    if (x < float256(36) && -a <= float256(1000)) return out(env, upper_nonpos_series(a, X, lx));
+    // Legendre continued fraction; for a <= 0 every partial numerator is
+    // negative and it converges fast once x >= 36 or −a > 1000.
+    const dd A{a};
+    return out(env, mul(exp_sd(A * lx - X), cf(A, X)));
+}
+
 // kind: 0 lower γ, 1 upper Γ, 2 P, 3 Q.
 [[nodiscard]] inline float256 eval(float256 a, float256 x, int kind) {
     // γ(a, ∞) = Γ(a, 0) = Γ(a): tgamma's own rounding (exact for small integers).
     if (kind < 2 && !a.isnan() && !a.signbit() && !a.iszero() && !a.isinf() &&
         ((kind == 0 && x.isinf() && !x.signbit()) || (kind == 1 && x.iszero())))
         return base256::tgamma(a);
+    if (kind == 1 && !a.isnan() && !x.isnan() && (a.signbit() || a.iszero())) return upper_nonpos(a, x);
     detail_dd::FnEnv env;
     const float256 one = float256::one();
     if (a.isnan() || x.isnan()) return env.nan2(a, x);
@@ -1589,7 +1694,9 @@ namespace igamma {
 
 /// Lower incomplete gamma γ(a, x) = ∫_0^x t^{a−1} e^{−t} dt, a > 0, x >= 0.
 [[nodiscard]] inline float256 tgamma_lower(float256 a, float256 x) { return detail_sf::igamma::eval(a, x, 0); }
-/// Upper incomplete gamma Γ(a, x) = ∫_x^∞ t^{a−1} e^{−t} dt, a > 0, x >= 0.
+/// Upper incomplete gamma Γ(a, x) = ∫_x^∞ t^{a−1} e^{−t} dt, x >= 0; any a > 0, and
+/// a <= 0 (including 0 and negative integers) for x > 0. For a <= 0, Γ(a, 0) = +∞
+/// (divide-by-zero) and a = −∞ is invalid.
 [[nodiscard]] inline float256 tgamma_upper(float256 a, float256 x) { return detail_sf::igamma::eval(a, x, 1); }
 /// Regularized lower incomplete gamma P(a, x) = γ(a, x)/Γ(a).
 [[nodiscard]] inline float256 gamma_p(float256 a, float256 x) { return detail_sf::igamma::eval(a, x, 2); }

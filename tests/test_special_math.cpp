@@ -113,6 +113,23 @@ const Ref kRefs[] = {
     {"gq", "0.5", "2", "", "0x174bcf82c9d85f99ce898359c67cb2c99880d976cb52f56311be456ecfe1p-241"},
     {"gq", "1e-20", "0.75", "", "0x101277cc5b0db0d33d28b5222e9b44cf38f6c487bb08647fe1fd0ccfbadcp-304"},
     {"gu", "1e-20", "3", "", "0x1ab91c1085c70053d2d9a2a96940d462f11a279a81aff3a6cc5adeedda4ap-243"},
+    // Γ(a, x) for a <= 0: a = 0, negative integers, non-integers, next to −3, both sides of a = −1000.
+    {"gu", "0", "1", "", "0x1c14c5d3bf8f938fb0aeebee59e4ac8bb9a5a9782e1fb1618c9a39ee6884p-239"},
+    {"gu", "0", "0x100000000000000000000000000000000000000000000000000000000000p-436", "", "0x1141abca370d8cc8d21d04c1e8428fbdb28387b539d21e326f59e6cc0a16p-229"},
+    {"gu", "-1", "0x100000000000000000000000000000000000000000000000000000000000p-237", "", "0x14e7bba887e09245a3ee41fa39eaf6ff9bdb78e0e461029b18ad87003e6fp-237"},
+    {"gu", "-5", "0x1d0000000000000000000000000000000000000000000000000000000000p-234", "", "0x17bbb6283aea8b01d6e5af1c76d21411d70eef4eadff43aa6823a470f386p-265"},
+    {"gu", "-0x100000000000000000000000000000000000000000000000000000000000p-237", "2", "", "0x1ed23565950ab5cbe35351e2961b722e6c0708f83dac41efe12eacc39d59p-242"},
+    {"gu", "-0x140000000000000000000000000000000000000000000000000000000000p-235", "40", "", "0x17606ed63515f75358c456993b7f27a0759afcc18202f29be938c24836e6p-313"},
+    {"gu", "-100", "3", "", "0x1673a2705bf512faa1202448ea297b2d8b41aa37926f14d771244af91fc3p-406"},
+    {"gu", "-0x12e000000000000000000000000000000000000000000000000000000000p-231", "0x100000000000000000000000000000000000000000000000000000000000p-239", "", "0x1c5f0d1eafa716b1d8360d57e022e58cc7020460a1c47430379d29361f0dp-129"},
+    {"gu", "-2500", "100", "", "0x1ad4246e67368c9d396a51149d979b41a12df2ff530b9a5330598066241ap-17002"},
+    {"gu", "-0x100000000000000000000000000000000000000000000000000000000000p-248", "0x100000000000000000000000000000000000000000000000000000000000p-336", "", "0x1154eec6921e809af79b740a59545e73544ded42b4505f8a554ca952f2e1p-230"},
+    {"gu", "-12", "0x11c000000000000000000000000000000000000000000000000000000000p-231", "", "0x150ac9546ad1140add7a476068d8e483c11d20c216b53c687195a5e8cba9p-355"},
+    {"gu", "-0x17ffffffffffffffffffffffff8000000000000000000000000000000000p-235", "0x180000000000000000000000000000000000000000000000000000000000p-237", "", "0x120454985da6759583dcf0faf45017adb2b8e4f328b65dd3100dc13b72d2p-238"},
+    {"gu", "-0x180000000000000000000000000000000000000000000000200000000000p-235", "0x180000000000000000000000000000000000000000000000000000000000p-236", "", "0x1beaef4de3aa7e9f28b0f1ee9660f9fe23142fc9c6410f6c170bee70b717p-243"},
+    {"gu", "-0x1f3c00000000000000000000000000000000000000000000000000000000p-227", "20", "", "0x14e5e4c5dcc7a7984ab03b79e38667cb9c53a920eb6c5d6b9ba3252a5a2ap-4595"},
+    {"gu", "-0x1f4200000000000000000000000000000000000000000000000000000000p-227", "20", "", "0x11aa21e7aec0836f82febc248ff8be458da1cc2c8638865363733aaba8adp-4598"},
+    {"gu", "-0x100000000000000000000000000000000000000000000000000000000000p+864", "1", "", "0x178b56362cef37c6aeb7b1e0a4153e4376a6016aad5b1dcccc092e742942p-1338"},
     {"gp", "300", "250", "", "0x130b6ea8596daac26acf36c027111a4c0e244eac4680d68e3a79d4be2bebp-246"},
     {"gq", "300", "350", "", "0x17b8e00a4441008a1596f3bf6ae9ae24c900ab8231b361aa3792efbc23a6p-245"},
     {"gl", "40", "1e-3", "", "0x1082a1f50a644df2710567db8f103c38ac8bb24aa1d60ef8a08972dc95f7p-640"},
@@ -469,6 +486,37 @@ int main() {
     EXPECT(gamma_p(float256(-1), one), nan, kInv);
     EXPECT(gamma_q(one, float256(-1)), nan, kInv);
     EXPECT(gamma_q(nan, one), nan, 0);
+    // Γ(a, x) for a <= 0.
+    EXPECT(tgamma_upper(zero, zero), inf, kDiv);
+    EXPECT(tgamma_upper(float256(-3), zero), inf, kDiv);
+    EXPECT(tgamma_upper(float256(-2.5), zero), inf, kDiv);
+    EXPECT(tgamma_upper(float256(-2.5), inf), zero, 0);
+    EXPECT(tgamma_upper(zero, inf), zero, 0);
+    EXPECT(tgamma_upper(-one, -one), nan, kInv);
+    EXPECT(tgamma_upper(-inf, one), nan, kInv);
+    EXPECT(tgamma_upper(-one, nan), nan, 0);
+    EXPECT(gamma_q(-one, one), nan, kInv);
+    EXPECT(tgamma_lower(-one, one), nan, kInv);
+    CHECK(same(tgamma_upper(-zero, one), tgamma_upper(zero, one)));
+    EXPECT_M(tgamma_upper(-ldexp(one, 1100), float256(0.5)),
+             [](round_mode m) { return (m == round_mode::toward_zero || m == round_mode::downward) ? float256::max() : float256::inf(false); },
+             base256::fe_overflow | kInx);
+    EXPECT_M(tgamma_upper(-ldexp(one, 1100), float256(2)),
+             [](round_mode m) { return m == round_mode::upward ? float256::denorm_min() : float256::zero(); },
+             base256::fe_underflow | kInx);
+    EXPECT_M(tgamma_upper(float256(-0.5), ldexp(one, 2000)),
+             [](round_mode m) { return m == round_mode::upward ? float256::denorm_min() : float256::zero(); },
+             base256::fe_underflow | kInx);
+    EXPECT_M(tgamma_upper(float256(-1000), ldexp(one, -262000)),
+             [](round_mode m) { return (m == round_mode::toward_zero || m == round_mode::downward) ? float256::max() : float256::inf(false); },
+             base256::fe_overflow | kInx);
+    for (double av : {-0.25, -1.0, -2.5, -7.0, -40.5}) {  // Γ(a+1, x) = a Γ(a, x) + x^a e^{−x}
+        for (double xv : {0.375, 1.5, 12.0, 50.0}) {
+            const float256 a(av), x(xv);
+            const float256 lhs = tgamma_upper(a + one, x), rhs = a * tgamma_upper(a, x) + pow(x, a) * exp(-x);
+            CHECK(abs(lhs / rhs - one) <= ldexp(one, -200));
+        }
+    }
     for (double xv : {0.25, 1.0, 3.5, 12.0}) {  // P + Q = 1, γ + Γ = Γ(a)
         const float256 a(2.75), x(xv);
         CHECK(abs(gamma_p(a, x) + gamma_q(a, x) - one) <= ldexp(one, -235));

@@ -121,6 +121,41 @@ def GL(a, x): return mp.gammainc(a, 0, x)
 def GU(a, x): return mp.gammainc(a, x, mp.inf)
 def GP(a, x): return mp.gammainc(a, 0, x, regularized=True)
 def GQ(a, x): return mp.gammainc(a, x, mp.inf, regularized=True)
+def GUN(a, x):
+    """Γ(a, x) for a <= 0: mpmath at two working precisions (REFPREC+300 and
+    +600), which must agree to 2^-REFPREC relative (guards internal cancellation)."""
+    p = mp.mp.prec
+    with mp.workprec(p + 300): r1 = mp.gammainc(a, x, mp.inf)
+    with mp.workprec(p + 600): r2 = mp.gammainc(a, x, mp.inf)
+    assert abs(r1 - r2) <= mp.mpf(2)**-p * abs(r2), ("GUN disagree", a, x)
+    return r2
+
+def _gu_cf(a, x):
+    """x^a e^-x times the Legendre continued fraction for Γ(a, x) (modified Lentz)."""
+    tiny = mp.mpf(2)**(-4 * mp.mp.prec)
+    eps = mp.mpf(2)**(-mp.mp.prec - 10)
+    b = x + 1 - a
+    C, Dd = 1 / tiny, 1 / b
+    h = Dd; i = 1
+    while True:
+        an = -i * (i - a); b += 2
+        Dd = b + an * Dd
+        if Dd == 0: Dd = tiny
+        C = b + an / C
+        if C == 0: C = tiny
+        Dd = 1 / Dd; de = Dd * C; h *= de
+        if abs(de - 1) < eps: return mp.power(x, a) * mp.exp(-x) * h
+        i += 1
+
+def GUC(a, x):
+    """Γ(a, x), a <= -1000 and x >= 36, where mp.gammainc does not converge:
+    the continued fraction at REFPREC+64 and +200 bits, which must agree to
+    2^-REFPREC (checked against mp.quad of x^a e^-x ∫ e^-xt (1+t)^(a-1) dt)."""
+    p = mp.mp.prec
+    with mp.workprec(p + 64): r1 = _gu_cf(a, x)
+    with mp.workprec(p + 200): r2 = _gu_cf(a, x)
+    assert abs(r1 - r2) <= mp.mpf(2)**-p * abs(r2), ("GUC disagree", a, x)
+    return r2
 
 def EK(k): return mp.ellipk(k * k)
 def EE(k): return mp.ellipe(k * k)
@@ -500,6 +535,16 @@ RANGES = [
     ("gu_mid",   "gu", GU, [(0, 3, False), (1, 40, False)]),
     ("gq_tinya", "gq", GQ, [(-200, -10, True), (-10, 3, True)]),
     ("gu_tinya", "gu", GU, [(-200, -10, True), (-10, 3, True)]),
+    ("gu_neg",   "gu", GUN, [(-60, 0, False), (-20, 5, True)]),
+    ("gu_negsx", "gu", GUN, [(-60, 0, False), (-300, -20, True)]),
+    ("gu_negmid","gu", GUN, [(-1000, 0, False), (0, 36, False)]),
+    ("gu_negbig","gu", GUN, [(-300, 0, False), (36, 3000, False)]),
+    ("gu_negha", "gu", GUN, [(-30000, -1000, False), (0.75, 1.5, False)]),
+    ("gu_neghx", "gu", GUC, [(-30000, -1000, False), (36, 30000, False)]),
+    ("gu_zero",  "gu", GUN, [("const", 0), (-300, 10, True)]),
+    ("gu_negint","gu", GUN, [("negint", 1, 300), (-20, 6, True)]),
+    ("gu_nearint","gu", GUN, [("negnearint", 1, 40), (-20, 5, True)]),
+    ("gu_negtinya","gu", GUN, [("negexp", -300, -1), (-20, 6, True)]),
     ("gp_near",  "gp", GP, [(100, 3000, False), (100, 3000, False)]),
     ("gq_near",  "gq", GQ, [(100, 3000, False), (100, 3000, False)]),
     ("zeta",     "zeta", ZETA, [(-60, 300, False)]),
@@ -663,6 +708,10 @@ def gen_cases(args, rng, n):
                 v = mp.mpf(rng.randint(a[1], a[2])) + mp.ldexp(rng.choice([-1, 1]), -rng.randint(20, 200))
                 if v < 0: v = -v
                 h = to_hex(v); v = parse_hex(h); hs.append(h); vs.append(v)
+            elif a[0] == "negint":
+                k = rng.randint(a[1], a[2]); hs.append(str(-k)); vs.append(mp.mpf(-k))
+            elif a[0] == "const":
+                v = mp.mpf(a[1]); hs.append(to_hex(v)); vs.append(v)
             elif a[0] == "int":
                 k = rng.randint(a[1], a[2]); hs.append(str(k)); vs.append(mp.mpf(k))
             elif a[0] == "nearzero":
