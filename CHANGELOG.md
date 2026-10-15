@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Per-call timings of the speedups above (README "Performance", 4.24.0 table): `base256_bench 1.0`, g++-14 14.2.0, `-O3 -DNDEBUG -std=c++23` (CMake Release), on the shared 8-core box ("Intel(R) Xeon(R) Processor"), pinned with `taskset -c 5`, ≥ 1 s per item over 64 arguments, median of 3 runs, 7da2567 and 76f07bb interleaved with the same `bench.cpp`.
+  - `polygamma(1/2/3, x ∈ [−50, −0.1])`: 11.4/11.0/10.6 ms → 465/486/501 µs. `polygamma(10, x ∈ [−20, −0.1])`: 12.7 ms → 615 µs. `polygamma(3, x ∈ [0.1, 50])`: 1.20 ms → 270 µs. `trigamma`: 1.24 ms → 255 µs. `hurwitz_zeta(3, a)`: 1.12 ms → 266 µs.
+  - Unchanged (non-integer s): `hurwitz_zeta` 1.63 → 1.67 ms (s ∈ [1.1, 51]), 1.74 → 1.70 ms (s ∈ [2, 4], a ∈ [0.4, 0.8]), 1.21 → 1.21 ms (s < 1). `digamma` 145 → 144 µs, `riemann_zeta` 443 → 429 µs.
+  - Decimal at the extreme exponents: `to_string` 31.4 ms → 34.3 µs (x·2^262140), 31.8 ms → 30.5 µs (x·2^-262370), 31.6 ms → 31.5 µs (x·2^-262000). `format(scientific, 75)` 10.2 ms → 5.37 µs and 10.1 ms → 4.41 µs. `to_chars` 31.3 ms → 34.8 µs. `format(fixed, 0)` of x·2^262140 (78,913 digits) 119 → 40.2 ms.
+  - `to_string` of x ∈ [1, 2) (exact path in both): 4.21 → 4.39 µs (+4 %, outside the 3-run spread, not investigated).
+- Compile time with these changes, `tools/compile_time.py` against the 4.23.0 baseline ad368d3, threshold +10 % (warn only), 0 warnings in both runs. Headers 797,147 → 812,196 bytes (+1.9 %). CPU s, ad368d3 → 76f07bb:
+
+  | TU | CI job of run 38688772366 (mean of 5) | dev box (mean of 10) |
+  |---|---|---|
+  | g++-14 include_only | 1.246 → 1.284 (+3.0 %) | 0.976 → 1.014 (+3.8 %) |
+  | g++-14 arith | 1.541 → 1.559 (+1.2 %) | 1.181 → 1.228 (+4.0 %) |
+  | g++-14 math | 3.278 → 3.320 (+1.3 %) | 2.605 → 2.633 (+1.1 %) |
+  | g++-14 special | 6.067 → 6.355 (+4.7 %) | 4.912 → 5.236 (+6.6 %) |
+  | g++-14 igamma | 3.528 → 3.567 (+1.1 %) | 2.846 → 2.846 (+0.0 %) |
+  | clang++-19 include_only | 1.756 → 1.810 (+3.1 %) | 1.119 → 1.174 (+4.9 %) |
+  | clang++-19 arith | 1.736 → 1.766 (+1.7 %) | 1.160 → 1.189 (+2.4 %) |
+  | clang++-19 math | 2.957 → 2.993 (+1.2 %) | 2.086 → 2.099 (+0.6 %) |
+  | clang++-19 special | 5.249 → 5.527 (+5.3 %) | 3.798 → 3.905 (+2.8 %) |
+  | clang++-19 igamma | 3.188 → 3.238 (+1.5 %) | 2.265 → 2.279 (+0.6 %) |
+
+  The box sd is 0.04–0.16 s, so its include-only and arith changes are about one sd. On the CI runner (sd ≤ 0.05 s) include-only is +3 % for both compilers, from the decimal fast path in `float256.hpp`, and `special` is +4.7 % (g++) and +5.3 % (clang). The `special` figure also includes the Bessel fix of 92396d0, which was +2.4 % / +2.5 % on its own.
 - **Speed: decimal output at the extreme exponents, about 1000× faster (shortest and `e` formats), 3× for long `fixed` output.** Before, every conversion multiplied or divided by an exact 5^|k| BigInt (|k| up to ~79000, a 180000-bit number built 13 powers of 5 at a time), and `to_string` did that 3–4 times per call.
   - For |k| ≥ 160, `dec_floor_scaled` (`to_string`, `format`, `to_chars`, `std::format`, `operator<<`) and the interval checks of the shortest search now use a 640-bit lower bound of 5^|k| (binary powering, truncated down, relative error below 2^-600). They answer only when that bound decides the digits, or the comparison, exactly. Otherwise, or with more than ~140 digits, they fall back to the exact BigInt path, which is unchanged (`dec_floor_scaled_exact`). Exact ties cannot occur there (they would need 5^|k| to divide a 256-bit significand or a < 10^140 digit string), so the fallback is only for values within ~2^-600 relative of a boundary.
   - `BigInt::to_dec` splits large integers by 10^(9·2^i) (Knuth division) down to 48 limbs instead of dividing the whole number by 10^9 per 9 digits (`format(fixed, 0)` of 2^262140: 78,913 digits).
