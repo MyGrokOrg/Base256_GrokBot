@@ -141,6 +141,11 @@ int main(int argc, char** argv) {
         {"cx atanh", [](float256 x, float256 y) { return cx_out(atanh(complex(x, y))); }, -10, 10},
         {"cx pow", [](float256 x, float256 y) { return cx_out(pow(complex(x, y), complex(y * float256(0.3), x * float256(0.1)))); }, -10, 10},
         {"cx pow(z,5)", [](float256 x, float256 y) { return cx_out(pow(complex(x, y), float256(5))); }, -10, 10},
+        // Parts 2^400000 apart (x, y in [1, 2)): the exact operations work on ~400000-bit BigInts.
+        {"cx mul (gap)", [](float256 x, float256 y) { return cx_out(complex(ldexp(x, 200000), ldexp(y, -200000)) * complex(ldexp(y, -200000), ldexp(x, 200000))); }, 1, 2},
+        {"cx div (gap)", [](float256 x, float256 y) { return cx_out(complex(ldexp(x, 200000), ldexp(y, -200000)) / complex(ldexp(y, -200000), ldexp(x, 200000))); }, 1, 2},
+        {"cx abs (gap)", [](float256 x, float256 y) { return abs(complex(ldexp(x, 200000), ldexp(y, -200000))); }, 1, 2},
+        {"cx sqrt (gap)", [](float256 x, float256 y) { return cx_out(sqrt(complex(ldexp(x, 200000), ldexp(y, -200000)))); }, 1, 2},
         // Decimal output at the extreme exponents (x in [1, 2) scaled to near max / deep subnormal).
         {"to_string(~2^262140)", [](float256 x, float256) { return out_len(ldexp(x, 262140).to_string()); }, 1, 2},
         {"to_string(~2^-262370)", [](float256 x, float256) { return out_len(ldexp(x, -262370).to_string()); }, 1, 2},
