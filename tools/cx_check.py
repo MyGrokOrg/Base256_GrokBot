@@ -26,6 +26,8 @@ and the sign of exactly-zero components. Exit status 1 on any difference.
 
 Environment (as tools/sf_check.py, used by the nightly fuzz workflow):
   SF_RANGE_SEED=1  reseed per range from (seed, range name).
+  CX_PERCALL=1     the evaluator calls the per-call rounding overloads (mul(z, w, m),
+                   exp(z, m), ...) with the thread's mode set to a different mode (4.26.0).
   SF_SHARD=i/K     run only the ranges whose index in RANGES is i mod K.
   SF_MAXFAIL=n     print at most n FAIL lines per range (default 50).
   SF_TIMING=1      print the seconds per range.
@@ -545,6 +547,10 @@ def run(exe, n, seed, flt, modes):
         mis = flagerr = zsign = shown = 0
         ovf = 0  # components whose exact value exceeds the largest finite: excluded from max ulp
         for ops, line in zip(cases, lines):
+            if line.startswith("?MODE"):  # CX_PERCALL: the per-call overload changed the thread's mode
+                mis += 1
+                print(f"FAIL range={name} op={op} in={','.join(to_hex(o) for o in ops)} thread rounding mode changed seed={seed}", flush=True)
+                continue
             refs = reference(op, ops)
             k = len(refs)
             tok = line.split()

@@ -83,6 +83,9 @@ if(BUILD_TESTING)
             target_compile_options(mpfr_diff PRIVATE -Wall -Wextra -Wpedantic)
         endif()
         add_test(NAME mpfr_diff COMMAND mpfr_diff ${BASE256_MPFR_CASES} 12345)
+        # The same through the per-call overloads (add(a, b, m), ...), thread mode set to a decoy.
+        add_test(NAME mpfr_diff_percall COMMAND mpfr_diff ${BASE256_MPFR_CASES} 54321)
+        set_tests_properties(mpfr_diff_percall PROPERTIES ENVIRONMENT "MPFR_PERCALL=1")
         # Elementary-function error bounds (ulps) against a 1100-bit MPFR reference.
         set(BASE256_ULP_CASES "200" CACHE STRING "Random cases per function for the ctest ulp run")
         set(BASE256_ULP_FUNCS "exp exp2 expm1 exp_big exp2_big expm1_big sinh_big cosh_big log log2 log10 logn1 log1p log1pn cbrt pow sin cos tan sin_kpi cos_kpi tan_kpi sin_all cos_all tan_all sin_kbig sin_hard cos_hard tan_hard sin_hardcw atan asin acos asin1 acos1 atan2 sinh cosh tanh asinh acosh atanh atanh1 acosh1 erf erfc erfcn erf_lin erfc_lin tgamma tgamman lgamma lgamman lgamma1 lgamma2 jn yn cyl_j cyl_y beta zeta zeta1 zetab1 zetan tgamma_lower tgamma_upper tgamma_upper_neg gamma_p gamma_q legendre hermite laguerre expint ei_big e1 logint logint1 digamma lbeta airy_ai airy_ai_lin dilog")
@@ -93,6 +96,8 @@ if(BUILD_TESTING)
             target_compile_options(mpfr_ulp PRIVATE -Wall -Wextra -Wpedantic)
         endif()
         add_test(NAME mpfr_ulp COMMAND mpfr_ulp ${BASE256_ULP_CASES} 777 1 "${BASE256_ULP_FUNCS}")
+        add_test(NAME mpfr_ulp_percall COMMAND mpfr_ulp ${BASE256_ULP_CASES} 778 1 "${BASE256_ULP_FUNCS}")
+        set_tests_properties(mpfr_ulp_percall PROPERTIES ENVIRONMENT "ULP_PERCALL=1")
     endif()
 endif()
 

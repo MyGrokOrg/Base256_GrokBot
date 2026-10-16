@@ -198,6 +198,13 @@ void nudge(mpfr_t r, int ternary) {
     else if (ternary < 0) mpfr_nextabove(r);
 }
 
+// With ULP_PERCALL set, every function is called through its per-call rounding
+// overload f(args..., m) while the thread's mode is a different (decoy) mode.
+bool g_pc = false;
+base256::round_mode g_m = base256::round_mode::to_nearest_even;
+long g_mode_changed = 0;
+#define C(fn, ...) (g_pc ? fn(__VA_ARGS__, g_m) : fn(__VA_ARGS__))
+
 struct Stat {
     double worst[5] = {0, 0, 0, 0, 0};
     long misround[5] = {0, 0, 0, 0, 0};
@@ -219,10 +226,17 @@ void check_case(Stat& st, const std::function<float256()>& call, mpfr_srcptr ref
     mpfr_init2(ym, 1100);
     ++st.cases;
     for (int m = 0; m < g_modes; ++m) {
-        base256::fenv::set_round(kModes[m]);
+        const base256::round_mode decoy = kModes[(m + 2) % 5];
+        g_m = kModes[m];
+        base256::fenv::set_round(g_pc ? decoy : kModes[m]);
         base256::fenv::clear_flags();
         const float256 y = call();
         const unsigned fl = base256::fenv::get_flags();
+        if (g_pc && base256::fenv::get_round() != decoy) {
+            ++g_mode_changed;
+            ++st.flag_bad;
+            if (st.first_bad.empty()) st.first_bad = std::string("thread mode changed ") + kModeNames[m] + " at " + where;
+        }
         base256::fenv::set_round(base256::round_mode::to_nearest_even);
         base256::fenv::clear_flags();
         const Expected ex = round_b256(o, ref, kMpfrModes[m]);
@@ -313,79 +327,81 @@ int main(int argc, char** argv) {
     const long n = argc > 1 ? std::atol(argv[1]) : 2000;
     g_seed = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 1;
     rng.seed(g_seed);
+    g_pc = std::getenv("ULP_PERCALL") != nullptr;
+    if (g_pc) std::printf("per-call rounding overloads (ULP_PERCALL), thread mode set to a decoy mode\n");
     const bool check = argc > 3 && std::atoi(argv[3]) != 0;
     g_strict = argc > 3 && std::atoi(argv[3]) == 2;
     if (g_strict) std::printf("mpfr_ulp strict seed=%llu cases=%ld\n", g_seed, n);
     if (argc > 5) g_modes = std::atoi(argv[5]) < 1 ? 1 : std::atoi(argv[5]) > 5 ? 5 : std::atoi(argv[5]);
     using namespace base256;
     std::vector<Fn> fns = {
-        {"exp",   [](float256 x){return exp(x);},   mpfr_exp,   -120, 18, true, true, 1, 181000},
-        {"exp2",  [](float256 x){return exp2(x);},  mpfr_exp2,  -120, 18, true, true, 1, 262000},
-        {"expm1", [](float256 x){return expm1(x);}, mpfr_expm1, -300, 18, true, true, 1, 181000},
+        {"exp",   [](float256 x){return C(exp, x);},   mpfr_exp,   -120, 18, true, true, 1, 181000},
+        {"exp2",  [](float256 x){return C(exp2, x);},  mpfr_exp2,  -120, 18, true, true, 1, 262000},
+        {"expm1", [](float256 x){return C(expm1, x);}, mpfr_expm1, -300, 18, true, true, 1, 181000},
         // Overflow / gradual-underflow / underflow-to-zero regions (flags and directed modes).
-        {"exp_big", [](float256 x){return exp(x);},   mpfr_exp,   17, 18, true, true, 1, 0},
-        {"exp2_big",[](float256 x){return exp2(x);},  mpfr_exp2,  17, 19, true, true, 1, 0},
-        {"expm1_big",[](float256 x){return expm1(x);},mpfr_expm1, 17, 18, true, true, 1, 0},
-        {"sinh_big",[](float256 x){return sinh(x);},  mpfr_sinh,  17, 18, true, true, 1, 0},
-        {"cosh_big",[](float256 x){return cosh(x);},  mpfr_cosh,  17, 18, true, true, 1, 0},
-        {"log",   [](float256 x){return log(x);},   mpfr_log,   -262000, 262000, true, false, 1, 0},
-        {"log2",  [](float256 x){return log2(x);},  mpfr_log2,  -262000, 262000, true, false, 1, 0},
-        {"log10", [](float256 x){return log10(x);}, mpfr_log10, -262000, 262000, true, false, 1, 0},
-        {"logn1", [](float256 x){return log(x);},   mpfr_log,   -2, 1, true, false, 1, 0},
-        {"log1p", [](float256 x){return log1p(x);}, mpfr_log1p, -300, 300, true, false, 1, 0},
-        {"log1pn",[](float256 x){return log1p(x);}, mpfr_log1p, -300, -1, true, false, 1, 0},
-        {"sin",   [](float256 x){return sin(x);},   mpfr_sin,   -120, 100, true, true, 1, 0},
-        {"cos",   [](float256 x){return cos(x);},   mpfr_cos,   -120, 100, true, true, 1, 0},
-        {"tan",   [](float256 x){return tan(x);},   mpfr_tan,   -120, 100, true, true, 1, 0},
-        {"sin_kpi",[](float256 x){return sin(x);},  mpfr_sin,   0, 99, false, true, 1, 0, 1},
-        {"cos_kpi",[](float256 x){return cos(x);},  mpfr_cos,   0, 99, false, true, 1, 0, 1},
-        {"tan_kpi",[](float256 x){return tan(x);},  mpfr_tan,   0, 99, false, true, 1, 0, 1},
-        {"asin1", [](float256 x){return asin(x);},  mpfr_asin,  -236, -1, true, true, 1, 0, 2},
-        {"acos1", [](float256 x){return acos(x);},  mpfr_acos,  -236, -1, true, true, 1, 0, 2},
-        {"atanh1",[](float256 x){return atanh(x);}, mpfr_atanh, -236, -1, true, true, 1, 0, 2},
-        {"acosh1",[](float256 x){return acosh(x);}, mpfr_acosh, -236, -1, true, false, 1, 0, 3},
-        {"sin_all",[](float256 x){return sin(x);},  mpfr_sin,   -120, 262143, true, true, 1, 0},
-        {"cos_all",[](float256 x){return cos(x);},  mpfr_cos,   -120, 262143, true, true, 1, 0},
-        {"tan_all",[](float256 x){return tan(x);},  mpfr_tan,   -120, 262143, true, true, 1, 0},
-        {"sin_kbig",[](float256 x){return sin(x);}, mpfr_sin,   100, 262140, false, true, 1, 0, 1},
-        {"sin_hard",[](float256 x){return sin(x);}, mpfr_sin,   -236, 261907, false, true, 1, 0, 6},
-        {"cos_hard",[](float256 x){return cos(x);}, mpfr_cos,   -236, 261907, false, true, 1, 0, 6},
-        {"tan_hard",[](float256 x){return tan(x);}, mpfr_tan,   -236, 261907, false, true, 1, 0, 6},
-        {"sin_hardcw",[](float256 x){return sin(x);}, mpfr_sin, -236, -137, false, true, 1, 0, 6},
-        {"atan",  [](float256 x){return atan(x);},  mpfr_atan,  -120, 300, true, true, 1, 0},
-        {"asin",  [](float256 x){return asin(x);},  mpfr_asin,  -120, 0, true, true, 1, 1},
-        {"acos",  [](float256 x){return acos(x);},  mpfr_acos,  -120, 0, true, true, 1, 1},
-        {"sinh",  [](float256 x){return sinh(x);},  mpfr_sinh,  -120, 18, true, true, 1, 181000},
-        {"cosh",  [](float256 x){return cosh(x);},  mpfr_cosh,  -120, 18, true, true, 1, 181000},
-        {"tanh",  [](float256 x){return tanh(x);},  mpfr_tanh,  -120, 8, true, true, 1, 0},
-        {"asinh", [](float256 x){return asinh(x);}, mpfr_asinh, -120, 3000, true, true, 1, 0},
-        {"acosh", [](float256 x){return acosh(x);}, mpfr_acosh, 0, 3000, true, false, 1, 0},
-        {"atanh", [](float256 x){return atanh(x);}, mpfr_atanh, -120, 0, true, true, 1, 1},
-        {"cbrt",  [](float256 x){return cbrt(x);},  mpfr_cbrt,  -262000, 262000, true, true, 1, 0},
-        {"erf",   [](float256 x){return erf(x);},   mpfr_erf,   -120, 5, true, true, 1, 0},
-        {"erfc",  [](float256 x){return erfc(x);},  mpfr_erfc,  -120, 9, true, false, 1, 500},
-        {"erf_lin", [](float256 x){return erf(x);},  mpfr_erf,  -17, 17, false, false, 1, 0},
-        {"erfc_lin",[](float256 x){return erfc(x);}, mpfr_erfc, -17, 30, false, false, 1, 0},
-        {"erfcn", [](float256 x){return erfc(x);},  mpfr_erfc,  -120, 5, true, false, 1, 0, 4},
-        {"tgamma",[](float256 x){return tgamma(x);},mpfr_gamma, -10, 10, true, false, 1, 1000},
-        {"tgamman",[](float256 x){return tgamma(x);},mpfr_gamma, -10, 10, true, false, 1, 1000, 4},
-        {"lgamman",[](float256 x){return lgamma(x);},mpfr_lngamma_abs, -10, 20, true, false, 1, 0, 4},
-        {"lgamma1",[](float256 x){return lgamma(x);},mpfr_lngamma, -236, -1, true, false, 1, 0, 3},
-        {"zeta",   [](float256 x){return riemann_zeta(x);}, mpfr_zeta, -120, 8, true, true, 1, 0},
-        {"zeta1",  [](float256 x){return riemann_zeta(x);}, mpfr_zeta, -236, -1, true, false, 1, 0, 3},
-        {"zetab1", [](float256 x){return riemann_zeta(x);}, mpfr_zeta, -236, -1, true, false, 1, 0, 2},
-        {"zetan",  [](float256 x){return riemann_zeta(x);}, mpfr_zeta, 8, 14, true, false, 1, 0, 4},
-        {"lgamma2",[](float256 x){return lgamma(x);},mpfr_lngamma_abs, -236, -1, true, true, 1, 0, 5},
-        {"lgamma",[](float256 x){return lgamma(x);},mpfr_lngamma,-10, 20, true, false, 1, 0},
-        {"expint", [](float256 x){return expint(x);}, mpfr_eint, -20, 9, true, true, 1, 0},
-        {"ei_big", [](float256 x){return expint(x);}, mpfr_eint, 9, 17.5, true, true, 1, 0},
-        {"e1",     [](float256 x){return expint(1u, x);}, mpfr_e1, -20, 8, true, false, 1, 0},
-        {"digamma",[](float256 x){return digamma(x);}, mpfr_digamma, -20, 12, true, true, 1, 0},
-        {"airy_ai",[](float256 x){return airy_ai(x);}, mpfr_ai, -20, 6, true, true, 1, 0},
-        {"airy_ai_lin",[](float256 x){return airy_ai(x);}, mpfr_ai, -60, 60, false, false, 1, 0},
-        {"dilog",[](float256 x){return dilog(x);}, mpfr_li2, -50, 1, false, false, 1, 0},
-        {"logint", [](float256 x){return logint(x);}, mpfr_li, -40, 40, true, false, 1, 0},
-        {"logint1",[](float256 x){return logint(x);}, mpfr_li, -236, -1, true, false, 1, 0, 3},
+        {"exp_big", [](float256 x){return C(exp, x);},   mpfr_exp,   17, 18, true, true, 1, 0},
+        {"exp2_big",[](float256 x){return C(exp2, x);},  mpfr_exp2,  17, 19, true, true, 1, 0},
+        {"expm1_big",[](float256 x){return C(expm1, x);},mpfr_expm1, 17, 18, true, true, 1, 0},
+        {"sinh_big",[](float256 x){return C(sinh, x);},  mpfr_sinh,  17, 18, true, true, 1, 0},
+        {"cosh_big",[](float256 x){return C(cosh, x);},  mpfr_cosh,  17, 18, true, true, 1, 0},
+        {"log",   [](float256 x){return C(log, x);},   mpfr_log,   -262000, 262000, true, false, 1, 0},
+        {"log2",  [](float256 x){return C(log2, x);},  mpfr_log2,  -262000, 262000, true, false, 1, 0},
+        {"log10", [](float256 x){return C(log10, x);}, mpfr_log10, -262000, 262000, true, false, 1, 0},
+        {"logn1", [](float256 x){return C(log, x);},   mpfr_log,   -2, 1, true, false, 1, 0},
+        {"log1p", [](float256 x){return C(log1p, x);}, mpfr_log1p, -300, 300, true, false, 1, 0},
+        {"log1pn",[](float256 x){return C(log1p, x);}, mpfr_log1p, -300, -1, true, false, 1, 0},
+        {"sin",   [](float256 x){return C(sin, x);},   mpfr_sin,   -120, 100, true, true, 1, 0},
+        {"cos",   [](float256 x){return C(cos, x);},   mpfr_cos,   -120, 100, true, true, 1, 0},
+        {"tan",   [](float256 x){return C(tan, x);},   mpfr_tan,   -120, 100, true, true, 1, 0},
+        {"sin_kpi",[](float256 x){return C(sin, x);},  mpfr_sin,   0, 99, false, true, 1, 0, 1},
+        {"cos_kpi",[](float256 x){return C(cos, x);},  mpfr_cos,   0, 99, false, true, 1, 0, 1},
+        {"tan_kpi",[](float256 x){return C(tan, x);},  mpfr_tan,   0, 99, false, true, 1, 0, 1},
+        {"asin1", [](float256 x){return C(asin, x);},  mpfr_asin,  -236, -1, true, true, 1, 0, 2},
+        {"acos1", [](float256 x){return C(acos, x);},  mpfr_acos,  -236, -1, true, true, 1, 0, 2},
+        {"atanh1",[](float256 x){return C(atanh, x);}, mpfr_atanh, -236, -1, true, true, 1, 0, 2},
+        {"acosh1",[](float256 x){return C(acosh, x);}, mpfr_acosh, -236, -1, true, false, 1, 0, 3},
+        {"sin_all",[](float256 x){return C(sin, x);},  mpfr_sin,   -120, 262143, true, true, 1, 0},
+        {"cos_all",[](float256 x){return C(cos, x);},  mpfr_cos,   -120, 262143, true, true, 1, 0},
+        {"tan_all",[](float256 x){return C(tan, x);},  mpfr_tan,   -120, 262143, true, true, 1, 0},
+        {"sin_kbig",[](float256 x){return C(sin, x);}, mpfr_sin,   100, 262140, false, true, 1, 0, 1},
+        {"sin_hard",[](float256 x){return C(sin, x);}, mpfr_sin,   -236, 261907, false, true, 1, 0, 6},
+        {"cos_hard",[](float256 x){return C(cos, x);}, mpfr_cos,   -236, 261907, false, true, 1, 0, 6},
+        {"tan_hard",[](float256 x){return C(tan, x);}, mpfr_tan,   -236, 261907, false, true, 1, 0, 6},
+        {"sin_hardcw",[](float256 x){return C(sin, x);}, mpfr_sin, -236, -137, false, true, 1, 0, 6},
+        {"atan",  [](float256 x){return C(atan, x);},  mpfr_atan,  -120, 300, true, true, 1, 0},
+        {"asin",  [](float256 x){return C(asin, x);},  mpfr_asin,  -120, 0, true, true, 1, 1},
+        {"acos",  [](float256 x){return C(acos, x);},  mpfr_acos,  -120, 0, true, true, 1, 1},
+        {"sinh",  [](float256 x){return C(sinh, x);},  mpfr_sinh,  -120, 18, true, true, 1, 181000},
+        {"cosh",  [](float256 x){return C(cosh, x);},  mpfr_cosh,  -120, 18, true, true, 1, 181000},
+        {"tanh",  [](float256 x){return C(tanh, x);},  mpfr_tanh,  -120, 8, true, true, 1, 0},
+        {"asinh", [](float256 x){return C(asinh, x);}, mpfr_asinh, -120, 3000, true, true, 1, 0},
+        {"acosh", [](float256 x){return C(acosh, x);}, mpfr_acosh, 0, 3000, true, false, 1, 0},
+        {"atanh", [](float256 x){return C(atanh, x);}, mpfr_atanh, -120, 0, true, true, 1, 1},
+        {"cbrt",  [](float256 x){return C(cbrt, x);},  mpfr_cbrt,  -262000, 262000, true, true, 1, 0},
+        {"erf",   [](float256 x){return C(erf, x);},   mpfr_erf,   -120, 5, true, true, 1, 0},
+        {"erfc",  [](float256 x){return C(erfc, x);},  mpfr_erfc,  -120, 9, true, false, 1, 500},
+        {"erf_lin", [](float256 x){return C(erf, x);},  mpfr_erf,  -17, 17, false, false, 1, 0},
+        {"erfc_lin",[](float256 x){return C(erfc, x);}, mpfr_erfc, -17, 30, false, false, 1, 0},
+        {"erfcn", [](float256 x){return C(erfc, x);},  mpfr_erfc,  -120, 5, true, false, 1, 0, 4},
+        {"tgamma",[](float256 x){return C(tgamma, x);},mpfr_gamma, -10, 10, true, false, 1, 1000},
+        {"tgamman",[](float256 x){return C(tgamma, x);},mpfr_gamma, -10, 10, true, false, 1, 1000, 4},
+        {"lgamman",[](float256 x){return C(lgamma, x);},mpfr_lngamma_abs, -10, 20, true, false, 1, 0, 4},
+        {"lgamma1",[](float256 x){return C(lgamma, x);},mpfr_lngamma, -236, -1, true, false, 1, 0, 3},
+        {"zeta",   [](float256 x){return C(riemann_zeta, x);}, mpfr_zeta, -120, 8, true, true, 1, 0},
+        {"zeta1",  [](float256 x){return C(riemann_zeta, x);}, mpfr_zeta, -236, -1, true, false, 1, 0, 3},
+        {"zetab1", [](float256 x){return C(riemann_zeta, x);}, mpfr_zeta, -236, -1, true, false, 1, 0, 2},
+        {"zetan",  [](float256 x){return C(riemann_zeta, x);}, mpfr_zeta, 8, 14, true, false, 1, 0, 4},
+        {"lgamma2",[](float256 x){return C(lgamma, x);},mpfr_lngamma_abs, -236, -1, true, true, 1, 0, 5},
+        {"lgamma",[](float256 x){return C(lgamma, x);},mpfr_lngamma,-10, 20, true, false, 1, 0},
+        {"expint", [](float256 x){return C(expint, x);}, mpfr_eint, -20, 9, true, true, 1, 0},
+        {"ei_big", [](float256 x){return C(expint, x);}, mpfr_eint, 9, 17.5, true, true, 1, 0},
+        {"e1",     [](float256 x){return C(expint, 1u, x);}, mpfr_e1, -20, 8, true, false, 1, 0},
+        {"digamma",[](float256 x){return C(digamma, x);}, mpfr_digamma, -20, 12, true, true, 1, 0},
+        {"airy_ai",[](float256 x){return C(airy_ai, x);}, mpfr_ai, -20, 6, true, true, 1, 0},
+        {"airy_ai_lin",[](float256 x){return C(airy_ai, x);}, mpfr_ai, -60, 60, false, false, 1, 0},
+        {"dilog",[](float256 x){return C(dilog, x);}, mpfr_li2, -50, 1, false, false, 1, 0},
+        {"logint", [](float256 x){return C(logint, x);}, mpfr_li, -40, 40, true, false, 1, 0},
+        {"logint1",[](float256 x){return C(logint, x);}, mpfr_li, -236, -1, true, false, 1, 0, 3},
     };
     const bool all_fns = argc <= 4 || std::string(argv[4]).empty() || std::string(argv[4]) == "all";
     if (!all_fns) { std::string only = argv[4]; std::erase_if(fns, [&](const Fn& f){ return only.find(f.name) == std::string::npos; }); }
@@ -438,7 +454,7 @@ int main(int argc, char** argv) {
             if (abs(y * log2(x)) > float256(250000)) { --i; continue; }
             to_mpfr(xm, x); to_mpfr(ym, y);
             nudge(r, mpfr_pow(r, xm, ym, MPFR_RNDN));
-            check_case(st, [&] { return pow(x, y); }, r, x.to_hex_string() + ", " + y.to_hex_string());
+            check_case(st, [&] { return C(pow, x, y); }, r, x.to_hex_string() + ", " + y.to_hex_string());
         }
         report("pow", st, 1.0, bad);
         mpfr_clear(ym);
@@ -454,7 +470,7 @@ int main(int argc, char** argv) {
             if (rng() & 1) x = -x;
             to_mpfr(xm, x); to_mpfr(ym, y);
             nudge(r, mpfr_atan2(r, ym, xm, MPFR_RNDN));
-            check_case(st, [&] { return atan2(y, x); }, r, y.to_hex_string() + ", " + x.to_hex_string());
+            check_case(st, [&] { return C(atan2, y, x); }, r, y.to_hex_string() + ", " + x.to_hex_string());
         }
         report("atan2", st, 1.0, bad);
         mpfr_clear(ym);
@@ -485,24 +501,24 @@ int main(int argc, char** argv) {
                 b = rnd_in(-12, 9, true);
                 if (rng() & 1) b = -b;
             },
-            [](float256 a, float256 b) { return base256::jn(static_cast<int>(a.to_double()), b); },
+            [](float256 a, float256 b) { return C(base256::jn, static_cast<int>(a.to_double()), b); },
             [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_jn(r, mpfr_get_si(a, MPFR_RNDN), b, MPFR_RNDN); });
     two_arg("yn", [&](float256& a, float256& b) {
                 a = float256::from_int(rnd_int(-40, 40));
                 b = rnd_in(-12, 9, true);
             },
-            [](float256 a, float256 b) { return base256::yn(static_cast<int>(a.to_double()), b); },
+            [](float256 a, float256 b) { return C(base256::yn, static_cast<int>(a.to_double()), b); },
             [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_yn(r, mpfr_get_si(a, MPFR_RNDN), b, MPFR_RNDN); });
     // cyl_bessel_j / cyl_neumann at integer orders (the general-ν code paths).
     two_arg("cyl_j", [&](float256& a, float256& b) { a = float256::from_int(rnd_int(0, 30)); b = rnd_in(-4, 11, true); },
-            [](float256 a, float256 b) { return base256::cyl_bessel_j(a, b); },
+            [](float256 a, float256 b) { return C(base256::cyl_bessel_j, a, b); },
             [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_jn(r, mpfr_get_si(a, MPFR_RNDN), b, MPFR_RNDN); });
     two_arg("cyl_y", [&](float256& a, float256& b) { a = float256::from_int(rnd_int(0, 30)); b = rnd_in(-4, 11, true); },
-            [](float256 a, float256 b) { return base256::cyl_neumann(a, b); },
+            [](float256 a, float256 b) { return C(base256::cyl_neumann, a, b); },
             [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_yn(r, mpfr_get_si(a, MPFR_RNDN), b, MPFR_RNDN); });
     // beta(x, y), x and y log-uniform in [2^-30, 2^30).
     two_arg("beta", [&](float256& a, float256& b) { a = rnd_in(-30, 30, true); b = rnd_in(-30, 30, true); },
-            [](float256 a, float256 b) { return base256::beta(a, b); },
+            [](float256 a, float256 b) { return C(base256::beta, a, b); },
             [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) { return mpfr_beta(r, a, b, MPFR_RNDN); });
     // Incomplete gamma: a in [2^-8, 2^8), x = a·2^[-4, 4) or log-uniform; references
     // from mpfr_gamma_inc (upper) and Γ(a) at 3000 bits for the others.
@@ -527,14 +543,14 @@ int main(int argc, char** argv) {
             return t;
         };
     };
-    two_arg("tgamma_lower", ig_gen, [](float256 a, float256 b) { return base256::tgamma_lower(a, b); }, ig_ref(0));
-    two_arg("tgamma_upper", ig_gen, [](float256 a, float256 b) { return base256::tgamma_upper(a, b); }, ig_ref(1));
+    two_arg("tgamma_lower", ig_gen, [](float256 a, float256 b) { return C(base256::tgamma_lower, a, b); }, ig_ref(0));
+    two_arg("tgamma_upper", ig_gen, [](float256 a, float256 b) { return C(base256::tgamma_upper, a, b); }, ig_ref(1));
     // Γ(a, x) for a <= 0 (4.23.0): a in (−60, 0] (a third negative integers or 0), x log-uniform in [2^-20, 2^6).
     two_arg("tgamma_upper_neg", [&](float256& a, float256& b) {
                 a = (rng() % 3 == 0) ? float256::from_int(-rnd_int(0, 60)) : -rnd_in(-8, 6, true);
                 b = rnd_in(-20, 6, true);
             },
-            [](float256 a, float256 b) { return base256::tgamma_upper(a, b); },
+            [](float256 a, float256 b) { return C(base256::tgamma_upper, a, b); },
             [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr x) {
                 mpfr_t u;
                 mpfr_init2(u, 3000);
@@ -543,8 +559,8 @@ int main(int argc, char** argv) {
                 mpfr_clear(u);
                 return t == 0 ? 1 : t;
             });
-    two_arg("gamma_p", ig_gen, [](float256 a, float256 b) { return base256::gamma_p(a, b); }, ig_ref(2));
-    two_arg("gamma_q", ig_gen, [](float256 a, float256 b) { return base256::gamma_q(a, b); }, ig_ref(3));
+    two_arg("gamma_p", ig_gen, [](float256 a, float256 b) { return C(base256::gamma_p, a, b); }, ig_ref(2));
+    two_arg("gamma_q", ig_gen, [](float256 a, float256 b) { return C(base256::gamma_q, a, b); }, ig_ref(3));
     // Orthogonal polynomials of integer degree n in [0, 40]: exact references from
     // the integer-coefficient forms at a precision that holds every term
     // exactly (one final rounding), so exact results and flags are checked too.
@@ -576,9 +592,9 @@ int main(int argc, char** argv) {
         mpfr_clears(s, p, (mpfr_ptr)0); mpz_clears(c, c2, nullptr);
         return tr;
     };
-    two_arg("legendre", poly_gen, [](float256 a, float256 b) { return base256::legendre(static_cast<unsigned>(a.to_double()), b); }, leg_ref);
+    two_arg("legendre", poly_gen, [](float256 a, float256 b) { return C(base256::legendre, static_cast<unsigned>(a.to_double()), b); }, leg_ref);
     // H_n by its recurrence (integer arithmetic on x, exact at this precision).
-    two_arg("hermite", poly_gen, [](float256 a, float256 b) { return base256::hermite(static_cast<unsigned>(a.to_double()), b); },
+    two_arg("hermite", poly_gen, [](float256 a, float256 b) { return C(base256::hermite, static_cast<unsigned>(a.to_double()), b); },
             [&](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr x) {
                 const long n = mpfr_get_si(a, MPFR_RNDN);
                 mpfr_t p0, p1, p2, t;
@@ -606,7 +622,7 @@ int main(int argc, char** argv) {
     two_arg("laguerre", lag_gen,
             [](float256 a, float256 b) {
                 const unsigned v = static_cast<unsigned>(a.to_double());
-                return v < 64 ? base256::laguerre(v, b) : base256::assoc_laguerre(v % 64, v / 64, b);
+                return v < 64 ? C(base256::laguerre, v, b) : C(base256::assoc_laguerre, v % 64, v / 64, b);
             },
             [&](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr x) {
                 const long v = mpfr_get_si(a, MPFR_RNDN), n = v % 64, m = v / 64;
@@ -631,7 +647,7 @@ int main(int argc, char** argv) {
             });
     // lbeta(a, b) = lnΓ(a) + lnΓ(b) − lnΓ(a+b) at 3000 bits (never exact here).
     two_arg("lbeta", [&](float256& a, float256& b) { a = rnd_in(-20, 30, true); b = rnd_in(-20, 30, true); },
-            [](float256 a, float256 b) { return base256::lbeta(a, b); },
+            [](float256 a, float256 b) { return C(base256::lbeta, a, b); },
             [](mpfr_ptr r, mpfr_srcptr a, mpfr_srcptr b) {
                 mpfr_t s, u, ab;
                 mpfr_inits2(3000, s, u, ab, (mpfr_ptr)0);

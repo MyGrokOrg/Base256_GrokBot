@@ -9,6 +9,9 @@ Environment (used by the nightly fuzz workflow):
                    do not depend on the filter or shard it runs in.
   SF_SHARD=i/K     run only the ranges whose index in RANGES is i mod K.
   SF_MAXFAIL=n     in "modes", print at most n FAIL lines per range (default 50).
+  SF_PERCALL=1     (read by sf_eval) call the per-call rounding overloads
+                   f(args..., m) instead of setting the thread mode, with the
+                   thread mode set to a different mode meanwhile (4.26.0).
 
 With "modes" as the fifth argument, every case is evaluated in all five
 rounding modes (SF_MODES=1) and checked against the correctly rounded value
@@ -733,6 +736,10 @@ def check_modes(exe, rng, n, flt, seed=1):
         worst = [0.0] * 5
         mis = flagerr = referr = shown = 0
         for (hs, vs), r in zip(cases, res):
+            if r.startswith("?MODE"):  # SF_PERCALL: the per-call overload changed the thread's mode
+                mis += 1
+                print(f"FAIL range={name} op={op} in={','.join(hs)} thread rounding mode changed seed={seed}", flush=True)
+                continue
             parts = r.split()
             try:
                 want = ref(*vs)
@@ -835,6 +842,10 @@ def main():
         res = subprocess.run([exe], input=inp, capture_output=True, text=True, check=True).stdout.split("\n")
         worst, wcase, mis = 0.0, None, 0
         for (hs, vs), r in zip(cases, res):
+            if r.startswith("?MODE"):  # SF_PERCALL: the per-call overload changed the thread's mode
+                mis += 1; worst = max(worst, 2.0)
+                print(f"FAIL range={name} op={op} in={','.join(hs)} thread rounding mode changed seed={seed}", flush=True)
+                continue
             got = parse_hex(r)
             want = ref(*vs)
             err = ulp_err(got, want)

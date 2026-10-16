@@ -200,7 +200,23 @@ int mp_op(int op, mpfr_ptr r, Ctx& k, mpfr_rnd_t rnd) {
     }
 }
 
+// With MPFR_PERCALL set, the rounding operations go through their per-call
+// overloads (add(a, b, m), ...) while the thread's mode is a different (decoy) mode.
+bool g_pc = false;
+base256::round_mode g_m = base256::round_mode::to_nearest_even;
+
 float256 f_op(int op, float256 a, float256 b, float256 c) {
+    if (g_pc) {
+        switch (op) {
+            case 0: return base256::add(a, b, g_m);
+            case 1: return base256::sub(a, b, g_m);
+            case 2: return base256::mul(a, b, g_m);
+            case 3: return base256::div(a, b, g_m);
+            case 4: return base256::fma(a, b, c, g_m);
+            case 5: return base256::sqrt(a, g_m);
+            default: break;  // fmod, remainder: exact, no rounding mode
+        }
+    }
     switch (op) {
         case 0: return a + b;
         case 1: return a - b;
@@ -325,6 +341,8 @@ int main(int argc, char** argv) {
     // optional third argument: comma-free list of modes, e.g. "0" or "01234"
     const std::string modes = argc > 3 ? argv[3] : "01234";
     rng.seed(seed);
+    g_pc = std::getenv("MPFR_PERCALL") != nullptr;
+    long mode_changed = 0;
     b256_range();
     Ctx k;
 
@@ -363,10 +381,14 @@ int main(int argc, char** argv) {
                 Ref want = m == 1 ? ref_rna(op, k, rnan) : ref_mpfr(op, k, mm[m], rnan);
                 if (in_nan) want.flags = 0;  // NaN in, NaN out: no other flags
                 if (in_snan || (rnan && !in_nan)) want.flags |= base256::fe_invalid;
-                base256::fenv::set_round(bm[m]);
+                const base256::round_mode decoy = bm[(m + 2) % 5];
+                g_m = bm[m];
+                base256::fenv::set_round(g_pc ? decoy : bm[m]);
                 base256::fenv::clear_flags();
                 const float256 got = f_op(op, a, b, c);
                 const unsigned gf = base256::fenv::test_flags();
+                if (g_pc && base256::fenv::get_round() != decoy && ++mode_changed <= 20)
+                    std::printf("MODE CHANGED %s %s\n", kOpName[op], kModeName[m]);
                 base256::fenv::set_round(base256::round_mode::to_nearest_even);
                 ++g_total;
                 if (!same(got, want.v) || gf != want.flags)
@@ -374,9 +396,9 @@ int main(int argc, char** argv) {
             }
             // to_double / to_long_double in the same mode (MPFR has no RNDNA here)
             if (m != 1 && !a.isnan()) {
-                base256::fenv::set_round(bm[m]);
-                const double gd = a.to_double();
-                const long double gl = a.to_long_double();
+                base256::fenv::set_round(g_pc ? bm[(m + 2) % 5] : bm[m]);
+                const double gd = g_pc ? a.to_double(bm[m]) : a.to_double();
+                const long double gl = g_pc ? a.to_long_double(bm[m]) : a.to_long_double();
                 base256::fenv::set_round(base256::round_mode::to_nearest_even);
                 const double wd = mpfr_get_d(k.a, mm[m]);
                 const long double wl = mpfr_get_ld(k.a, mm[m]);
@@ -398,7 +420,7 @@ int main(int argc, char** argv) {
         if (!same(float256(ld), from_mpfr_ld(k.c, ld)) && ++g_fail <= 20)
             std::printf("MISMATCH from_long_double %La\n", ld);
     }
-    std::printf("mpfr_diff seed=%llu cases=%ld modes=%s checks=%ld failures=%ld\n", seed, n,
-                modes.c_str(), g_total, g_fail);
-    return g_fail ? 1 : 0;
+    std::printf("mpfr_diff%s seed=%llu cases=%ld modes=%s checks=%ld failures=%ld\n", g_pc ? " (per-call)" : "", seed, n,
+                modes.c_str(), g_total, g_fail + mode_changed);
+    return g_fail + mode_changed ? 1 : 0;
 }
