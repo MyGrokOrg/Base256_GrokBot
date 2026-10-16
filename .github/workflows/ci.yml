@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      compile_refs:
+        description: "compile-time job: extra git revisions to measure next to the tree (space-separated)"
+        required: false
+        default: ""
 
 jobs:
   test:
@@ -64,7 +70,11 @@ jobs:
       - name: Install clang-19
         run: sudo apt-get update && sudo apt-get install -y clang-19
       - name: Measure
+        env:
+          COMPILE_REFS: ${{ github.event.inputs.compile_refs }}
         run: |
-          python3 tools/compile_time.py --cxx g++-14,clang++-19 -n 5 --threshold 0.10 \
+          refs=""
+          for r in $COMPILE_REFS; do refs="$refs --ref $r"; done
+          python3 tools/compile_time.py --cxx g++-14,clang++-19 -n 5 --threshold 0.10 $refs \
             --compare tools/compile_time_baseline.json | tee compile-time.log
           { echo '### Compile time (warn-only, threshold +10 %)'; grep -v '^::' compile-time.log; } >> "$GITHUB_STEP_SUMMARY"
