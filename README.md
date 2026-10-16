@@ -23,7 +23,7 @@ Header-only. Real 256-bit software arithmetic — not a `double` wrapper.
 ## Features
 
 - Correctly rounded **`+ − × ÷`**, **FMA**, **`sqrt`**, exact **`fmod`/`remainder`**, all checked bit-for-bit against MPFR
-- All five IEEE 754 rounding modes and the five exception flags (`base256::fenv`)
+- All five IEEE 754 rounding modes and the five exception flags (`base256::fenv`), per thread or per call (`div(a, b, round_mode::upward)`, `exp(x, m)`, `constexpr` where the operation is; see [Per-call rounding](#per-call-rounding-4260))
 - IEEE 754 specials: `±0`, `±∞`, quiet/signaling NaN, subnormals
 - Unordered NaN comparisons (`std::partial_ordering`) and `+0 == −0`
 - Conversions to/from `float`, `double`, integers, decimal, and C99 hex-float
@@ -117,6 +117,11 @@ python3 tools/sf_check.py build/sf_eval 200 1   # special functions vs mpmath (p
 python3 tools/sf_check.py build/sf_eval 20 1 "" modes   # all 5 modes + flags, every range
 python3 tools/cx_check.py build/cx_eval 40 1            # base256::complex vs GNU MPC (pip install gmpy2)
 python3 tools/cx_check.py build/cx_eval 20 2 "" modes   # all 5 modes + flags, every complex range
+SF_PERCALL=1 python3 tools/sf_check.py build/sf_eval 20 2 "" modes   # the same through the per-call overloads f(x, m)
+CX_PERCALL=1 python3 tools/cx_check.py build/cx_eval 20 2 "" modes
+MPFR_PERCALL=1 ./build/mpfr_diff 100000 1   # add/sub/mul/div/fma/sqrt/conversions(..., m) vs MPFR
+ULP_PERCALL=1 ./build/mpfr_ulp 200 1 2      # every real function f(..., m) vs MPFR, all modes, strict
+tools/mode_digest.sh 98a3143                # global-mode results bit-identical to 4.25.0
 ```
 
 ### Nightly fuzz
@@ -165,10 +170,56 @@ fenv::set_round(round_mode::to_nearest_even);
 
 - Modes: `to_nearest_even` (default), `to_nearest_away`, `toward_zero`, `upward`, `downward`. The environment is per thread.
 - Flags: `fe_invalid`, `fe_divbyzero`, `fe_overflow`, `fe_underflow`, `fe_inexact` (`fe_all`). Underflow uses tininess **after** rounding and is raised only when the result is also inexact.
-- The mode applies to `+ − × ÷`, `fma`, `sqrt`, `parse`/literals, `to_double`/`to_float`/`to_long_double`, and `rint`/`nearbyint`. `round_to_integral(x, mode)` takes an explicit direction.
+- The mode applies to `+ − × ÷`, `fma`, `sqrt`, `parse`/literals, `to_double`/`to_float`/`to_long_double`, and `rint`/`nearbyint`. `round_to_integral(x, mode)` takes an explicit direction, and since 4.26.0 every rounding operation has a per-call form that takes the mode as its last argument (see [Per-call rounding](#per-call-rounding-4260)).
 - Overflow gives `±∞`, or `±max()` when the direction is toward zero. An exact zero sum is `+0`, or `−0` in `downward` mode.
 - **Constant evaluation** (`constexpr`) always uses `to_nearest_even` and records no flags.
 - Elementary functions (`exp`, `sin`, `pow`, …) honor the current rounding mode: the ~474-bit internal result is rounded once, in that mode. They raise `fe_invalid` for domain errors and signaling NaNs, `fe_divbyzero` at poles (`log(0)`, `atanh(±1)`, `lgamma` at non-positive integers, `pow(0, y<0)`, `tgamma(±0)`), `fe_overflow`/`fe_underflow` by the convention above, and `fe_inexact` on every inexact result (never on exact ones such as `exp(0)`, `log(1)`, `sin(±0)`, exact `pow`, `cbrt(27)`, `tgamma(5)`). Internal steps leave no flags behind (see [Elementary function accuracy](#elementary-function-accuracy)).
+
+## Per-call rounding (4.26.0)
+
+Every operation that rounds also takes the rounding mode as a last argument. The result and the flags are those of the same operation under `fenv::set_round(m)`, and the thread's own mode is left alone:
+
+```cpp
+#include <base256/base256.hpp>
+using namespace base256;
+using namespace base256::literals;
+
+const float256 a = 1.0_f256, b = 3.0_f256;
+float256 lo = div(a, b, round_mode::downward);      // 1/3 rounded down
+float256 hi = div(a, b, round_mode::upward);        // 1/3 rounded up: hi == nextup(lo)
+float256 e  = exp(a, round_mode::toward_zero);      // any function: f(args..., m)
+double   d  = hi.to_double(round_mode::upward);     // conversions too
+std::string s = e.to_string(30, round_mode::downward);
+
+constexpr float256 third_up = div(float256(1.0), float256(3.0), round_mode::upward);  // also at compile time
+static_assert(third_up > float256(1.0) / float256(3.0));
+```
+
+| Operations | Per-call form | Notes |
+|---|---|---|
+| `+ − × ÷`, `fma`, `sqrt` | `add(a, b, m)`, `sub(a, b, m)`, `mul(a, b, m)`, `div(a, b, m)`, `fma(a, b, c, m)`, `sqrt(x, m)` | `constexpr`; the mode is a parameter all the way down, so the thread's mode is never read or written. |
+| `ldexp`, `scalbn`, `rint`, `nearbyint` | `ldexp(x, n, m)`, `scalbn(x, n, m)`, `rint(x, m)`, `nearbyint(x, m)` | `constexpr`. (`round_to_integral(x, m)` and `to_integer<T>(m)` already took a mode.) |
+| float256 → `double`, `float`, `long double` | `x.to_double(m)`, `x.to_float(m)`, `x.to_long_double(m)` | `to_double`/`to_float` are `constexpr`. |
+| decimal and hex text | `float256::parse(s, m)`, `x.to_string(precision, m)`, `x.format(fmt, precision, m)`, `to_chars(first, last, x, fmt, precision, m)`, `from_chars(first, last, x, fmt, m)` | |
+| elementary functions | `exp(x, m)`, `log(x, m)`, `pow(x, y, m)`, `sin(x, m)`, `atan2(y, x, m)`, `erf(x, m)`, `tgamma(x, m)`, `hypot(x, y, m)`, `fdim(x, y, m)`, `sincos(x, &s, &c, m)`, … | All of `math.hpp`, `extra_math.hpp`. |
+| special functions | `cyl_bessel_j(nu, x, m)`, `riemann_zeta(x, m)`, `polygamma(n, x, m)`, `ibeta(a, b, x, m)`, `airy_ai(x, m)`, … | All of `special_math.hpp`, `special_math_ext.hpp`. With the elementary functions, 86 overloads (`tests/fn_lists.hpp` lists them by signature). |
+| `base256::complex` | `add`/`sub` (complex ± complex or real), `mul(z, x, m)`, `mul(x, z, m)`, `div(z, x, m)` (`constexpr`); `mul(z, w, m)`, `div(z, w, m)`, `div(x, w, m)`, `abs`, `norm`, `arg`, `polar(ρ, θ, m)`, `exp` … `atanh`, the three `pow`; `z.to_std<T>(m)` | |
+
+Operations that never round have no per-call form: `fmod`, `remainder`, `remquo`, `abs`, `copysign`, `frexp`, `nextafter`, comparisons, and conversions *to* float256 from integers, `float`, `double`, `long double` (all exact). `std::format`, `operator<<`/`>>` and the literals have no place for an argument; use `x.format(fmt, precision, m)` and `parse(s, m)`, or a scoped guard.
+
+Semantics, exactly:
+
+- **Same bits and flags as the global path.** `f(args..., m)` returns what `f(args...)` returns after `fenv::set_round(m)`, and raises the same flags in the thread's flag word. `tests/test_percall.cpp` checks this for every overload in all five modes (random operands biased toward hard cases for the arithmetic and conversions, moderate arguments for the functions), with the thread's mode set to a different mode during each per-call evaluation.
+- **The thread's mode is unchanged afterwards.** The `constexpr` forms never touch it. The other forms (functions, text conversions, complex `*`, `/`, functions) set it for the duration of the call and restore it on return, also when the call throws (`detail::with_round`, an RAII guard). Code running inside such a call (the library's own internals) sees `m`; the caller does not.
+- **Constant evaluation.** The global environment is fixed to round-to-nearest-even during constant evaluation (see above), so the `constexpr` per-call forms are the only way to get a directed rounding in a constant expression. Flags are not recorded there, as for every constant evaluation.
+- **The default path is unchanged.** The operators and the one-mode functions run the same code as in 4.25.0: the arithmetic kernels take the mode as a template parameter, and the operators instantiate them with `detail::dyn_mode`, which reads the thread's mode at the point of rounding, exactly where 4.25.0 read it. `tools/mode_digest.sh 98a3143` builds a digest of (bits, flags) over all of the above in all five modes against the 4.25.0 headers and the current ones and requires identical output (CHANGELOG 4.26.0 has the figures, and the default-path timings before and after).
+
+Why this API:
+
+- **A trailing `round_mode` argument** reads as the operation it is ("divide, rounding up"), matches IEEE 754, where the rounding direction is an attribute of each operation, and matches what the library already had (`round_to_integral(x, m)`, `to_integer<T>(m)`). `round_mode` is a scoped enum, so the extra parameter cannot be confused with a numeric argument and the overloads are unambiguous next to the existing signatures.
+- **A run-time value, not a tag type or template parameter** (`div(a, b, upward_t{})`, `div<round_mode::upward>(a, b)`): callers often pick the mode at run time (both ends of an interval, a loop over modes, a mode read from a configuration). With tags they would need a `switch`; the arithmetic kernels branch on the mode only at the final rounding step anyway, so a compile-time mode would buy nothing measurable.
+- **Not only a scoped guard.** `fenv::scoped_round` (already available) is the right tool for a block of code, but for a single operation a guard is three lines, changes state that callees and other code in the scope also see, and does not work in constant expressions. The per-call forms are local, compose in one expression (`add(mul(a, b, upward), c, upward)`), and are `constexpr` where the operation is.
+- **Free functions named after the operation** (`add`, `sub`, `mul`, `div`) because operators cannot take a third argument; the functions keep their own names with one more parameter.
 
 ## IEEE 754 conformance
 
