@@ -52,6 +52,14 @@ public:
         else if constexpr (std::is_same_v<T, double>) return {re_.to_double(), im_.to_double()};
         else return {static_cast<T>(re_.to_long_double()), static_cast<T>(im_.to_long_double())};
     }
+    /// To std::complex<float/double/long double>, each component rounded in `m`.
+    template <class T>
+        requires std::is_floating_point_v<T>
+    [[nodiscard]] std::complex<T> to_std(round_mode m) const noexcept {
+        if constexpr (std::is_same_v<T, float>) return {re_.to_float(m), im_.to_float(m)};
+        else if constexpr (std::is_same_v<T, double>) return {re_.to_double(m), im_.to_double(m)};
+        else return {static_cast<T>(re_.to_long_double(m)), static_cast<T>(im_.to_long_double(m))};
+    }
 
     [[nodiscard]] constexpr float256 real() const noexcept { return re_; }
     [[nodiscard]] constexpr float256 imag() const noexcept { return im_; }
@@ -1264,6 +1272,73 @@ inline constexpr int kPowExtraCap = 4096;
 [[nodiscard]] inline complex pow(const complex& z, float256 t) { return detail_cx::pow_impl(z, t, float256(), true); }
 [[nodiscard]] inline complex pow(float256 x, const complex& w) {
     return detail_cx::pow_impl(complex(x, float256()), w.real(), w.imag(), false);
+}
+
+// ------------------------------------------------------------ per-call rounding
+
+// f(args..., m): the operation rounded in `m` instead of the thread's current
+// mode (README "Per-call rounding"). Results and flags are those of the operator
+// or function evaluated with fenv::set_round(m). The componentwise operations
+// are constexpr and never touch the thread's mode; the others set it for the
+// call and restore it.
+[[nodiscard]] constexpr complex add(const complex& z, const complex& w, round_mode m) noexcept {
+    return {add(z.real(), w.real(), m), add(z.imag(), w.imag(), m)};
+}
+[[nodiscard]] constexpr complex add(const complex& z, float256 v, round_mode m) noexcept { return {add(z.real(), v, m), z.imag()}; }
+[[nodiscard]] constexpr complex add(float256 v, const complex& z, round_mode m) noexcept { return {add(v, z.real(), m), z.imag()}; }
+[[nodiscard]] constexpr complex sub(const complex& z, const complex& w, round_mode m) noexcept {
+    return {sub(z.real(), w.real(), m), sub(z.imag(), w.imag(), m)};
+}
+[[nodiscard]] constexpr complex sub(const complex& z, float256 v, round_mode m) noexcept { return {sub(z.real(), v, m), z.imag()}; }
+[[nodiscard]] constexpr complex sub(float256 v, const complex& z, round_mode m) noexcept { return {sub(v, z.real(), m), -z.imag()}; }
+[[nodiscard]] constexpr complex mul(const complex& z, float256 v, round_mode m) noexcept {
+    return {mul(z.real(), v, m), mul(z.imag(), v, m)};
+}
+[[nodiscard]] constexpr complex mul(float256 v, const complex& z, round_mode m) noexcept {
+    return {mul(v, z.real(), m), mul(v, z.imag(), m)};
+}
+[[nodiscard]] constexpr complex div(const complex& z, float256 v, round_mode m) noexcept {
+    return {div(z.real(), v, m), div(z.imag(), v, m)};
+}
+[[nodiscard]] inline complex mul(const complex& z, const complex& w, round_mode m) {
+    return detail::with_round(m, [&] { return z * w; });
+}
+[[nodiscard]] inline complex div(const complex& z, const complex& w, round_mode m) {
+    return detail::with_round(m, [&] { return z / w; });
+}
+[[nodiscard]] inline complex div(float256 v, const complex& w, round_mode m) {
+    return detail::with_round(m, [&] { return v / w; });
+}
+[[nodiscard]] inline float256 abs(const complex& z, round_mode m) { return detail::with_round(m, [&] { return abs(z); }); }
+[[nodiscard]] inline float256 norm(const complex& z, round_mode m) { return detail::with_round(m, [&] { return norm(z); }); }
+[[nodiscard]] inline float256 arg(const complex& z, round_mode m) { return detail::with_round(m, [&] { return arg(z); }); }
+[[nodiscard]] inline complex polar(float256 rho, float256 theta, round_mode m) {
+    return detail::with_round(m, [&] { return polar(rho, theta); });
+}
+[[nodiscard]] inline complex exp(const complex& z, round_mode m) { return detail::with_round(m, [&] { return exp(z); }); }
+[[nodiscard]] inline complex log(const complex& z, round_mode m) { return detail::with_round(m, [&] { return log(z); }); }
+[[nodiscard]] inline complex log10(const complex& z, round_mode m) { return detail::with_round(m, [&] { return log10(z); }); }
+[[nodiscard]] inline complex sqrt(const complex& z, round_mode m) { return detail::with_round(m, [&] { return sqrt(z); }); }
+[[nodiscard]] inline complex sinh(const complex& z, round_mode m) { return detail::with_round(m, [&] { return sinh(z); }); }
+[[nodiscard]] inline complex cosh(const complex& z, round_mode m) { return detail::with_round(m, [&] { return cosh(z); }); }
+[[nodiscard]] inline complex tanh(const complex& z, round_mode m) { return detail::with_round(m, [&] { return tanh(z); }); }
+[[nodiscard]] inline complex sin(const complex& z, round_mode m) { return detail::with_round(m, [&] { return sin(z); }); }
+[[nodiscard]] inline complex cos(const complex& z, round_mode m) { return detail::with_round(m, [&] { return cos(z); }); }
+[[nodiscard]] inline complex tan(const complex& z, round_mode m) { return detail::with_round(m, [&] { return tan(z); }); }
+[[nodiscard]] inline complex acos(const complex& z, round_mode m) { return detail::with_round(m, [&] { return acos(z); }); }
+[[nodiscard]] inline complex asin(const complex& z, round_mode m) { return detail::with_round(m, [&] { return asin(z); }); }
+[[nodiscard]] inline complex atan(const complex& z, round_mode m) { return detail::with_round(m, [&] { return atan(z); }); }
+[[nodiscard]] inline complex asinh(const complex& z, round_mode m) { return detail::with_round(m, [&] { return asinh(z); }); }
+[[nodiscard]] inline complex acosh(const complex& z, round_mode m) { return detail::with_round(m, [&] { return acosh(z); }); }
+[[nodiscard]] inline complex atanh(const complex& z, round_mode m) { return detail::with_round(m, [&] { return atanh(z); }); }
+[[nodiscard]] inline complex pow(const complex& z, const complex& w, round_mode m) {
+    return detail::with_round(m, [&] { return pow(z, w); });
+}
+[[nodiscard]] inline complex pow(const complex& z, float256 t, round_mode m) {
+    return detail::with_round(m, [&] { return pow(z, t); });
+}
+[[nodiscard]] inline complex pow(float256 x, const complex& w, round_mode m) {
+    return detail::with_round(m, [&] { return pow(x, w); });
 }
 
 // ------------------------------------------------------------ stream I/O
