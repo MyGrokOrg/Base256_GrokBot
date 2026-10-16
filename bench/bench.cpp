@@ -1,6 +1,7 @@
 // Micro-benchmark: average time per call for basic operations and elementary functions.
 // Usage: base256_bench [min_seconds_per_item=0.2] [filter]
 #include <base256/base256.hpp>
+#include <base256/complex.hpp>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -12,6 +13,7 @@ using base256::float256;
 
 namespace {
 volatile unsigned g_sink;
+float256 cx_out(const base256::complex& z) { return z.real() + z.imag(); }
 float256 out_len(const std::string& s) { return float256(static_cast<double>(s.size() + static_cast<unsigned char>(s[s.size() / 2]))); }
 void sink(float256 x) { g_sink = g_sink + static_cast<unsigned>(x.signbit()) + static_cast<unsigned>(x.isnan()); }
 
@@ -126,6 +128,19 @@ int main(int argc, char** argv) {
         {"ellint_1", [](float256 x, float256 y) { return ellint_1(x, y * float256(3)); }, -0.99, 0.99},
         {"ellint_2", [](float256 x, float256 y) { return ellint_2(x, y * float256(3)); }, -0.99, 0.99},
         {"ellint_3", [](float256 x, float256 y) { return ellint_3(x, y * float256(0.5), y * float256(1.5)); }, -0.99, 0.99},
+        // base256::complex (complex.hpp): z = x + iy, both parts from the range.
+        {"cx mul", [](float256 x, float256 y) { return cx_out(complex(x, y) * complex(y, x)); }, -10, 10},
+        {"cx div", [](float256 x, float256 y) { return cx_out(complex(x, y) / complex(y, x)); }, -10, 10},
+        {"cx abs", [](float256 x, float256 y) { return abs(complex(x, y)); }, -10, 10},
+        {"cx sqrt", [](float256 x, float256 y) { return cx_out(sqrt(complex(x, y))); }, -10, 10},
+        {"cx exp", [](float256 x, float256 y) { return cx_out(exp(complex(x, y))); }, -10, 10},
+        {"cx log", [](float256 x, float256 y) { return cx_out(log(complex(x, y))); }, -10, 10},
+        {"cx sin", [](float256 x, float256 y) { return cx_out(sin(complex(x, y))); }, -10, 10},
+        {"cx tan", [](float256 x, float256 y) { return cx_out(tan(complex(x, y))); }, -10, 10},
+        {"cx asin", [](float256 x, float256 y) { return cx_out(asin(complex(x, y))); }, -10, 10},
+        {"cx atanh", [](float256 x, float256 y) { return cx_out(atanh(complex(x, y))); }, -10, 10},
+        {"cx pow", [](float256 x, float256 y) { return cx_out(pow(complex(x, y), complex(y * float256(0.3), x * float256(0.1)))); }, -10, 10},
+        {"cx pow(z,5)", [](float256 x, float256 y) { return cx_out(pow(complex(x, y), float256(5))); }, -10, 10},
         // Decimal output at the extreme exponents (x in [1, 2) scaled to near max / deep subnormal).
         {"to_string(~2^262140)", [](float256 x, float256) { return out_len(ldexp(x, 262140).to_string()); }, 1, 2},
         {"to_string(~2^-262370)", [](float256 x, float256) { return out_len(ldexp(x, -262370).to_string()); }, 1, 2},
