@@ -32,7 +32,13 @@ TUS = {
     "igamma": ("#include <base256/special_math.hpp>\nusing base256::float256;\n"
                "float256 f(float256 a, float256 x) { return base256::tgamma_upper(a, x); }\n"
                "int main() { return f(float256(-2.5), float256(1)) > float256(0); }\n"),
+    "complex": ("#include <base256/complex.hpp>\nusing base256::complex;\nusing base256::float256;\n"
+                "complex f(complex z) { return base256::exp(z) * base256::log(z) + base256::sin(z) / base256::sqrt(z)"
+                " + base256::pow(z, z) + base256::atanh(z); }\n"
+                "int main() { return f(complex(float256(2), float256(1))).real() > float256(0); }\n"),
 }
+# TUs that need a header newer than some revisions: skipped (n/a) where it is missing.
+REQUIRES = {"complex": "base256/complex.hpp"}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -63,18 +69,21 @@ def measure(cxxs, incs, n, tmp):
         p = os.path.join(tmp, name + ".cpp")
         open(p, "w").write(code); srcs[name] = p
     times = {(lab, cxx, tu): [] for lab in incs for cxx in cxxs for tu in TUS}
+    have = {(lab, tu): tu not in REQUIRES or os.path.exists(os.path.join(inc, REQUIRES[tu]))
+            for lab, inc in incs.items() for tu in TUS}
     for cxx in cxxs:  # warm-up (page cache, compiler binary)
         for lab, inc in incs.items(): compile_once(cxx, inc, srcs["include_only"])
     for _ in range(n):
         for cxx in cxxs:
             for tu, src in srcs.items():
                 for lab, inc in incs.items():  # interleaved, so drift hits all revisions alike
-                    times[(lab, cxx, tu)].append(compile_once(cxx, inc, src))
+                    if have[(lab, tu)]: times[(lab, cxx, tu)].append(compile_once(cxx, inc, src))
     res = {}
     for lab, inc in incs.items():
         r = {"header_bytes": header_bytes(inc), "n": n, "times": {}}
         for cxx in cxxs:
             for tu in TUS:
+                if not have[(lab, tu)]: continue
                 w = [t[0] for t in times[(lab, cxx, tu)]]
                 v = [t[1] for t in times[(lab, cxx, tu)]]
                 sd = lambda u: statistics.stdev(u) if len(u) > 1 else 0.0
@@ -103,14 +112,20 @@ def main():
     labs = list(res)
     print("| TU | " + " | ".join(labs) + " |"); print("|---" * (len(labs) + 1) + "|")
     print("| header bytes | " + " | ".join(f"{res[l]['header_bytes']:,}" for l in labs) + " |")
+    def cell(l, key):
+        t = res[l]["times"].get(key)
+        return "n/a" if t is None else f"{t['mean']:.3f} ± {t['sd']:.3f} [{t['wall']:.3f}]"
     for key in res["worktree"]["times"]:
-        print(f"| {key} | " + " | ".join(f"{res[l]['times'][key]['mean']:.3f} ± {res[l]['times'][key]['sd']:.3f} [{res[l]['times'][key]['wall']:.3f}]" for l in labs) + " |")
+        print(f"| {key} | " + " | ".join(cell(l, key) for l in labs) + " |")
     if a.json: json.dump(res, open(a.json, "w"), indent=1)
     if base:
         b, w = res[base["ref"]], res["worktree"]
         print(f"\nregression check vs {base['ref']} on this machine, threshold +{a.threshold:.0%} (warn only)")
         warned = 0
         for key, v in w["times"].items():
+            if key not in b["times"]:
+                print(f"  {key:28s} {v['mean']:.3f} s  (new TU, not in {base['ref']})")
+                continue
             r = v["mean"] / b["times"][key]["mean"]
             flag = r > 1 + a.threshold
             print(f"  {key:28s} {b['times'][key]['mean']:.3f} -> {v['mean']:.3f} s  ({r - 1:+.1%}){'  REGRESSION' if flag else ''}")
