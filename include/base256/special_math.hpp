@@ -2130,4 +2130,30 @@ namespace ell {
 /// |k| <= 1, 1 − ν sin²φ > 0 (and ν < 1 when |φ| > π/2); otherwise a domain error.
 [[nodiscard]] inline float256 ellint_3(float256 k, float256 nu, float256 phi) { return detail_sf::ell::incomplete(3, k, nu, phi); }
 
+
+// ---- Per-call rounding (README "Per-call rounding"): f(args..., m) is f(args...)
+// evaluated with the rounding mode m; the thread's mode is restored afterwards.
+[[nodiscard]] inline float256 cyl_bessel_j(float256 nu, float256 x, round_mode m) { return detail::with_round(m, [&] { return cyl_bessel_j(nu, x); }); }
+[[nodiscard]] inline float256 cyl_neumann(float256 nu, float256 x, round_mode m) { return detail::with_round(m, [&] { return cyl_neumann(nu, x); }); }
+[[nodiscard]] inline float256 cyl_bessel_i(float256 nu, float256 x, round_mode m) { return detail::with_round(m, [&] { return cyl_bessel_i(nu, x); }); }
+[[nodiscard]] inline float256 cyl_bessel_k(float256 nu, float256 x, round_mode m) { return detail::with_round(m, [&] { return cyl_bessel_k(nu, x); }); }
+[[nodiscard]] inline float256 sph_bessel(unsigned n, float256 x, round_mode m) { return detail::with_round(m, [&] { return sph_bessel(n, x); }); }
+[[nodiscard]] inline float256 sph_neumann(unsigned n, float256 x, round_mode m) { return detail::with_round(m, [&] { return sph_neumann(n, x); }); }
+[[nodiscard]] inline float256 jn(int n, float256 x, round_mode m) { return detail::with_round(m, [&] { return jn(n, x); }); }
+[[nodiscard]] inline float256 yn(int n, float256 x, round_mode m) { return detail::with_round(m, [&] { return yn(n, x); }); }
+[[nodiscard]] inline float256 beta(float256 x, float256 y, round_mode m) { return detail::with_round(m, [&] { return beta(x, y); }); }
+[[nodiscard]] inline float256 ibeta(float256 a, float256 b, float256 x, round_mode m) { return detail::with_round(m, [&] { return ibeta(a, b, x); }); }
+[[nodiscard]] inline float256 ibetac(float256 a, float256 b, float256 x, round_mode m) { return detail::with_round(m, [&] { return ibetac(a, b, x); }); }
+[[nodiscard]] inline float256 riemann_zeta(float256 x, round_mode m) { return detail::with_round(m, [&] { return riemann_zeta(x); }); }
+[[nodiscard]] inline float256 hurwitz_zeta(float256 s, float256 a, round_mode m) { return detail::with_round(m, [&] { return hurwitz_zeta(s, a); }); }
+[[nodiscard]] inline float256 tgamma_lower(float256 a, float256 x, round_mode m) { return detail::with_round(m, [&] { return tgamma_lower(a, x); }); }
+[[nodiscard]] inline float256 tgamma_upper(float256 a, float256 x, round_mode m) { return detail::with_round(m, [&] { return tgamma_upper(a, x); }); }
+[[nodiscard]] inline float256 gamma_p(float256 a, float256 x, round_mode m) { return detail::with_round(m, [&] { return gamma_p(a, x); }); }
+[[nodiscard]] inline float256 gamma_q(float256 a, float256 x, round_mode m) { return detail::with_round(m, [&] { return gamma_q(a, x); }); }
+[[nodiscard]] inline float256 comp_ellint_1(float256 k, round_mode m) { return detail::with_round(m, [&] { return comp_ellint_1(k); }); }
+[[nodiscard]] inline float256 comp_ellint_2(float256 k, round_mode m) { return detail::with_round(m, [&] { return comp_ellint_2(k); }); }
+[[nodiscard]] inline float256 comp_ellint_3(float256 k, float256 nu, round_mode m) { return detail::with_round(m, [&] { return comp_ellint_3(k, nu); }); }
+[[nodiscard]] inline float256 ellint_1(float256 k, float256 phi, round_mode m) { return detail::with_round(m, [&] { return ellint_1(k, phi); }); }
+[[nodiscard]] inline float256 ellint_2(float256 k, float256 phi, round_mode m) { return detail::with_round(m, [&] { return ellint_2(k, phi); }); }
+[[nodiscard]] inline float256 ellint_3(float256 k, float256 nu, float256 phi, round_mode m) { return detail::with_round(m, [&] { return ellint_3(k, nu, phi); }); }
 } // namespace base256

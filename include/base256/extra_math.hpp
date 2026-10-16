@@ -495,4 +495,18 @@ inline void sincos(float256 x, float256* sin_out, float256* cos_out) {
     return float256::remainder_impl(x, y, true, quo);
 }
 
+
+// ---- Per-call rounding (README "Per-call rounding"): f(args..., m) is f(args...)
+// evaluated with the rounding mode m; the thread's mode is restored afterwards.
+[[nodiscard]] inline float256 fdim(float256 x, float256 y, round_mode m) { return detail::with_round(m, [&] { return fdim(x, y); }); }
+[[nodiscard]] inline float256 erf(float256 x, round_mode m) { return detail::with_round(m, [&] { return erf(x); }); }
+[[nodiscard]] inline float256 erfc(float256 x, round_mode m) { return detail::with_round(m, [&] { return erfc(x); }); }
+[[nodiscard]] inline float256 asinh(float256 x, round_mode m) { return detail::with_round(m, [&] { return asinh(x); }); }
+[[nodiscard]] inline float256 acosh(float256 x, round_mode m) { return detail::with_round(m, [&] { return acosh(x); }); }
+[[nodiscard]] inline float256 atanh(float256 x, round_mode m) { return detail::with_round(m, [&] { return atanh(x); }); }
+[[nodiscard]] inline float256 lgamma(float256 x, round_mode m) { return detail::with_round(m, [&] { return lgamma(x); }); }
+[[nodiscard]] inline float256 tgamma(float256 x, round_mode m) { return detail::with_round(m, [&] { return tgamma(x); }); }
+inline void sincos(float256 x, float256* sin_out, float256* cos_out, round_mode m) {
+    detail::with_round(m, [&] { sincos(x, sin_out, cos_out); });
+}
 } // namespace base256

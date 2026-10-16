@@ -1653,4 +1653,41 @@ inline const std::array<dd, kZetaN + 1>& zeta_int() {
     return detail_sf::out(env, r);
 }
 
+
+// ---- Per-call rounding (README "Per-call rounding"): f(args..., m) is f(args...)
+// evaluated with the rounding mode m; the thread's mode is restored afterwards.
+[[nodiscard]] inline float256 legendre(unsigned l, float256 x, round_mode m) { return detail::with_round(m, [&] { return legendre(l, x); }); }
+[[nodiscard]] inline float256 assoc_legendre(unsigned l, unsigned n, float256 x, round_mode m) { return detail::with_round(m, [&] { return assoc_legendre(l, n, x); }); }
+[[nodiscard]] inline float256 sph_legendre(unsigned l, unsigned n, float256 theta, round_mode m) { return detail::with_round(m, [&] { return sph_legendre(l, n, theta); }); }
+[[nodiscard]] inline float256 laguerre(unsigned n, float256 x, round_mode m) { return detail::with_round(m, [&] { return laguerre(n, x); }); }
+[[nodiscard]] inline float256 assoc_laguerre(unsigned n, unsigned k, float256 x, round_mode m) { return detail::with_round(m, [&] { return assoc_laguerre(n, k, x); }); }
+[[nodiscard]] inline float256 hermite(unsigned n, float256 x, round_mode m) { return detail::with_round(m, [&] { return hermite(n, x); }); }
+[[nodiscard]] inline float256 expint(float256 x, round_mode m) { return detail::with_round(m, [&] { return expint(x); }); }
+[[nodiscard]] inline float256 expint(unsigned n, float256 x, round_mode m) { return detail::with_round(m, [&] { return expint(n, x); }); }
+[[nodiscard]] inline float256 sinint(float256 x, round_mode m) { return detail::with_round(m, [&] { return sinint(x); }); }
+[[nodiscard]] inline float256 cosint(float256 x, round_mode m) { return detail::with_round(m, [&] { return cosint(x); }); }
+[[nodiscard]] inline float256 sinhint(float256 x, round_mode m) { return detail::with_round(m, [&] { return sinhint(x); }); }
+[[nodiscard]] inline float256 coshint(float256 x, round_mode m) { return detail::with_round(m, [&] { return coshint(x); }); }
+[[nodiscard]] inline float256 logint(float256 x, round_mode m) { return detail::with_round(m, [&] { return logint(x); }); }
+[[nodiscard]] inline float256 digamma(float256 x, round_mode m) { return detail::with_round(m, [&] { return digamma(x); }); }
+[[nodiscard]] inline float256 polygamma(unsigned n, float256 x, round_mode m) { return detail::with_round(m, [&] { return polygamma(n, x); }); }
+[[nodiscard]] inline float256 trigamma(float256 x, round_mode m) { return detail::with_round(m, [&] { return trigamma(x); }); }
+[[nodiscard]] inline float256 lbeta(float256 a, float256 b, round_mode m) { return detail::with_round(m, [&] { return lbeta(a, b); }); }
+[[nodiscard]] inline float256 tgamma_ratio(float256 a, float256 b, round_mode m) { return detail::with_round(m, [&] { return tgamma_ratio(a, b); }); }
+[[nodiscard]] inline float256 tgamma_delta_ratio(float256 a, float256 delta, round_mode m) { return detail::with_round(m, [&] { return tgamma_delta_ratio(a, delta); }); }
+[[nodiscard]] inline float256 airy_ai(float256 x, round_mode m) { return detail::with_round(m, [&] { return airy_ai(x); }); }
+[[nodiscard]] inline float256 airy_ai_prime(float256 x, round_mode m) { return detail::with_round(m, [&] { return airy_ai_prime(x); }); }
+[[nodiscard]] inline float256 airy_bi(float256 x, round_mode m) { return detail::with_round(m, [&] { return airy_bi(x); }); }
+[[nodiscard]] inline float256 airy_bi_prime(float256 x, round_mode m) { return detail::with_round(m, [&] { return airy_bi_prime(x); }); }
+[[nodiscard]] inline float256 erf_inv(float256 x, round_mode m) { return detail::with_round(m, [&] { return erf_inv(x); }); }
+[[nodiscard]] inline float256 erfc_inv(float256 y, round_mode m) { return detail::with_round(m, [&] { return erfc_inv(y); }); }
+[[nodiscard]] inline float256 lambert_w0(float256 x, round_mode m) { return detail::with_round(m, [&] { return lambert_w0(x); }); }
+[[nodiscard]] inline float256 lambert_wm1(float256 x, round_mode m) { return detail::with_round(m, [&] { return lambert_wm1(x); }); }
+[[nodiscard]] inline float256 fresnel_s(float256 x, round_mode m) { return detail::with_round(m, [&] { return fresnel_s(x); }); }
+[[nodiscard]] inline float256 fresnel_c(float256 x, round_mode m) { return detail::with_round(m, [&] { return fresnel_c(x); }); }
+[[nodiscard]] inline float256 dawson(float256 x, round_mode m) { return detail::with_round(m, [&] { return dawson(x); }); }
+[[nodiscard]] inline float256 dilog(float256 x, round_mode m) { return detail::with_round(m, [&] { return dilog(x); }); }
+[[nodiscard]] inline float256 polylog(unsigned n, float256 x, round_mode m) { return detail::with_round(m, [&] { return polylog(n, x); }); }
+[[nodiscard]] inline float256 dirichlet_eta(float256 s, round_mode m) { return detail::with_round(m, [&] { return dirichlet_eta(s); }); }
+[[nodiscard]] inline float256 bernoulli_b2n(unsigned n, round_mode m) { return detail::with_round(m, [&] { return bernoulli_b2n(n); }); }
 } // namespace base256

@@ -661,4 +661,26 @@ namespace detail_math {
     return float256::remainder_impl(x, y, true, nullptr);
 }
 
+
+// ---- Per-call rounding (README "Per-call rounding"): f(args..., m) is f(args...)
+// evaluated with the rounding mode m; the thread's mode is restored afterwards.
+[[nodiscard]] inline float256 exp(float256 x, round_mode m) { return detail::with_round(m, [&] { return exp(x); }); }
+[[nodiscard]] inline float256 exp2(float256 x, round_mode m) { return detail::with_round(m, [&] { return exp2(x); }); }
+[[nodiscard]] inline float256 expm1(float256 x, round_mode m) { return detail::with_round(m, [&] { return expm1(x); }); }
+[[nodiscard]] inline float256 log(float256 x, round_mode m) { return detail::with_round(m, [&] { return log(x); }); }
+[[nodiscard]] inline float256 log2(float256 x, round_mode m) { return detail::with_round(m, [&] { return log2(x); }); }
+[[nodiscard]] inline float256 log10(float256 x, round_mode m) { return detail::with_round(m, [&] { return log10(x); }); }
+[[nodiscard]] inline float256 log1p(float256 x, round_mode m) { return detail::with_round(m, [&] { return log1p(x); }); }
+[[nodiscard]] inline float256 pow(float256 x, float256 y, round_mode m) { return detail::with_round(m, [&] { return pow(x, y); }); }
+[[nodiscard]] inline float256 cbrt(float256 x, round_mode m) { return detail::with_round(m, [&] { return cbrt(x); }); }
+[[nodiscard]] inline float256 sin(float256 x, round_mode m) { return detail::with_round(m, [&] { return sin(x); }); }
+[[nodiscard]] inline float256 cos(float256 x, round_mode m) { return detail::with_round(m, [&] { return cos(x); }); }
+[[nodiscard]] inline float256 tan(float256 x, round_mode m) { return detail::with_round(m, [&] { return tan(x); }); }
+[[nodiscard]] inline float256 atan(float256 x, round_mode m) { return detail::with_round(m, [&] { return atan(x); }); }
+[[nodiscard]] inline float256 atan2(float256 y, float256 x, round_mode m) { return detail::with_round(m, [&] { return atan2(y, x); }); }
+[[nodiscard]] inline float256 asin(float256 x, round_mode m) { return detail::with_round(m, [&] { return asin(x); }); }
+[[nodiscard]] inline float256 acos(float256 x, round_mode m) { return detail::with_round(m, [&] { return acos(x); }); }
+[[nodiscard]] inline float256 sinh(float256 x, round_mode m) { return detail::with_round(m, [&] { return sinh(x); }); }
+[[nodiscard]] inline float256 cosh(float256 x, round_mode m) { return detail::with_round(m, [&] { return cosh(x); }); }
+[[nodiscard]] inline float256 tanh(float256 x, round_mode m) { return detail::with_round(m, [&] { return tanh(x); }); }
 } // namespace base256
