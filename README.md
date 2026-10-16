@@ -138,7 +138,7 @@ and collected in the run summary; the full logs are uploaded as artifacts (`fuzz
 
 ### Compile time
 
-`python3 tools/compile_time.py [--cxx g++-14,clang++-19] [-n 8] [--ref REV] [--compare tools/compile_time_baseline.json]` measures the compile time (compiler CPU time and wall clock, `-std=c++23 -O2 -c`, mean ± sd of N) of representative TUs and the header size. The CI job `compile-time` compares the pushed tree with the 4.23.0 baseline revision on the same runner. It warns, but does not fail, when a TU gets more than 10 % slower or the headers grow more than 10 %. 4.23.0 on the dev box (CPU s, mean of 10):
+`python3 tools/compile_time.py [--cxx g++-14,clang++-19] [-n 8] [--ref REV] [--compare tools/compile_time_baseline.json]` measures the compile time (compiler CPU time and wall clock, `-std=c++23 -O2 -c`, mean ± sd of N) of representative TUs and the header size. The headers are measured in two groups, each against its own baseline revision in `tools/compile_time_baseline.json`: `core`, everything `base256.hpp` includes (baseline 4.23.0, ad368d3), and `complex`, what `complex.hpp` adds (`complex.hpp` + `detail/cx_engine.hpp`, baseline 4.25.0, 98a3143); the `complex` TU belongs to the second group, all other TUs to the first. The CI job `compile-time` compares the pushed tree with each group's baseline on the same runner. It warns, but does not fail, when a TU gets more than 10 % slower than its group's baseline or a group's headers grow more than 10 % (`--ref REV`, or the workflow_dispatch input `compile_refs`, adds revisions to the same job). 4.23.0 on the dev box (CPU s, mean of 10):
 
 | TU | g++-14 | clang++-19 |
 |---|---|---|

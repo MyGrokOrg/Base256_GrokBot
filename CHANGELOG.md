@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+- **Compile time of code that does not use `complex` is unchanged by 4.25.0.** 4.25.0 changed none of the headers that `base256.hpp` includes: `git diff cb33f18 98a3143 -- include` only adds `complex.hpp` and `detail/cx_engine.hpp`, and the 13 headers of the `base256.hpp` include closure are byte-identical (812,822 bytes). 4.24.0 (9f9d15a) → cb33f18 changed `math.hpp` and `extra_math.hpp` (+626 bytes, the fix of directed rounding for |x| < 2^-237). CI run 38974440910 (workflow_dispatch on 91d040f, whose headers equal 98a3143; ubuntu-24.04 runner, `-std=c++23 -O2 -c`, compiler CPU s, mean of 5, the three revisions measured in the same job):
+
+  | TU | 9f9d15a | cb33f18 | 98a3143 | vs 9f9d15a | vs cb33f18 |
+  |---|---|---|---|---|---|
+  | g++-14 `include_only` | 1.275 | 1.268 | 1.267 | −0.6 % | −0.1 % |
+  | g++-14 `arith` | 1.540 | 1.530 | 1.533 | −0.5 % | +0.2 % |
+  | g++-14 `math` | 3.292 | 3.256 | 3.284 | −0.2 % | +0.9 % |
+  | g++-14 `special` | 6.312 | 6.330 | 6.309 | −0.0 % | −0.3 % |
+  | g++-14 `igamma` | 3.576 | 3.578 | 3.563 | −0.4 % | −0.4 % |
+  | clang++-19 `include_only` | 1.807 | 1.801 | 1.820 | +0.7 % | +1.1 % |
+  | clang++-19 `arith` | 1.775 | 1.765 | 1.771 | −0.2 % | +0.3 % |
+  | clang++-19 `math` | 2.969 | 2.971 | 2.963 | −0.2 % | −0.3 % |
+  | clang++-19 `special` | 5.427 | 5.409 | 5.439 | +0.2 % | +0.6 % |
+  | clang++-19 `igamma` | 3.206 | 3.207 | 3.196 | −0.3 % | −0.3 % |
+
+  The standard deviations are 0.02–0.12 s, so every difference is within about one sd. The 4.25.0 compile-time warning ("headers 797,147 → 891,501 bytes, +11.8 %") came from counting every file in `include/` (812,196 / 812,822 / 891,501 bytes at the three revisions), including `complex.hpp`, which `base256.hpp` does not include.
+- **`tools/compile_time.py` measures two header groups, each against its own baseline** (`tools/compile_time_baseline.json`, `"groups"`): `core`, the include closure of `base256/base256.hpp` (13 files), and `complex`, what `complex.hpp` adds to it (`complex.hpp` + `detail/cx_engine.hpp`, 78,679 bytes). The `complex` TU belongs to the `complex` group, all others to `core`. A group's baseline revision is built only for that group's TUs, and the +10 % warning applies to each group's TUs and header bytes on its own. The CI job and `--ref` (also the new workflow_dispatch input `compile_refs`) work as before.
+  - `complex` baseline: 98a3143 (4.25.0).
+  - `core` baseline: **kept at ad368d3 (4.23.0), not re-baselined.** The core headers did not change in 4.25.0 apart from the cb33f18 fix, so there is nothing new to accept; moving the baseline would only hide the drift accumulated since 4.23.0 (+0.9 % to +6.0 % per TU, +2.0 % bytes, all below the 10 % threshold) from the next comparisons.
+  - CI run 38974915314 (push of fb61069, mean of 5, CPU s), **0 warnings**:
+
+    | group, TU | g++-14 | clang++-19 |
+    |---|---|---|
+    | core `include_only` | 1.235 → 1.270 (+2.8 %) | 1.730 → 1.781 (+3.0 %) |
+    | core `arith` | 1.516 → 1.536 (+1.3 %) | 1.719 → 1.745 (+1.5 %) |
+    | core `math` | 3.250 → 3.279 (+0.9 %) | 2.907 → 2.943 (+1.2 %) |
+    | core `special` | 5.973 → 6.333 (+6.0 %) | 5.188 → 5.407 (+4.2 %) |
+    | core `igamma` | 3.509 → 3.551 (+1.2 %) | 3.168 → 3.196 (+0.9 %) |
+    | complex `complex` | 6.163 → 6.175 (+0.2 %) | 5.701 → 5.721 (+0.3 %) |
+
+    Header bytes: core 797,147 → 812,822 (+2.0 %), complex 78,679 → 78,679.
+
 ## 4.25.0
 
 - **New: `base256::complex`** (`#include <base256/complex.hpp>`, not included by `base256.hpp`). It is its own class with std::complex's interface: `real`/`imag`, `+ − × ÷` with complex and real operands, `==`, `abs`, `norm`, `arg`, `conj`, `proj`, `polar`, `exp`, `log`, `log10`, `sqrt`, `pow` (complex/real × complex/real), `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `operator<<`/`>>`, `std::format`, the `_i256` literal, and explicit conversions to and from `std::complex<float/double/long double>`. The standard leaves `std::complex<T>` unspecified for other `T` and does not allow overloads in `std`, hence the own class (README "Complex numbers", which has the interface table and the per-function guarantees).
