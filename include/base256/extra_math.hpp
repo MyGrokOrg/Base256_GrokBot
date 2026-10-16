@@ -188,12 +188,14 @@ struct ErfCenter {
     if (x.signbit()) {
         // 1 + erf(a)
         if (a > float256(16)) return env.round(float256::two(), float256::zero(), 0, -1);
+        if (ilogb(a) < -240) return env.round(float256::one(), float256::zero(), 0, +1);  // 1 + 2a/√π
         if (detail_math::is_tiny(a))
             return (dd(float256::one()) + dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1])).out(env, 0, -1);
         if (a < float256(16)) return (dd(float256::one()) + detail_spec::erf_series_dd(a)).out(env);
         const detail_dd::Scaled e = detail_spec::erfc_cf_dd(a);
         return (dd(float256::two()) - detail_dd::ldexp(e.m, e.k)).out(env);
     }
+    if (ilogb(a) < -240) return env.round(float256::one(), float256::zero(), 0, -1);  // 1 − 2a/√π
     if (detail_math::is_tiny(a))
         return (dd(float256::one()) - dd(a + a) / dd(c.sqrtpi[0], c.sqrtpi[1])).out(env, 0, +1);
     if (a < ldexp(float256::one(), -5)) return (dd(float256::one()) - detail_spec::erf_series_dd(a)).out(env);

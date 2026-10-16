@@ -168,6 +168,54 @@ int main() {
         }
     }
 
+
+    // --- tiny arguments in the directed modes: f(t) = lead + a correction far below an
+    // ulp, so only its sign decides (|t| < 2^-237: the correction is below the
+    // double-float256 precision and must still set the direction) ---------------------
+    {
+        auto near_val = [](float256 v, int s, round_mode m) {
+            if (m == round_mode::upward && s > 0) return nextup(v);
+            if (m == round_mode::downward && s < 0) return nextdown(v);
+            if (m == round_mode::toward_zero && ((s > 0) == v.signbit())) return nextafter(v, float256());
+            return v;
+        };
+        auto tiny_case = [&](const char* name, int line, const std::function<float256()>& f, float256 v, int s) {
+            for (round_mode m : kModes) {
+                fenv::scoped_round g(m);
+                fenv::clear_flags();
+                const float256 y = f();
+                const unsigned got = fenv::test_flags();
+                fenv::clear_flags();
+                if (same(y, near_val(v, s, m)) && got == kInx) { ++g_pass; continue; }
+                ++g_fails;
+                std::cerr << "FAIL " << line << " " << name << " mode " << int(m) << "\n";
+            }
+        };
+        for (int e : {-240, -300, -2000, -100000}) {
+            for (int sg : {1, -1}) {
+                const float256 t = ldexp(float256(1.5) * float256(sg), e);
+                tiny_case("sin", __LINE__, [&] { return sin(t); }, t, -sg);
+                tiny_case("tan", __LINE__, [&] { return tan(t); }, t, sg);
+                tiny_case("atan", __LINE__, [&] { return atan(t); }, t, -sg);
+                tiny_case("asin", __LINE__, [&] { return asin(t); }, t, sg);
+                tiny_case("asinh", __LINE__, [&] { return asinh(t); }, t, -sg);
+                tiny_case("atanh", __LINE__, [&] { return atanh(t); }, t, sg);
+                tiny_case("sinh", __LINE__, [&] { return sinh(t); }, t, sg);
+                tiny_case("tanh", __LINE__, [&] { return tanh(t); }, t, -sg);
+                tiny_case("expm1", __LINE__, [&] { return expm1(t); }, t, 1);
+                tiny_case("log1p", __LINE__, [&] { return log1p(t); }, t, -1);
+                tiny_case("atan2", __LINE__, [&] { return atan2(t, one); }, t, -sg);
+                if (e < -240) {
+                    tiny_case("exp", __LINE__, [&] { return exp(t); }, one, sg);
+                    tiny_case("exp2", __LINE__, [&] { return exp2(t); }, one, sg);
+                    tiny_case("cos", __LINE__, [&] { return cos(t); }, one, -1);
+                    tiny_case("cosh", __LINE__, [&] { return cosh(t); }, one, 1);
+                    tiny_case("erfc", __LINE__, [&] { return erfc(t); }, one, -sg);
+                }
+            }
+        }
+    }
+
     // --- no internal flags leak, caller's flags kept --------------------------------
     fenv::clear_flags();
     fenv::raise_flags(kDiv);

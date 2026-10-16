@@ -89,7 +89,8 @@ inline constexpr int kTiny = -120;  // below 2^-120 the leading Taylor terms suf
 [[nodiscard]] inline float256 tiny_odd(detail_dd::FnEnv& env, float256 x, int coef_num, int coef_den, int next_sign) {
     using detail_dd::dd;
     const float256 c = x * x * x * float256::from_int(coef_num) / float256::from_int(coef_den);
-    if (c.iszero()) return env.round(x, float256::zero(), 0, sgn(x) * (coef_num > 0 ? 1 : -1));
+    // c below the double-float256 precision (|x| < 2^-200 or so): only its sign remains
+    if (c.iszero() || ilogb(x) - ilogb(c) > 400) return env.round(x, float256::zero(), 0, sgn(x) * (coef_num > 0 ? 1 : -1));
     const dd v = dd(x) + dd(c);
     return env.round(v.hi, v.lo, 0, sgn(x) * next_sign);
 }
@@ -103,6 +104,7 @@ inline constexpr int kTiny = -120;  // below 2^-120 the leading Taylor terms suf
     if (x.iszero()) return env.exact(float256::one());
     if (x > float256(181800)) return env.overflow(false);
     if (x < float256(-182000)) return env.underflow(false);
+    if (ilogb(x) < -240) return env.round(float256::one(), float256::zero(), 0, detail_math::sgn(x));  // 1 + x, |x| < ulp(1)/4
     if (detail_math::is_tiny(abs(x))) {
         // 1 + x + x^2/2; the omitted x^3/6 is far below the rounding position
         const dd v = detail_dd::two_sum(float256::one(), x) + dd(ldexp(x * x, -1));
@@ -126,6 +128,7 @@ inline constexpr int kTiny = -120;  // below 2^-120 the leading Taylor terms suf
     const int k = static_cast<int>(kf.to_double());
     if (f.iszero()) return env.round(float256::one(), float256::zero(), k, 0);  // exact unless out of range
     const dd t = detail_dd::ln2() * f;
+    if (ilogb(t.hi) < -240) return env.round(float256::one(), float256::zero(), k, detail_math::sgn(t.hi));
     if (detail_math::is_tiny(abs(t.hi))) {
         const dd v = dd(float256::one()) + t + dd(ldexp(t.hi * t.hi, -1));
         return env.round(v.hi, v.lo, k, +1);
@@ -146,7 +149,7 @@ inline constexpr int kTiny = -120;  // below 2^-120 the leading Taylor terms suf
     if (ilogb(ax) < -200) {
         // x + x^2/2 (+ x^3/6 of the sign of x)
         const float256 c = ldexp(x * x, -1);
-        if (c.iszero()) return env.round(x, float256::zero(), 0, +1);
+        if (c.iszero() || ilogb(ax) - ilogb(c) > 400) return env.round(x, float256::zero(), 0, +1);
         const dd v = dd(x) + dd(c);
         return env.round(v.hi, v.lo, 0, detail_math::sgn(x));
     }
@@ -542,7 +545,7 @@ namespace detail_math {
     if (!x.signbit() && ilogb(y) - ilogb(x) < detail_math::kTiny - 2) {
         const dd q = dd(y) / dd(x);
         const float256 c = q.hi * q.hi * q.hi / float256::from_int(-3);
-        if (c.iszero()) {
+        if (c.iszero() || ilogb(q.hi) - ilogb(c) > 400) {
             // q itself may be exact; the omitted -q^3/3 points toward zero.
             return env.round(q.hi, q.lo, 0, q.hi.signbit() ? +1 : -1);
         }
