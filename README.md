@@ -29,6 +29,7 @@ Header-only. Real 256-bit software arithmetic — not a `double` wrapper.
 - Conversions to/from `float`, `double`, integers, decimal, and C99 hex-float
 - `std::numeric_limits<float256>` (`is_iec559` is `false` for now; see [IEEE 754 conformance](#ieee-754-conformance))
 - Elementary functions: `exp`, `log`, `pow`, `sin`/`cos`/`tan`, `atan`/`asin`/`acos`, hyperbolics and inverse hyperbolics, `cbrt`, `erf`/`erfc`, `tgamma`/`lgamma`
+- Complex numbers (`complex.hpp`, 4.25.0): `base256::complex` with std::complex's interface, each part correctly rounded in all five modes (the transcendental functions up to a documented 2^-2850 limit), C Annex G special values and branch cuts, stream I/O and `std::format`; see [Complex numbers](#complex-numbers)
 - Special functions (`special_math.hpp`, C++17 names): `cyl_bessel_j/i/k`, `cyl_neumann`, `sph_bessel`, `sph_neumann`, `jn`/`yn`, `beta`, `ibeta`/`ibetac`, `riemann_zeta`, `hurwitz_zeta`, `tgamma_lower`/`tgamma_upper`, `gamma_p`/`gamma_q`, `comp_ellint_1/2/3`, `ellint_1/2/3`
 - `sincos` and IEEE `remquo`
 - `ldexp`, `frexp`, `ilogb` / `logb`, `nextafter` / `nextup` / `nextdown`, `floor`/`ceil`/`trunc`/`round` (ties away), `rint` / `nearbyint` (ties to even), `modf`, `hypot`, `fmod`, `remainder`, `fdim`
@@ -114,13 +115,16 @@ cmake --build build && ctest --test-dir build --output-on-failure
 ./build/mpfr_ulp 5000 42 0 "sin cos"   # report only, selected functions
 python3 tools/sf_check.py build/sf_eval 200 1   # special functions vs mpmath (pip install mpmath)
 python3 tools/sf_check.py build/sf_eval 20 1 "" modes   # all 5 modes + flags, every range
+python3 tools/cx_check.py build/cx_eval 40 1            # base256::complex vs GNU MPC (pip install gmpy2)
+python3 tools/cx_check.py build/cx_eval 20 2 "" modes   # all 5 modes + flags, every complex range
 ```
 
 ### Nightly fuzz
 
-`.github/workflows/fuzz.yml` runs every night (03:17 UTC) and on demand (`workflow_dispatch`, inputs `seed`, `cases`, `mpfr_cases`). Without a seed it uses the UTC date (`YYYYMMDD`) and logs it in the run summary. It runs:
+`.github/workflows/fuzz.yml` runs every night (03:17 UTC) and on demand (`workflow_dispatch`, inputs `seed`, `cases`, `mpfr_cases`, `cx_cases`). Without a seed it uses the UTC date (`YYYYMMDD`) and logs it in the run summary. It runs:
 
 - every `sf_check` range (233; 230 in 4.23.0, including the 4.23.0 `gu_neg*`, `pg_neg*`, Bessel `*_neg*` and Airy `*_full` ranges) in `modes`: all five rounding modes against the correctly rounded 2000-bit mpmath value, with exact flags, `cases` per range (default 12). The ranges are split over 16 matrix jobs (`SF_SHARD=i/16`), and each range is seeded from (seed, range name) (`SF_RANGE_SEED=1`), so a range gives the same cases in any shard or filter.
+- every `cx_check` range (`base256::complex`, 69 ranges) in `modes` against GNU MPC 1.3.1 through gmpy2 2.2.1 (2000 bits, 40000 near a boundary, exact rationals for `*`, `/`, `norm`), `cx_cases` per range (default 20), in 4 matrix jobs (`fuzz-cx-shard*` artifacts; reproduce with `SF_RANGE_SEED=1 python3 tools/cx_check.py build/cx_eval CASES SEED RANGE modes`).
 - `mpfr_ulp` in strict mode (`bound_check` = 2) over all its functions, including `tgamma_upper_neg` for a ≤ 0, and `mpfr_diff` (arithmetic, conversions) against MPFR, all five modes with flags.
 
 Any misrounded result, flag error (or, for `mpfr_ulp`, direction error) fails the job. Each one is printed as a line such as
@@ -265,6 +269,83 @@ Domain and limits:
 | `bernoulli_b2n(n)` | B_2n, overflows from n = 13704 | MPFR B_2k/(2k)! table (k ≤ 140), else 2(2n)! ζ(2n)/(2π)^{2n} | mpmath | — |
 
 Not provided: Euler numbers, polylog for non-integer order or \|x\| > 1 with n ≥ 3.
+
+## Complex numbers
+
+```cpp
+#include <base256/complex.hpp>   // not included by base256.hpp (like <complex>)
+using namespace base256::literals;
+
+base256::complex z(1.5_f256, -2_f256), w = 3_f256 + 0.5_i256;
+auto r = base256::exp(z) * w / base256::sqrt(z);   // ADL: exp(z), log(z), pow(z, w), ...
+std::cout << r << '\n' << std::format("{:.20e}", r) << '\n';
+```
+
+`base256::complex` is its own class, not a `std::complex<float256>` specialization. The standard leaves `std::complex<T>` unspecified for any `T` other than `float`, `double` and `long double` ([complex.numbers.general]), and a program may not add overloads such as `std::exp(std::complex<float256>)` to namespace `std`. A specialization would therefore have to rely on what a particular standard library happens to do in its generic `std::complex<T>` code (naive multiplication, `hypot`/`atan2`-based functions, no Annex G handling, no rounding-mode control). The class keeps std::complex's interface and names, finds its functions by ADL (`exp(z)` works unqualified), and converts explicitly to and from `std::complex<float/double/long double>`.
+
+### Interface
+
+| | |
+|---|---|
+| `complex(float256 re = 0, float256 im = 0)` | `constexpr`. Copy/assign are trivial. `value_type` is `float256`. |
+| `explicit complex(const std::complex<T>&)`, `explicit operator std::complex<T>()` | `T` = `float`, `double`, `long double`. From std: exact. To std: each part rounded in the current mode. |
+| `real()`, `imag()`, `real(v)`, `imag(v)`; free `real(z)`, `imag(z)` | `constexpr`, exact. |
+| `z = v`, `z += v`, `z -= v`, `z *= v`, `z /= v` (v `float256` or `complex`) | As the binary operators below. |
+| `+z`, `-z`, `z + w`, `z - w`, `z + x`, `x + z`, `z - x`, `x - z` | `constexpr`. One float256 addition per part. `x − (u + iv) = (x − u) − iv` (Annex G: the imaginary part is negated, not `0 − v`). |
+| `z * x`, `x * z`, `z / x` | `constexpr`. One float256 operation per part. |
+| `z * w`, `z / w`, `x / w` | Each part correctly rounded from the exact `ac − bd`, `ad + bc`, `(ac + bd)/(c² + d²)`, `(bc − ad)/(c² + d²)`. Non-finite operands: the Annex G G.5.1 algorithms (`_Cmultd`, `_Cdivd`). |
+| `z == w`, `z == x` | `constexpr`, componentwise IEEE `==` (`+0 == −0`, NaN unequal). `!=` is rewritten from it. |
+| `abs`, `norm`, `arg` | `float256`. `norm` = x² + y² and `abs` = √(x² + y²), correctly rounded from the exact sum. `arg` = `atan2(y, x)` (the real function). |
+| `conj`, `proj` | `constexpr`, exact. `proj` maps any infinite part to `+∞ + i·copysign(0, Im z)`. |
+| `polar(ρ, θ = 0)` | ρ cos θ + iρ sin θ, each part correctly rounded. NaN ρ or θ: NaN + iNaN; θ = ±∞: NaN + iNaN with `invalid`; θ = ±0: ρ ± i0. |
+| `exp`, `log`, `log10`, `sqrt`, `pow(z, w)`, `pow(z, x)`, `pow(x, w)` | Principal branches, cuts along the negative real axis (`log`, `log10`, `sqrt`, `pow` in z). |
+| `sin`, `cos`, `tan`, `asin`, `acos`, `atan` | `sin z = −i sinh(iz)`, `cos z = cosh(iz)`, `tan z = −i tanh(iz)`, `asin z = −i asinh(iz)`, `atan z = −i atanh(iz)`, as C defines them. `asin`, `acos`: cuts (−∞, −1) and (1, ∞); `atan`: (−i∞, −i) and (i, i∞). |
+| `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` | Annex G `csinh` … `catanh`. `asinh`: cuts (−i∞, −i), (i, i∞); `acosh`: (−∞, 1), Re ≥ 0; `atanh`: (−∞, −1), (1, ∞). |
+| `os << z` | `(re,im)`, each part as float256's `operator<<` writes it (shortest round-trip), e.g. `(1.5e+0,-2e+0)`. A field width applies to the whole string. |
+| `is >> z` | Reads `re`, `(re)` or `(re,im)`; each part is any float256 literal (decimal, hex, `inf`, `nan`), correctly rounded in the current mode. Malformed input sets `failbit`. |
+| `std::format("{:spec}", z)` | `(re,im)`. `spec` is float256's (`[[fill]align][sign][#][width][.precision][type]`): sign, `#`, precision and type apply to each part, fill/align/width to the whole (default right-aligned). The `0` flag is rejected (`format_error`). |
+| `2.5_i256`, `"0.1"_i256` | `complex(0, 2.5)`, in `base256::literals`, parsed with correct rounding. |
+
+Only construction, access, `conj`, `proj`, `==` and the operators with one real operand (and `+`, `−` between complex values) are `constexpr`; `z * w`, `z / w` and every function run at run time. Everything honors the per-thread float256 rounding mode and flags (`base256::fenv`).
+
+### Rounding and flags
+
+Every part of every result is rounded once, in the current rounding mode, from the exact value (or from an approximation known to be on the right side of every rounding boundary), and the IEEE flags are those of that rounding: `inexact` iff a returned part differs from the exact value, `overflow`/`underflow` per part with tininess after rounding (underflow only when also inexact). Overflow gives ±∞, or ±`max()` toward zero. A part that is exactly zero by cancellation is +0, or −0 in `downward` mode, as for the IEEE `x − x`. Internal steps record no flags; the caller's flags are kept. A signaling NaN in any input raises `invalid` and is returned quieted.
+
+What is guaranteed, per function:
+
+| Function | Guarantee for each part |
+|---|---|
+| `+`, `−`, scalar `×`, `÷`, `conj`, `proj`, `real`, `imag`, `==` | Correctly rounded (exact where the operation is exact). |
+| `z * w`, `z / w`, `x / w`, `norm`, `abs`, `sqrt` | **Correctly rounded**, all modes, exact flags. Exact arithmetic on the 237-bit significands (BigInt), then one rounding; `abs`, `sqrt` and the quotients decide a value next to a rounding boundary with an exact test (sign of N − B·D, of x² + y² − B², …). |
+| `pow(z, n)`: Im z ≠ 0, w real and integral, \|n\| ≤ 64; `pow(z, 0.5)` | **Correctly rounded**: the exact Gaussian power zⁿ (zⁿ's conjugate over its norm for n < 0, an exact quotient), one rounding; w = 0.5 is `sqrt`. |
+| `exp`, `log` (real part), `log10`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `asin`, `acos`, `atan`, `asinh`, `acosh`, `atanh`, `polar`, `pow` (other w) | **Correctly rounded unless the exact part lies within about 2^-2850 (relative) of a rounding boundary without being on it.** Multiprecision evaluation (exp/expm1, log/log1p, sin/cos with Payne–Hanek reduction, atan, sinh/cosh) in a Ziv loop at 300, 360, 720, 1440 and 2880 bits; a part is returned as soon as its error bound excludes every rounding boundary of every mode. A part still undecided at 2880 bits is taken to be exactly on the boundary it is next to. Parts that are exact or have an exactly representable leading term are not left to that rule: zero and real/imaginary axes (below), the Annex G special values, x² + y² = 10ⁿ in `log10` (real part n/2), and arguments with \|x\|, \|y\| < 2^-64 (θ for `polar`, x² + y² − 1 for the real part of `log`), where the part is evaluated as its exact leading Taylor term (z, 1 + z, 1 + z²/2, x·y, t/2 − t²/4, ρ, ρθ) plus the series rest, so its rounding direction is known however small the rest is. |
+| `arg`, the imaginary part of `log`, and the parts below | **The real function's accuracy** (see [Elementary function accuracy](#elementary-function-accuracy): < 1 ulp, correct direction, no misrounding observed against MPFR, not proven correctly rounded). These parts are computed by the real functions, so that e.g. `exp(complex(x, 0)).real() == exp(x)` and `log(z).imag() == atan2(y, x)` hold exactly: `arg` and Im `log` (`atan2`); on the real axis (y = ±0) `exp`, `sinh`, `cosh`, `tanh`, `sin`, `cos`, `tan`, `asinh`, `asin`, `acos`, `acosh`, `atanh` (\|x\| < 1), `log`, Re `log10`; on the imaginary axis (x = ±0) the same functions except `exp` and `acosh` (`sin(y)`, `cos(y)`, `tan(y)`, `asinh(y)`, `asin(y)`/`acosh(|y|)`, `atan(y)`, `log|y|`); the π multiples of special values and cuts (`atan2` of ±1, ±0); `pow` with real z (Im z = ±0): z > 0 and real w (`pow(x, w)`), z < 0 with integral or half-integral w. |
+| `pow` with \|w\| ≥ 2^4072 | Not guaranteed: the extra precision for w·log z is capped at 4096 bits (`kPowExtraCap`). |
+
+`tools/cx_check.py` checks this against GNU MPC (per-range figures in the CHANGELOG, 4.25.0), and `tests/test_complex.cpp` covers the special values, branch cuts, signed zeros, exact cases, tiny arguments and I/O in all five modes.
+
+### Special values (C Annex G)
+
+Infinities, NaNs and signed zeros follow C17 Annex G (G.5.1 for `*` and `/`, G.6 for the functions), with these choices where Annex G leaves the sign of a result unspecified or permits a flag:
+
+- "may raise invalid" (e.g. `cexp(x + iNaN)`, finite x) is not raised; every "raises" entry is.
+- `exp(−∞ ± i∞)`, `exp(−∞ + iNaN)`: +0 ± i0 with the sign of Im z (of the NaN's sign bit). `exp(+∞ ± i∞)`: +∞ + iNaN, `invalid`; `exp(+∞ + iNaN)`: +∞ + iNaN.
+- `sinh(±0 + i∞)`: ±0 + iNaN, `invalid` (the sign of Re z); `sinh(±∞ + i∞)`, `sinh(±∞ + iNaN)`: ±∞ + iNaN.
+- `cosh(+0 + i∞)`: NaN + i0 (+0), `invalid`; `cosh(+0 + iNaN)`, `cosh(NaN + i0)`: NaN + i0 (+0); `cosh(+∞ + i∞)`: +∞ + iNaN, `invalid`.
+- `tanh(+∞ ± i∞)`, `tanh(+∞ + iNaN)`: 1 ± i0 with the sign of Im z; `tanh(+0 + i∞)` and `tanh(+0 + iNaN)`: +0 + iNaN (with `invalid` for i∞), the C17/C23 rule (DR 471).
+- `sqrt(−∞ + iNaN)`: NaN + i∞ (+∞).
+- `acos(±∞ + iNaN)`: NaN − i∞. `asinh(NaN ± i∞)`: +∞ + iNaN. `atanh(NaN ± i∞)`: +0 ± iπ/2. `acosh(NaN ± i∞)`: +∞ + iNaN.
+- `atanh(±1 ± i0)`: ±∞ ± i0 with `divbyzero`; `log(±0 ± i0)`: −∞ + i·(0 or ±π) with `divbyzero`.
+- `z * w`, `z / w` with infinite or NaN parts: exactly the G.5.1 sample code (`_Cmultd`, `_Cdivd`) in float256 arithmetic, flags included; finite / (0 + i0) is ∞ + i∞ with `divbyzero`, (0 + i0)/(0 + i0) is NaN + iNaN with `invalid`.
+- `pow` (Annex G leaves it implementation-defined): `pow(z, 0)` = 1 + i0 for every z (NaN too); `pow(0, w)` = +0 + i0 for Re w > 0, +∞ + i0 with `divbyzero` for real w < 0, NaN + iNaN with `invalid` otherwise; NaN parts give NaN + iNaN; infinite parts give `exp(w·log z)`. For real z > 0 and real w the imaginary part is the zero w·Im z (the sign of exp(w·log z)); an exactly cancelling part of an integer power is +0 (−0 downward).
+
+### Limits and cost
+
+- Branch cuts are closed on the side the sign of the zero imaginary (or real) part selects, as in C: `log(−1 + i0)` = iπ, `log(−1 − i0)` = −iπ, `sqrt(−4 − i0)` = −2i.
+- The transcendental functions take 6–24× the time of the real function of the same name (`exp` 6.0×, `log` 8.7×, `sin` 6.9×, `asin` 23.6×, `atanh` 20.0×, `pow` 19.2×): at least two multiprecision evaluations per call (300 and 360 bits), more near a rounding boundary. Per-call timings (`base256_bench 1`, g++-14 `-O3 -DNDEBUG`, parts in [−10, 10], pinned, median of 3) are in the CHANGELOG (4.25.0): e.g. `z * w` 683 ns, `z / w` 2.16 µs, `exp` 85 µs, `asin` 364 µs, `pow(z, w)` 429 µs, `pow(z, 5)` 2.74 µs.
+- The exact operations work on BigInts as wide as the exponent difference of the parts (up to ~2^19 bits): with parts x·2^200000 and y·2^-200000 (x, y ∈ [1, 2)), `z * w` took 49 µs, `abs` 99 µs, `sqrt` 37 µs and `z / w` 0.42 ms (CHANGELOG 4.25.0).
+- A part whose magnitude cannot be resolved at 2880 bits (far below its error bound) is returned as zero; no such case is known outside exact cancellation, which the exact-lead evaluations above cover.
 
 ## Performance
 
