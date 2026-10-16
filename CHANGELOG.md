@@ -1,5 +1,123 @@
 # Changelog
 
+## 4.25.0
+
+- **New: `base256::complex`** (`#include <base256/complex.hpp>`, not included by `base256.hpp`). It is its own class with std::complex's interface: `real`/`imag`, `+ − × ÷` with complex and real operands, `==`, `abs`, `norm`, `arg`, `conj`, `proj`, `polar`, `exp`, `log`, `log10`, `sqrt`, `pow` (complex/real × complex/real), `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `operator<<`/`>>`, `std::format`, the `_i256` literal, and explicit conversions to and from `std::complex<float/double/long double>`. The standard leaves `std::complex<T>` unspecified for other `T` and does not allow overloads in `std`, hence the own class (README "Complex numbers", which has the interface table and the per-function guarantees).
+  - Correctly rounded parts, all 5 modes, exact flags: `z * w`, `z / w`, `x / w`, `norm`, `abs`, `sqrt` (exact BigInt arithmetic, one rounding, exact boundary tests), and `pow(z, n)` with Im z ≠ 0 and integral |n| ≤ 64 (exact Gaussian power).
+  - Correctly rounded unless the exact part lies within about 2^-2850 relative of a rounding boundary without being on it: `exp`, Re `log`, `log10`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `asin`, `acos`, `atan`, `asinh`, `acosh`, `atanh`, `polar`, other `pow`. These use a Ziv loop at 300, 360, 720, 1440 and 2880 bits; a part still undecided at 2880 bits is taken to be on the boundary. Exact parts, Annex G special values, and arguments with |x|, |y| < 2^-64 (exact leading Taylor term plus the series rest) are decided exactly.
+  - **Not proven correctly rounded** (real-library accuracy, < 1 ulp, no misrounding observed against MPFR): `arg` and Im `log` (`atan2`), parts on the real or imaginary axis that are computed by the real functions (so that e.g. `exp(complex(x, 0)).real() == exp(x)`), the π multiples of special values and cuts, and `pow` with real z (Im z = ±0).
+  - Not guaranteed: `pow` with |w| ≥ 2^4072 (the extra precision for w·log z is capped at 4096 bits).
+  - Special values follow C17 Annex G (G.5.1 `_Cmultd`/`_Cdivd` for `*` and `/`, G.6 for the functions). The README lists the choices where Annex G leaves a sign or flag open (no "may raise invalid", `tanh(+0 + i∞)` = +0 + iNaN per DR 471, `pow` conventions). Known `pow` zero signs: for real z > 0 and real w the imaginary part is the zero w·Im z; an exactly cancelling part of an integer power is +0 (−0 in downward).
+  - Unit tests: new `tests/test_complex.cpp` (ctest `complex`), 1235 checks passing with g++-14 and clang++-19. It covers construction, the G.5.1 arithmetic and zero signs, single rounding of `*` and `/`, `abs`/`norm`/`arg`/`polar`, the Annex G tables of every function, branch cuts and signed zeros, exact cases, tiny-argument rounding directions, and stream and `std::format` I/O, in all 5 modes with flags.
+- **New checker `tools/cx_check.py`** (69 ranges, `--list`) with the evaluator `cx_eval`. The reference is GNU MPC 1.3.1 (MPFR 4.2.1) through gmpy2 2.2.1 at 2000 bits, redone at 40000 bits when the value is near the rounding grid. Exact rationals are used for `mul`, `div` and `norm`. For tiny arguments (both parts nonzero with exponent < −64) it uses the exact leading term plus a 3000-bit series. `modes` checks all 5 modes with exact flags and zero signs. Components whose exact value exceeds the largest finite are excluded from max ulp and counted as "overflowed" (summed over the modes in `modes`).
+- Accuracy, `cx_eval` built from 65dd666's headers (g++-14 `-O2`), `SF_RANGE_SEED=1`. Round-to-nearest, 40 cases per range, seed 1: `SUMMARY … errors=0`, 0 misrounded in every range. `modes` (all 5 modes, exact flags), 20 cases per range, seed 2: `SUMMARY … errors=0`, with 0 misrounded, 0 flag errors and 0 zero-sign errors in every range. The max ulp is the largest error over both parts. "U(a, b)" means uniform with 237-bit resolution, and "±2^[a, b]" means a random 237-bit significand with an exponent drawn uniformly from [a, b]. The directed-mode maxima are below 1 ulp (a "1" is < 1 rounded to 3 digits).
+
+  | range | inputs | RN 40, seed 1: max ulp | `modes` 20, seed 2: max ulp RNE / RNA / RZ / RU / RD |
+  |---|---|---|---|
+  | `mul_gen` | z, w parts U(−10,10) | 0.498 | 0.494 / 0.494 / 0.973 / 0.946 / 0.996 |
+  | `mul_wide` | parts ±2^[−200000,200000] | 0.497 (12 overflowed) | 0.491 / 0.491 / 0.996 / 0.971 / 0.996 (40 overflowed) |
+  | `mul_sub` | parts ±2^[−131180,−131060] (subnormal results) | 0.495 | 0.486 / 0.486 / 0.943 / 0.96 / 0.995 |
+  | `mul_cancel` | ac − bd nearly cancels | 0.477 | 0.484 / 0.484 / 0.975 / 0.919 / 0.975 |
+  | `div_gen` | parts U(−10,10) | 0.5 | 0.476 / 0.476 / 0.94 / 0.999 / 0.975 |
+  | `div_wide` | parts ±2^[−100000,100000] | 0.497 | 0.495 / 0.495 / 0.991 / 0.999 / 0.991 |
+  | `div_cancel` | bc − ad nearly cancels | 0.5 | 0.479 / 0.479 / 0.946 / 0.906 / 0.946 |
+  | `div_exact` | exact quotients | 0 | 0 / 0 / 0 / 0 / 0 |
+  | `norm_gen` | parts U(−10,10) | 0.496 | 0.471 / 0.471 / 0.98 / 0.984 / 0.98 |
+  | `norm_wide` | parts ±2^[−140000,140000] | 0.483 (3 overflowed) | 0.496 / 0.496 / 0.911 / 0.987 / 0.911 |
+  | `abs_gen` | parts U(−10,10) | 0.488 | 0.46 / 0.46 / 0.956 / 0.965 / 0.956 |
+  | `abs_wide` | parts ±2^[−5000,5000] | 8.23e-142 | 1.88e-79 / 1.88e-79 / 1.88e-79 / 1 / 1.88e-79 |
+  | `abs_exact` | exact |z| (Pythagorean) | 0 | 0 / 0 / 0 / 0 / 0 |
+  | `arg_gen` | parts U(−10,10) | 0.498 | 0.422 / 0.422 / 0.929 / 0.929 / 0.988 |
+  | `sqrt_gen` | parts U(−10,10) | 0.499 | 0.498 / 0.498 / 0.996 / 0.97 / 0.996 |
+  | `sqrt_wide` | parts ±2^[−5000,5000] | 0.497 | 0.441 / 0.441 / 0.938 / 0.988 / 0.968 |
+  | `sqrt_exact` | exact roots | 0 | 0 / 0 / 0 / 0 / 0 |
+  | `sqrt_cut` | x ∈ (−10,−0.1), |y| ∈ 2^[−3000,−240] | 0.489 | 0.486 / 0.486 / 0.962 / 0.997 / 0.962 |
+  | `exp_gen` | parts U(−10,10) | 0.496 | 0.498 / 0.498 / 0.986 / 0.986 / 0.961 |
+  | `exp_small` | parts ±2^[−3000,−1] | 0.34 | 0.377 / 0.377 / 1 / 1 / 1 |
+  | `exp_big` | x ∈ (−180000,180000), y U(−10,10) | 0.49 | 0.494 / 0.494 / 0.974 / 0.974 / 0.925 |
+  | `exp_ybig` | x ∈ (−1,1), y ±2^[10,1000] | 0.498 | 0.496 / 0.496 / 1 / 0.938 / 1 |
+  | `log_gen` | parts U(−10,10) | 0.484 | 0.494 / 0.494 / 0.996 / 0.974 / 0.996 |
+  | `log_unit` | |z| = 1 + O(2^-30…2^-400) | 0.493 | 0.498 / 0.498 / 0.992 / 0.989 / 0.992 |
+  | `log_wide` | parts ±2^[−200000,200000] | 0.495 | 0.495 / 0.495 / 0.986 / 0.986 / 0.798 |
+  | `log_cut` | x ∈ (−10,−0.1), |y| ∈ 2^[−3000,−240] | 0.483 | 0.486 / 0.486 / 0.847 / 0.989 / 0.847 |
+  | `log10_gen` | parts U(−10,10) | 0.471 | 0.498 / 0.498 / 0.985 / 0.919 / 0.993 |
+  | `log10_unit` | |z| near 1 | 0.496 | 0.455 / 0.455 / 0.986 / 0.986 / 0.934 |
+  | `pow_gen` | z U(−10,10), w U(−4,4) | 0.476 | 0.481 / 0.481 / 0.997 / 0.997 / 0.969 |
+  | `pow_int` | z U(−3,3), integer w ∈ [−64,64] | 0.497 | 0.494 / 0.494 / 1 / 1 / 0.989 |
+  | `pow_intbig` | |z| near 1, integer |w| ∈ [65,3000] | 0.487 | 0.5 / 0.5 / 0.983 / 0.998 / 0.983 |
+  | `pow_real` | pow(z, real w), U(−10,10) | 0.498 | 0.464 / 0.464 / 0.985 / 0.985 / 0.988 |
+  | `pow_wide` | z parts ±2^[−1000,1000], w U(−3,3) | 0.5 | 0.499 / 0.499 / 0.989 / 0.947 / 0.998 |
+  | `sin_gen` | parts U(−10,10) | 0.496 | 0.478 / 0.478 / 0.983 / 0.983 / 0.961 |
+  | `sin_small` | parts ±2^[−3000,−1] | 0.472 | 0.207 / 0.207 / 1 / 1 / 1 |
+  | `sin_bigre` | x ±2^[0,1000], y U(−1,1) | 0.496 | 0.495 / 0.495 / 0.976 / 0.976 / 0.976 |
+  | `cos_gen` | parts U(−10,10) | 0.478 | 0.489 / 0.489 / 0.98 / 0.98 / 0.936 |
+  | `cos_small` | parts ±2^[−3000,−1] | 0.497 | 0.479 / 0.479 / 1 / 1 / 1 |
+  | `cos_bigre` | x ±2^[0,1000], y U(−1,1) | 0.467 | 0.488 / 0.488 / 0.978 / 0.992 / 0.971 |
+  | `tan_gen` | parts U(−10,10) | 0.484 | 0.453 / 0.453 / 0.96 / 0.967 / 0.96 |
+  | `tan_small` | parts ±2^[−3000,−1] | 0.17 | 0.472 / 0.472 / 1 / 1 / 1 |
+  | `tan_bigim` | x U(−10,10), y U(−3000,3000) | 0.494 | 0.487 / 0.487 / 1 / 1 / 1 |
+  | `sinh_gen` | parts U(−10,10) | 0.496 | 0.491 / 0.491 / 0.966 / 0.97 / 0.983 |
+  | `sinh_big` | x ∈ (−180000,180000), y U(−10,10) | 0.496 | 0.48 / 0.48 / 0.985 / 0.988 / 0.997 |
+  | `cosh_gen` | parts U(−10,10) | 0.498 | 0.496 / 0.496 / 0.956 / 0.972 / 0.995 |
+  | `cosh_small` | parts ±2^[−3000,−1] | 0.486 | 0.489 / 0.489 / 1 / 1 / 1 |
+  | `cosh_big` | x ∈ (−180000,180000), y U(−10,10) | 0.486 | 0.486 / 0.486 / 0.989 / 0.998 / 0.989 |
+  | `tanh_gen` | parts U(−10,10) | 0.499 | 0.499 / 0.499 / 0.976 / 0.931 / 0.976 |
+  | `tanh_big` | x ±2^[0,12], y U(−10,10) | 0.499 | 0.483 / 0.483 / 1 / 1 / 1 |
+  | `asin_gen` | parts U(−10,10) | 0.495 | 0.496 / 0.496 / 0.937 / 0.996 / 0.976 |
+  | `asin_branch` | 1 + small | 0.5 | 0.494 / 0.494 / 0.977 / 0.986 / 0.959 |
+  | `asin_cut` | x ∈ (1.01,10), |y| ∈ 2^[−3000,−240] | 0.484 | 0.475 / 0.475 / 0.948 / 0.901 / 0.948 |
+  | `asin_wide` | parts ±2^[−100000,100000] | 0.495 | 0.493 / 0.493 / 0.938 / 1 / 1 |
+  | `acos_gen` | parts U(−10,10) | 0.497 | 0.494 / 0.494 / 0.887 / 0.936 / 0.881 |
+  | `acos_branch` | −1 + small | 0.496 | 0.462 / 0.462 / 0.979 / 0.979 / 0.972 |
+  | `acos_cut` | x ∈ (−10,−1.01), |y| ∈ 2^[−3000,−240] | 0.492 | 0.497 / 0.497 / 0.985 / 0.872 / 0.985 |
+  | `atan_gen` | parts U(−10,10) | 0.495 | 0.475 / 0.475 / 0.982 / 0.985 / 0.982 |
+  | `atan_branch` | i + small | 0.496 | 0.483 / 0.483 / 0.989 / 0.914 / 0.989 |
+  | `atan_wide` | parts ±2^[−100000,100000] | 0.474 | 0.485 / 0.485 / 1 / 1 / 1 |
+  | `asinh_gen` | parts U(−10,10) | 0.497 | 0.485 / 0.485 / 0.981 / 0.981 / 0.986 |
+  | `asinh_branch` | −i + small | 0.493 | 0.484 / 0.484 / 0.991 / 0.969 / 0.991 |
+  | `acosh_gen` | parts U(−10,10) | 0.487 | 0.483 / 0.483 / 0.996 / 0.993 / 0.996 |
+  | `acosh_branch` | 1 + small | 0.493 | 0.496 / 0.496 / 0.973 / 0.958 / 0.977 |
+  | `acosh_cut` | x ∈ (−10,0.99), |y| ∈ 2^[−3000,−240] | 0.499 | 0.497 / 0.497 / 0.961 / 0.992 / 0.961 |
+  | `atanh_gen` | parts U(−10,10) | 0.497 | 0.484 / 0.484 / 0.97 / 0.994 / 0.97 |
+  | `atanh_branch` | 1 + small | 0.5 | 0.5 / 0.5 / 0.992 / 0.99 / 0.992 |
+  | `atanh_cut` | x ∈ (1.01,10), |y| ∈ 2^[−3000,−240] | 0.499 | 0.49 / 0.49 / 0.972 / 0.984 / 0.972 |
+  | `polar_gen` | ρ 2^[−1000,1000], θ U(−10,10) | 0.489 | 0.495 / 0.495 / 0.936 / 0.936 / 0.918 |
+  | `polar_bigth` | ρ ∈ (0.5,2), θ ±2^[0,2000] | 0.478 | 0.487 / 0.487 / 1 / 0.973 / 1 |
+
+- Cost of `base256::complex`, `base256_bench 1` (new `cx …` items in `bench/bench.cpp`), built at b66cfed, g++-14 14.2.0 `-O3 -DNDEBUG -std=c++23` (CMake Release), shared 8-core box ("Intel(R) Xeon(R) Processor"), pinned with `taskset -c 5`, ≥ 1 s per item over 64 arguments, median of 3 runs. ns/call, z = x + iy and w with parts in [−10, 10]:
+
+  | item | ns/call | item | ns/call |
+  |---|---|---|---|
+  | `cx mul` | 683 | `cx sin` | 120,831 |
+  | `cx div` | 2,161 | `cx tan` | 122,652 |
+  | `cx abs` | 9,300 | `cx asin` | 363,738 |
+  | `cx sqrt` | 19,162 | `cx atanh` | 304,273 |
+  | `cx exp` | 85,013 | `cx pow` (z^w) | 428,686 |
+  | `cx log` | 69,001 | `cx pow(z,5)` | 2,741 |
+
+  The real functions in the same runs (each on its own argument range, README "Performance") were `exp` 14,081, `log` 7,929, `sin` 17,449, `tan` 18,798, `asin` 15,427, `atanh` 15,223, `pow` 22,307 and `sqrt` 361 ns. So the complex transcendental functions take 6–24× the time of the real function of the same name: `exp` 6.0×, `log` 8.7×, `sin` 6.9×, `tan` 6.5×, `asin` 23.6×, `atanh` 20.0×, `pow` 19.2×. The exact operations grow with the exponent gap between the parts. With parts x·2^200000 and y·2^-200000 (x, y ∈ [1, 2), new "(gap)" items), `cx mul` took 49.1 µs, `cx div` 417 µs, `cx abs` 99.4 µs and `cx sqrt` 37.2 µs.
+- Fix (cb33f18): the real functions `sin`, `atan`, `asinh`, `tanh`, `atan2`, `exp`, `exp2`, `expm1` and `erfc` misrounded in the directed modes for |x| < 2^-237. When the first Taylor correction was more than ~600 bits below the leading term, the double-float256 sum dropped it, and the tail passed to the rounding had the wrong sign. Round-to-nearest was not affected. Now only the correction's sign is passed when it is below the dd precision. The complex unit tests found this: `log(1 + i·2^-2000)` takes its imaginary part from `atan2`. A new `test_math_flags` block checks 15 functions at t = ±1.5·2^e for e ∈ {−240, −300, −2000, −100000}, in all 5 modes, value and flags. It had 90 failures before the fix and 0 after (passed=1121, failed=0).
+- Nightly fuzz: a new `cx_check` job runs all 69 complex ranges in `modes` (4 shards, workflow input `cx_cases`, default 20, same seed as the other jobs, gmpy2 2.2.1 from pip).
+- `tools/compile_time.py`: new TU `complex` (`exp`, `log`, `sin`, `sqrt`, `pow`, `atanh`, `*`, `/` of `base256::complex`). It is reported as n/a for revisions without `complex.hpp`, and as "new TU" in `--compare`.
+- Compile time, `tools/compile_time.py --compare` against the 4.23.0 baseline ad368d3, threshold +10 % (warn only). CPU s, ad368d3 → 52f6d24. The CI figures are from the `compile-time` job of run 38970314664 (mean of 5). The dev-box figures are a mean of 10 on the shared box, sd 0.04–0.18 s (another job was compiling at the same time).
+
+  | TU | CI job of run 38970314664 (mean of 5) | dev box (mean of 10) |
+  |---|---|---|
+  | g++-14 include_only | 1.205 → 1.240 (+2.9 %) | 0.967 → 1.010 (+4.4 %) |
+  | g++-14 arith | 1.484 → 1.506 (+1.5 %) | 1.213 → 1.215 (+0.2 %) |
+  | g++-14 math | 3.186 → 3.212 (+0.8 %) | 2.623 → 2.663 (+1.5 %) |
+  | g++-14 special | 5.910 → 6.224 (+5.3 %) | 4.850 → 5.121 (+5.6 %) |
+  | g++-14 igamma | 3.444 → 3.480 (+1.0 %) | 2.810 → 2.822 (+0.4 %) |
+  | g++-14 complex (new) | 6.037 | 4.918 |
+  | clang++-19 include_only | 1.700 → 1.762 (+3.7 %) | 1.101 → 1.166 (+5.9 %) |
+  | clang++-19 arith | 1.691 → 1.717 (+1.5 %) | 1.126 → 1.151 (+2.2 %) |
+  | clang++-19 math | 2.870 → 2.908 (+1.3 %) | 2.048 → 2.088 (+1.9 %) |
+  | clang++-19 special | 5.080 → 5.295 (+4.2 %) | 3.785 → 3.939 (+4.1 %) |
+  | clang++-19 igamma | 3.110 → 3.134 (+0.8 %) | 2.244 → 2.276 (+1.4 %) |
+  | clang++-19 complex (new) | 5.602 | 4.268 |
+
+  `complex.hpp` is not included by `base256.hpp`, so the existing TUs do not compile it. Their differences from ad368d3 are about the size measured for 4.24.0 (run 38688772366: include_only +3.0 % / +3.1 %, special +4.7 % / +5.3 %). Only the `complex` TU pays for the new header. On the CI runner it costs 6.04 s (g++-14) and 5.60 s (clang++-19), about 1.9× the `math` TU. Header bytes went from 797,147 to 891,501 (+11.8 %), above the +10 % threshold, so the job printed its one `::warning::`. Of that, 78,679 bytes are the new `complex.hpp` (58,520) and `detail/cx_engine.hpp` (20,159); the rest is 4.24.0 and cb33f18 (812,822 bytes at cb33f18).
+
 ## 4.24.0
 
 - Per-call timings of the speedups above (README "Performance", 4.24.0 table): `base256_bench 1.0`, g++-14 14.2.0, `-O3 -DNDEBUG -std=c++23` (CMake Release), on the shared 8-core box ("Intel(R) Xeon(R) Processor"), pinned with `taskset -c 5`, ≥ 1 s per item over 64 arguments, median of 3 runs, 7da2567 and 76f07bb interleaved with the same `bench.cpp`.
