@@ -59,9 +59,10 @@ jobs:
 
   compile-time:
     # Compile time (gcc-14, clang-19, -O2, mean of 5) of representative TUs and the
-    # header size, measured next to the baseline revision in
+    # header sizes, per header group (core = what base256.hpp includes; complex =
+    # what complex.hpp adds), each measured next to its own baseline revision in
     # tools/compile_time_baseline.json on the same runner. Warns (never fails)
-    # when a TU's mean grows more than 10 % or the headers more than 10 %.
+    # when a TU's mean or a group's header bytes grow more than 10 %.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

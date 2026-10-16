@@ -1,8 +1,19 @@
 {
- "ref": "ad368d3",
- "version": "4.23.0",
+ "groups": {
+  "core": {
+   "ref": "ad368d3",
+   "version": "4.23.0",
+   "top": "base256/base256.hpp",
+   "why": "Kept at 4.23.0 (not re-baselined at 4.25.0): the core headers are unchanged by 4.25.0 apart from the cb33f18 fix, and moving the reference forward would hide the drift accumulated since 4.23.0 (+2-5 % per TU in CI)."
+  },
+  "complex": {
+   "ref": "98a3143",
+   "version": "4.25.0",
+   "top": "base256/complex.hpp minus core (complex.hpp, detail/cx_engine.hpp)"
+  }
+ },
  "threshold": 0.1,
- "note": "Measured on the shared dev box (8 cores, other jobs running), CPU seconds user+sys, -std=c++23 -O2 -c, mean of 10; the CI job re-measures 'ref' next to the working tree on its own runner and compares there, so these absolute numbers are documentation only.",
+ "note": "Measured on the shared dev box (8 cores, other jobs running), CPU seconds user+sys, -std=c++23 -O2 -c, mean of 10; the CI job re-measures each group's 'ref' next to the working tree on its own runner and compares there, so these absolute numbers are documentation only.",
  "historical": {
   "airy_table_575231d": {
    "header_bytes_before": 734091,
