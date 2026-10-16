@@ -34,6 +34,19 @@
 // not macros, so the member and free functions below need no #undef tricks
 // and user code keeps working whether it includes <math.h> or <cmath>.
 
+// The rounding kernels (add_sub_m, mul_m, ... below) are templates on the mode
+// source. GCC 14 kept add_sub_m<dyn_mode> out of line, so the operators lost
+// the inlining that the 4.25.0 functions got (a dependent chain s = s + x * y
+// became about 1.5x slower; CHANGELOG 4.26.0); forcing the kernels inline into
+// their non-template callers (the operators and the per-call overloads)
+// restores it. Clang 19 inlines as before without the attribute and was
+// slightly slower with it, so it is GCC only.
+#if defined(__GNUC__) && !defined(__clang__)
+#define BASE256_KERNEL_INLINE [[gnu::always_inline]]
+#else
+#define BASE256_KERNEL_INLINE
+#endif
+
 namespace base256 {
 
 class float256;
@@ -78,6 +91,12 @@ constexpr void raise_flag(unsigned f) noexcept {
         tls_env.flags |= f;
     }
 }
+// The rounding mode of an operation: either an explicit round_mode (per-call
+// overloads) or dyn_mode, which reads the thread's current mode at the point of
+// rounding, exactly where the operators always read it.
+struct dyn_mode {
+    [[nodiscard]] constexpr operator round_mode() const noexcept { return current_mode(); }
+};
 } // namespace detail
 
 /// Per-thread floating-point environment for float256 (like <cfenv>).
@@ -180,12 +199,14 @@ private:
     friend constexpr float256 copysign(float256, float256) noexcept;
     friend constexpr float256 nextafter(float256, float256) noexcept;
     friend constexpr float256 ldexp(float256, int) noexcept;
+    friend constexpr float256 ldexp(float256, int, round_mode) noexcept;
     friend constexpr float256 frexp(float256, int*) noexcept;
     friend constexpr float256 trunc(float256) noexcept;
     friend constexpr float256 floor(float256) noexcept;
     friend constexpr float256 ceil(float256) noexcept;
     friend constexpr float256 round(float256) noexcept;
     friend constexpr float256 rint(float256) noexcept;
+    friend constexpr float256 rint(float256, round_mode) noexcept;
     friend constexpr int ilogb(float256) noexcept;
     friend constexpr float256 logb(float256) noexcept;
 
@@ -336,6 +357,10 @@ private:
     static constexpr float256 exact_zero_sum() noexcept {
         return zero(detail::current_mode() == round_mode::downward);
     }
+    template <class M>
+    static constexpr float256 exact_zero_sum(M m) noexcept {
+        return zero(static_cast<round_mode>(m) == round_mode::downward);
+    }
 
     /// Round and encode. Tininess is detected after rounding (as if the
     /// exponent range were unbounded); underflow is raised only when the
@@ -431,6 +456,7 @@ private:
     }
 
     static constexpr float256 from_unpacked(detail::Unpacked u) noexcept { return pack(u); }
+    static constexpr float256 from_unpacked(detail::Unpacked u, round_mode m) noexcept { return pack(u, m); }
 
     static constexpr detail::Unpacked make_nan(bool signaling = false,
                                                bool sign = false) noexcept {
@@ -1120,6 +1146,10 @@ public:
     /// normal exponent range [emin, emax], honouring the rounding mode and
     /// raising inexact/underflow/overflow.
     [[nodiscard]] constexpr Narrowed narrow_to(int P, int emin, int emax) const noexcept {
+        return narrow_to(P, emin, emax, detail::dyn_mode{});
+    }
+    template <class M>
+    [[nodiscard]] constexpr Narrowed narrow_to(int P, int emin, int emax, M m) const noexcept {
         using namespace detail;
         const Unpacked u = unpack();
         Narrowed r;
@@ -1131,7 +1161,7 @@ public:
         }
         if (u.kind == Kind::inf) { r.cls = 2; return r; }
         if (u.kind == Kind::zero) { r.cls = 0; return r; }
-        round_mode mode = current_mode(); // not const: a const integral/enum local would be
+        round_mode mode = m; // not const: a const integral/enum local would be
         // manifestly constant-evaluated, making `if consteval` take the compile-time branch
         int keep = P;
         if (u.wexp < emin) keep = P - (emin - u.wexp);
@@ -1177,9 +1207,15 @@ public:
     }
 
     /// Correctly rounded conversion (current rounding mode, flags raised).
-    [[nodiscard]] long double to_long_double() const noexcept {
+    [[nodiscard]] long double to_long_double() const noexcept { return to_long_double_m(detail::dyn_mode{}); }
+    /// The same, rounded in `m` instead of the current mode.
+    [[nodiscard]] long double to_long_double(round_mode m) const noexcept { return to_long_double_m(m); }
+
+private:
+    template <class M>
+    [[nodiscard]] long double to_long_double_m(M m) const noexcept {
         using L = std::numeric_limits<long double>;
-        const Narrowed n = narrow_to(L::digits, L::min_exponent - 1, L::max_exponent - 1);
+        const Narrowed n = narrow_to(L::digits, L::min_exponent - 1, L::max_exponent - 1, m);
         switch (n.cls) {
             case 0: return n.sign ? -0.0L : 0.0L;
             case 2: return n.sign ? -L::infinity() : L::infinity();
@@ -1194,9 +1230,9 @@ public:
         return n.sign ? -r : r;
     }
 
-    /// Correctly rounded conversion (current rounding mode, flags raised).
-    [[nodiscard]] constexpr double to_double() const noexcept {
-        const Narrowed n = narrow_to(53, -1022, 1023);
+    template <class M>
+    [[nodiscard]] constexpr double to_double_m(M m) const noexcept {
+        const Narrowed n = narrow_to(53, -1022, 1023, m);
         const std::uint64_t sb = n.sign ? (1ULL << 63) : 0ULL;
         switch (n.cls) {
             case 0: return std::bit_cast<double>(sb);
@@ -1214,9 +1250,9 @@ public:
         return std::bit_cast<double>(sb | (n.sig.d[3] >> sh));
     }
 
-    /// Correctly rounded (single rounding, current mode).
-    [[nodiscard]] constexpr float to_float() const noexcept {
-        const Narrowed n = narrow_to(24, -126, 127);
+    template <class M>
+    [[nodiscard]] constexpr float to_float_m(M m) const noexcept {
+        const Narrowed n = narrow_to(24, -126, 127, m);
         const std::uint32_t sb = n.sign ? (1U << 31) : 0U;
         switch (n.cls) {
             case 0: return std::bit_cast<float>(sb);
@@ -1233,6 +1269,16 @@ public:
         const int sh = 8 + (-126 - n.wexp);
         return std::bit_cast<float>(sb | (top >> sh));
     }
+
+public:
+    /// Correctly rounded conversion (current rounding mode, flags raised).
+    [[nodiscard]] constexpr double to_double() const noexcept { return to_double_m(detail::dyn_mode{}); }
+    /// The same, rounded in `m` instead of the current mode (also in constant expressions).
+    [[nodiscard]] constexpr double to_double(round_mode m) const noexcept { return to_double_m(m); }
+    /// Correctly rounded (single rounding, current mode).
+    [[nodiscard]] constexpr float to_float() const noexcept { return to_float_m(detail::dyn_mode{}); }
+    /// The same, rounded in `m` instead of the current mode (also in constant expressions).
+    [[nodiscard]] constexpr float to_float(round_mode m) const noexcept { return to_float_m(m); }
 
     constexpr void signal_unordered(const float256& o) const noexcept {
         if (isnan() || o.isnan()) detail::raise_flag(fe_invalid);
@@ -1304,6 +1350,8 @@ public:
     /// rounded in the current mode. precision == 0: the shortest string that
     /// parses back to the same value (round-to-nearest-even parsing).
     [[nodiscard]] std::string to_string(int precision = 0) const;
+    /// to_string with the decimal rounding in `m` instead of the current mode.
+    [[nodiscard]] std::string to_string(int precision, round_mode m) const;
     /// C99 hex-float, full 236-bit fraction (0x1.<59 hex digits>p<exp>).
     [[nodiscard]] std::string to_hex_string() const;
     /// std::to_chars-style formatting. precision < 0 means shortest round-trip.
@@ -1313,6 +1361,8 @@ public:
     ///              shortest, whichever of fixed/scientific is shorter
     ///  hex:        h.hhhp+X (no 0x prefix), `precision` hex digits
     [[nodiscard]] std::string format(std::chars_format fmt, int precision = -1) const;
+    /// format with the decimal rounding in `m` instead of the current mode.
+    [[nodiscard]] std::string format(std::chars_format fmt, int precision, round_mode m) const;
 
     // Decimal digit generation (exact, big-integer based).
     struct DecimalDigits {
@@ -1329,6 +1379,8 @@ public:
     [[nodiscard]] std::string decimal_fixed(int frac, round_mode mode) const;
     [[nodiscard]] std::string to_bit_string() const;
     [[nodiscard]] static std::optional<float256> parse(std::string_view s);
+    /// parse with the result rounded in `m` instead of the current mode.
+    [[nodiscard]] static std::optional<float256> parse(std::string_view s, round_mode m);
 
     friend std::ostream& operator<<(std::ostream& os, const float256& v) {
         return os << v.to_string();
@@ -1384,9 +1436,20 @@ private:
     static constexpr float256 add_sub(float256 a, float256 b, bool subtract) noexcept;
     static constexpr float256 mul(float256 a, float256 b) noexcept;
     static constexpr float256 div(float256 a, float256 b) noexcept;
+
+public:
+    // The operations with their rounding mode as a parameter: M is round_mode
+    // (the per-call overloads add(a, b, m), ...) or detail::dyn_mode (the
+    // operators, which use the thread's current mode). Not for direct use.
+    template <class M> BASE256_KERNEL_INLINE static constexpr float256 add_sub_m(float256 a, float256 b, bool subtract, M m) noexcept;
+    template <class M> BASE256_KERNEL_INLINE static constexpr float256 mul_m(float256 a, float256 b, M m) noexcept;
+    template <class M> BASE256_KERNEL_INLINE static constexpr float256 div_m(float256 a, float256 b, M m) noexcept;
+    template <class M> BASE256_KERNEL_INLINE static constexpr float256 fma_m(float256 a, float256 b, float256 c, M m) noexcept;
+    template <class M> BASE256_KERNEL_INLINE static constexpr float256 sqrt_m(float256 x, M m) noexcept;
 };
 
-constexpr float256 float256::add_sub(float256 a, float256 b, bool subtract) noexcept {
+template <class M>
+constexpr float256 float256::add_sub_m(float256 a, float256 b, bool subtract, M m) noexcept {
     using namespace detail;
     if (subtract) b.set_sign_bit(!b.sign_bit());
 #ifndef BASE256_NO_FAST_PATHS
@@ -1421,39 +1484,39 @@ constexpr float256 float256::add_sub(float256 a, float256 b, bool subtract) noex
                 std::uint64_t br2 = 0;
                 sig = sub_u256(sig, u256{1}, br2);
             }
-            if (sig.is_zero() && !sticky) return exact_zero_sum();
+            if (sig.is_zero() && !sticky) return exact_zero_sum(m);
             const int lz = sig.clz();
             sig = sig << lz;
             wexp -= lz;
         }
-        if (normal_range(wexp)) return pack_normal_range(na, wexp, sig, sticky, current_mode());
+        if (normal_range(wexp)) return pack_normal_range(na, wexp, sig, sticky, m);
         Unpacked r;
         r.sign = na;
         r.kind = Kind::normal;
         r.wexp = wexp;
         r.sig = sig;
         r.sticky = sticky;
-        return pack(r);
+        return pack(r, m);
     }
 #endif
     Unpacked ua = a.unpack();
     Unpacked ub = b.unpack();
 
     if (ua.signaling || ub.signaling) detail::raise_flag(fe_invalid);
-    if (ua.kind == Kind::nan) return pack(ua);
-    if (ub.kind == Kind::nan) return pack(ub);
+    if (ua.kind == Kind::nan) return pack(ua, m);
+    if (ub.kind == Kind::nan) return pack(ub, m);
     if (ua.kind == Kind::inf && ub.kind == Kind::inf) {
         if (ua.sign != ub.sign) return invalid_nan();
-        return pack(ua);
+        return pack(ua, m);
     }
-    if (ua.kind == Kind::inf) return pack(ua);
-    if (ub.kind == Kind::inf) return pack(ub);
+    if (ua.kind == Kind::inf) return pack(ua, m);
+    if (ub.kind == Kind::inf) return pack(ub, m);
     if (ua.kind == Kind::zero && ub.kind == Kind::zero) {
         if (ua.sign == ub.sign) return zero(ua.sign);
-        return exact_zero_sum();
+        return exact_zero_sum(m);
     }
-    if (ua.kind == Kind::zero) return pack(ub);
-    if (ub.kind == Kind::zero) return pack(ua);
+    if (ua.kind == Kind::zero) return pack(ub, m);
+    if (ub.kind == Kind::zero) return pack(ua, m);
 
     if (ua.wexp < ub.wexp || (ua.wexp == ub.wexp && ua.sig < ub.sig)) {
         std::swap(ua, ub);
@@ -1493,15 +1556,16 @@ constexpr float256 float256::add_sub(float256 a, float256 b, bool subtract) noex
         r.wexp = ua.wexp;
         r.sticky = sticky;
         r.kind = Kind::normal;
-        if (r.sig.is_zero() && !sticky) return exact_zero_sum();
+        if (r.sig.is_zero() && !sticky) return exact_zero_sum(m);
         const int lz = r.sig.clz();
         r.sig = r.sig << lz;
         r.wexp -= lz;
     }
-    return pack(r);
+    return pack(r, m);
 }
 
-constexpr float256 float256::mul(float256 a, float256 b) noexcept {
+template <class M>
+constexpr float256 float256::mul_m(float256 a, float256 b, M m) noexcept {
     using namespace detail;
 #ifndef BASE256_NO_FAST_PATHS
     if (a.is_normal_enc() && b.is_normal_enc()) {
@@ -1519,14 +1583,14 @@ constexpr float256 float256::mul(float256 a, float256 b) noexcept {
             sig = q.hi256();
             sticky = !q.lo256().is_zero();
         }
-        if (normal_range(wexp)) return pack_normal_range(sign, wexp, sig, sticky, current_mode());
+        if (normal_range(wexp)) return pack_normal_range(sign, wexp, sig, sticky, m);
         Unpacked r;
         r.sign = sign;
         r.kind = Kind::normal;
         r.wexp = wexp;
         r.sig = sig;
         r.sticky = sticky;
-        return pack(r);
+        return pack(r, m);
     }
 #endif
     Unpacked ua = a.unpack();
@@ -1534,8 +1598,8 @@ constexpr float256 float256::mul(float256 a, float256 b) noexcept {
     const bool sign = ua.sign ^ ub.sign;
 
     if (ua.signaling || ub.signaling) detail::raise_flag(fe_invalid);
-    if (ua.kind == Kind::nan) return pack(ua);
-    if (ub.kind == Kind::nan) return pack(ub);
+    if (ua.kind == Kind::nan) return pack(ua, m);
+    if (ub.kind == Kind::nan) return pack(ub, m);
     const bool a_inf = ua.kind == Kind::inf, b_inf = ub.kind == Kind::inf;
     const bool a_z   = ua.kind == Kind::zero, b_z   = ub.kind == Kind::zero;
     if ((a_inf && b_z) || (b_inf && a_z)) return invalid_nan();
@@ -1556,18 +1620,19 @@ constexpr float256 float256::mul(float256 a, float256 b) noexcept {
         r.sig = s.hi256();
         r.sticky = !s.lo256().is_zero();
     }
-    return pack(r);
+    return pack(r, m);
 }
 
-constexpr float256 float256::div(float256 a, float256 b) noexcept {
+template <class M>
+constexpr float256 float256::div_m(float256 a, float256 b, M m) noexcept {
     using namespace detail;
     Unpacked ua = a.unpack();
     Unpacked ub = b.unpack();
     const bool sign = ua.sign ^ ub.sign;
 
     if (ua.signaling || ub.signaling) detail::raise_flag(fe_invalid);
-    if (ua.kind == Kind::nan) return pack(ua);
-    if (ub.kind == Kind::nan) return pack(ub);
+    if (ua.kind == Kind::nan) return pack(ua, m);
+    if (ub.kind == Kind::nan) return pack(ub, m);
     if (ua.kind == Kind::inf && ub.kind == Kind::inf) return invalid_nan();
     if (ub.kind == Kind::zero) {
         if (ua.kind == Kind::zero) return invalid_nan();
@@ -1602,10 +1667,11 @@ constexpr float256 float256::div(float256 a, float256 b) noexcept {
             r.wexp -= lz;
         }
     }
-    return pack(r);
+    return pack(r, m);
 }
 
-constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
+template <class M>
+constexpr float256 float256::fma_m(float256 a, float256 b, float256 c, M m) noexcept {
     using namespace detail;
     Unpacked ua = a.unpack();
     Unpacked ub = b.unpack();
@@ -1613,9 +1679,9 @@ constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
     const bool psign = ua.sign ^ ub.sign;
 
     if (ua.signaling || ub.signaling || uc.signaling) detail::raise_flag(fe_invalid);
-    if (ua.kind == Kind::nan) return pack(ua);
-    if (ub.kind == Kind::nan) return pack(ub);
-    if (uc.kind == Kind::nan) return pack(uc);
+    if (ua.kind == Kind::nan) return pack(ua, m);
+    if (ub.kind == Kind::nan) return pack(ub, m);
+    if (uc.kind == Kind::nan) return pack(uc, m);
 
     const bool a_inf = ua.kind == Kind::inf, b_inf = ub.kind == Kind::inf;
     const bool a_z = ua.kind == Kind::zero, b_z = ub.kind == Kind::zero;
@@ -1627,8 +1693,8 @@ constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
     }
     if (a_z || b_z) {
         // (±0) + c: exact. Two zeros of opposite sign sum to +0.
-        if (uc.kind == Kind::zero) return psign == uc.sign ? zero(psign) : exact_zero_sum();
-        return pack(uc);
+        if (uc.kind == Kind::zero) return psign == uc.sign ? zero(psign) : exact_zero_sum(m);
+        return pack(uc, m);
     }
 
     const u512 p = mul_wide(ua.sig, ub.sig);
@@ -1647,9 +1713,9 @@ constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
         r.wexp = pexp;
         r.sig = psig.hi256();
         r.sticky = !psig.lo256().is_zero();
-        return pack(r);
+        return pack(r, m);
     }
-    if (uc.kind == Kind::inf) return pack(uc);
+    if (uc.kind == Kind::inf) return pack(uc, m);
 
     u512 cs{};
     cs.d[4] = uc.sig.d[0];
@@ -1704,7 +1770,7 @@ constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
         }
         r.sig = s.hi256();
         r.sticky = r.sticky || !s.lo256().is_zero();
-        return pack(r);
+        return pack(r, m);
     }
     bool prod_ge = !(as < bs);
     u512 s = prod_ge ? sub_u512(as, bs) : sub_u512(bs, as);
@@ -1717,20 +1783,21 @@ constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
         one.d[0] = 1;
         s = sub_u512(s, one);
     }
-    if (s.is_zero() && !r.sticky) return exact_zero_sum();
+    if (s.is_zero() && !r.sticky) return exact_zero_sum(m);
     const int lz = s.clz();
     s = s << lz;
     r.wexp -= lz;
     r.sig = s.hi256();
     r.sticky = r.sticky || !s.lo256().is_zero();
-    return pack(r);
+    return pack(r, m);
 }
 
-constexpr float256 float256::sqrt(float256 x) noexcept {
+template <class M>
+constexpr float256 float256::sqrt_m(float256 x, M m) noexcept {
     using namespace detail;
     Unpacked u = x.unpack();
     if (u.signaling) detail::raise_flag(fe_invalid);
-    if (u.kind == Kind::nan) return pack(u);
+    if (u.kind == Kind::nan) return pack(u, m);
     if (u.kind == Kind::zero) return x;
     if (u.sign) return invalid_nan();
     if (u.kind == Kind::inf) return x;
@@ -1758,8 +1825,19 @@ constexpr float256 float256::sqrt(float256 x) noexcept {
     const int lz = s.clz();
     r.sig = s << lz;
     r.wexp -= lz;
-    return pack(r);
+    return pack(r, m);
 }
+
+// The operators: the thread's current mode, read where the result is rounded.
+constexpr float256 float256::add_sub(float256 a, float256 b, bool subtract) noexcept {
+    return add_sub_m(a, b, subtract, detail::dyn_mode{});
+}
+constexpr float256 float256::mul(float256 a, float256 b) noexcept { return mul_m(a, b, detail::dyn_mode{}); }
+constexpr float256 float256::div(float256 a, float256 b) noexcept { return div_m(a, b, detail::dyn_mode{}); }
+constexpr float256 float256::fma(float256 a, float256 b, float256 c) noexcept {
+    return fma_m(a, b, c, detail::dyn_mode{});
+}
+constexpr float256 float256::sqrt(float256 x) noexcept { return sqrt_m(x, detail::dyn_mode{}); }
 
 inline std::optional<float256> float256::parse(std::string_view s) {
     using namespace detail;
@@ -2576,6 +2654,23 @@ inline std::string float256::to_bit_string() const {
 }
 [[nodiscard]] constexpr float256 sqrt(float256 x) noexcept { return float256::sqrt(x); }
 
+// Per-call rounding: the same operations rounded in `m` instead of the thread's
+// current mode (README "Per-call rounding"). The result and the flags raised are
+// those of the operator evaluated with fenv::set_round(m); the thread's mode is
+// neither read nor changed, so these also work in constant expressions.
+[[nodiscard]] constexpr float256 add(float256 a, float256 b, round_mode m) noexcept {
+    return float256::add_sub_m(a, b, false, m);
+}
+[[nodiscard]] constexpr float256 sub(float256 a, float256 b, round_mode m) noexcept {
+    return float256::add_sub_m(a, b, true, m);
+}
+[[nodiscard]] constexpr float256 mul(float256 a, float256 b, round_mode m) noexcept { return float256::mul_m(a, b, m); }
+[[nodiscard]] constexpr float256 div(float256 a, float256 b, round_mode m) noexcept { return float256::div_m(a, b, m); }
+[[nodiscard]] constexpr float256 fma(float256 a, float256 b, float256 c, round_mode m) noexcept {
+    return float256::fma_m(a, b, c, m);
+}
+[[nodiscard]] constexpr float256 sqrt(float256 x, round_mode m) noexcept { return float256::sqrt_m(x, m); }
+
 [[nodiscard]] constexpr float256 ldexp(float256 x, int n) noexcept {
     using namespace detail;
     Unpacked u = x.unpack();
@@ -2586,8 +2681,20 @@ inline std::string float256::to_bit_string() const {
     u.wexp = static_cast<int>(ne);
     return float256::from_unpacked(u);
 }
+/// ldexp rounded in `m` (only a subnormal result rounds).
+[[nodiscard]] constexpr float256 ldexp(float256 x, int n, round_mode m) noexcept {
+    using namespace detail;
+    Unpacked u = x.unpack();
+    if (u.kind == Kind::nan || u.kind == Kind::inf || u.kind == Kind::zero) return x;
+    const std::int64_t ne = static_cast<std::int64_t>(u.wexp) + n;
+    if (ne > kEmax + 16) return float256::inf(u.sign);  // as ldexp(x, n)
+    if (ne < static_cast<std::int64_t>(kEmin) - 256) return float256::zero(u.sign);
+    u.wexp = static_cast<int>(ne);
+    return float256::from_unpacked(u, m);
+}
 
 [[nodiscard]] constexpr float256 scalbn(float256 x, int n) noexcept { return ldexp(x, n); }
+[[nodiscard]] constexpr float256 scalbn(float256 x, int n, round_mode m) noexcept { return ldexp(x, n, m); }
 
 [[nodiscard]] constexpr float256 frexp(float256 x, int* exp) noexcept {
     using namespace detail;
@@ -2859,6 +2966,41 @@ inline std::from_chars_result from_chars(const char* first, const char* last, fl
     return {q, std::errc{}};
 }
 
+
+// ---- Per-call rounding for the remaining operations (README "Per-call rounding").
+namespace detail {
+/// Run f() with the thread's rounding mode set to m, then restore the caller's
+/// mode (also if f throws). Flags raised by f() stay raised, as with set_round.
+template <class Fn>
+inline auto with_round(round_mode m, Fn&& f) -> decltype(f()) {
+    const fenv::scoped_round g(m);
+    return f();
+}
+} // namespace detail
+
+inline std::string float256::to_string(int precision, round_mode m) const {
+    return detail::with_round(m, [&] { return to_string(precision); });
+}
+inline std::string float256::format(std::chars_format fmt, int precision, round_mode m) const {
+    return detail::with_round(m, [&] { return format(fmt, precision); });
+}
+inline std::optional<float256> float256::parse(std::string_view s, round_mode m) {
+    return detail::with_round(m, [&] { return parse(s); });
+}
+
+/// rint / nearbyint rounded in `m` (rint raises inexact when the value changes).
+[[nodiscard]] constexpr float256 rint(float256 x, round_mode m) noexcept { return float256::round_integral(x, m, true); }
+[[nodiscard]] constexpr float256 nearbyint(float256 x, round_mode m) noexcept { return float256::round_integral(x, m, false); }
+[[nodiscard]] inline float256 hypot(float256 x, float256 y, round_mode m) { return detail::with_round(m, [&] { return hypot(x, y); }); }
+/// to_chars / from_chars with the decimal rounding in `m`.
+inline std::to_chars_result to_chars(char* first, char* last, float256 v, std::chars_format fmt, int precision,
+                                     round_mode m) {
+    return detail::with_round(m, [&] { return to_chars(first, last, v, fmt, precision); });
+}
+inline std::from_chars_result from_chars(const char* first, const char* last, float256& value, std::chars_format fmt,
+                                         round_mode m) {
+    return detail::with_round(m, [&] { return from_chars(first, last, value, fmt); });
+}
 } // namespace base256
 
 template <>
