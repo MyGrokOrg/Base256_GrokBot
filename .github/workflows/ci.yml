@@ -57,6 +57,34 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  default-path:
+    # The thread-mode (default) path must stay bit-identical to 4.25.0 (98a3143):
+    # tools/mode_digest.sh builds tools/mode_digest.cpp against the 98a3143 headers
+    # and the tree and fails on any digest difference (result bits and flags, all
+    # 5 modes, arithmetic, conversions, text, every function, complex). test_percall
+    # checks every per-call overload against the global path (bits, flags, mode).
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash  # -eo pipefail: a failing command before tee fails the step
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++-14, clang++-19]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install clang-19
+        if: matrix.cxx == 'clang++-19'
+        run: sudo apt-get update && sudo apt-get install -y clang-19
+      - name: Default path vs 98a3143
+        run: bash tools/mode_digest.sh 98a3143 ${{ matrix.cxx }} 200000 24 | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Per-call == global (test_percall)
+        run: |
+          ${{ matrix.cxx }} -std=c++23 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude tests/test_percall.cpp -o test_percall
+          ./test_percall | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+
   compile-time:
     # Compile time (gcc-14, clang-19, -O2, mean of 5) of representative TUs and the
     # header sizes, per header group (core = what base256.hpp includes; complex =
