@@ -1,8 +1,10 @@
 name: Nightly fuzz
 
 # Random accuracy checks of every special-function range in tools/sf_check.py
-# against mpmath (2000-bit reference) and of the elementary/special functions and
-# arithmetic against MPFR, in all five rounding modes with exact IEEE flags.
+# against mpmath (2000-bit reference), of every base256::complex range in
+# tools/cx_check.py against GNU MPC (gmpy2), and of the elementary/special
+# functions and arithmetic against MPFR, in all five rounding modes with exact
+# IEEE flags.
 # Any misrounded result or flag error fails the run; the FAIL lines give the
 # function, input bits, mode, expected and got value and flags, and the seed.
 # Reproduce one failure locally with the command printed at the top of its log.
@@ -24,10 +26,15 @@ on:
         description: "mpfr_ulp cases per function (mpfr_diff runs 10x this per operation)"
         required: false
         default: "2000"
+      cx_cases:
+        description: "cx_check cases per complex range (all 5 modes each)"
+        required: false
+        default: "20"
 
 env:
   SF_SHARDS: 16
   MPMATH_VERSION: "1.4.1"
+  GMPY2_VERSION: "2.2.1"
 
 jobs:
   seed:
@@ -36,6 +43,7 @@ jobs:
       seed: ${{ steps.s.outputs.seed }}
       cases: ${{ steps.s.outputs.cases }}
       mpfr_cases: ${{ steps.s.outputs.mpfr_cases }}
+      cx_cases: ${{ steps.s.outputs.cx_cases }}
     steps:
       - id: s
         run: |
@@ -43,11 +51,13 @@ jobs:
           [ -n "$seed" ] || seed=$(date -u +%Y%m%d)
           cases="${{ github.event.inputs.cases }}"; [ -n "$cases" ] || cases=12
           mcases="${{ github.event.inputs.mpfr_cases }}"; [ -n "$mcases" ] || mcases=2000
+          xcases="${{ github.event.inputs.cx_cases }}"; [ -n "$xcases" ] || xcases=20
           echo "seed=$seed" >> "$GITHUB_OUTPUT"
           echo "cases=$cases" >> "$GITHUB_OUTPUT"
           echo "mpfr_cases=$mcases" >> "$GITHUB_OUTPUT"
-          echo "Fuzz seed: $seed (sf_check $cases cases/range, mpfr_ulp $mcases cases/function)"
-          echo "### Fuzz seed \`$seed\` — sf_check $cases cases/range × 5 modes, mpfr_ulp $mcases cases/function" >> "$GITHUB_STEP_SUMMARY"
+          echo "cx_cases=$xcases" >> "$GITHUB_OUTPUT"
+          echo "Fuzz seed: $seed (sf_check $cases cases/range, cx_check $xcases cases/range, mpfr_ulp $mcases cases/function)"
+          echo "### Fuzz seed \`$seed\` — sf_check $cases cases/range × 5 modes, cx_check $xcases cases/range × 5 modes, mpfr_ulp $mcases cases/function" >> "$GITHUB_STEP_SUMMARY"
 
   sf_check:
     needs: seed
@@ -95,6 +105,53 @@ jobs:
         with:
           name: fuzz-sf-shard${{ matrix.shard }}
           path: fuzz-sf-shard${{ matrix.shard }}.log
+
+  cx_check:
+    needs: seed
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install gmpy2 (GNU MPC/MPFR)
+        run: pip install "gmpy2==${GMPY2_VERSION}"
+      - name: Build cx_eval
+        run: |
+          CXX=$(command -v g++-14 || command -v g++)
+          cmake -B build -DCMAKE_CXX_COMPILER=$CXX -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target cx_eval -j4
+      - name: cx_check (all modes, flags)
+        env:
+          SF_RANGE_SEED: "1"
+          SF_SHARD: ${{ matrix.shard }}/4
+          SF_TIMING: "1"
+        run: |
+          set -o pipefail
+          seed=${{ needs.seed.outputs.seed }}; cases=${{ needs.seed.outputs.cx_cases }}
+          log=fuzz-cx-shard${{ matrix.shard }}.log
+          {
+            echo "seed=$seed cases=$cases shard=$SF_SHARD"
+            echo "reproduce one range R: SF_RANGE_SEED=1 python3 tools/cx_check.py build/cx_eval $cases $seed R modes"
+          } | tee "$log"
+          python3 tools/cx_check.py build/cx_eval "$cases" "$seed" "" modes 2>&1 | tee -a "$log"
+      - name: Failure summary
+        if: failure()
+        run: |
+          log=fuzz-cx-shard${{ matrix.shard }}.log
+          { echo "#### cx_check shard ${{ matrix.shard }} (seed ${{ needs.seed.outputs.seed }})"; echo '```'
+            grep -E '^(FAIL|CRASH|SUMMARY)' "$log" | head -60; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^(FAIL|CRASH)' "$log" | head -10 | while read -r l; do echo "::error::$l"; done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-cx-shard${{ matrix.shard }}
+          path: fuzz-cx-shard${{ matrix.shard }}.log
 
   mpfr:
     needs: seed
