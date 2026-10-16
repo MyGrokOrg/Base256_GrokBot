@@ -54,6 +54,12 @@ if(BUILD_TESTING)
     # Evaluator for tools/sf_check.py (mpmath accuracy check), not a test.
     add_executable(sf_eval tools/sf_eval.cpp)
     target_link_libraries(sf_eval PRIVATE base256)
+    add_executable(test_complex tests/test_complex.cpp)
+    target_link_libraries(test_complex PRIVATE base256)
+    add_test(NAME complex COMMAND test_complex)
+    # Evaluator for tools/cx_check.py (MPC accuracy check of base256::complex), not a test.
+    add_executable(cx_eval tools/cx_eval.cpp)
+    target_link_libraries(cx_eval PRIVATE base256)
     add_executable(test_macros tests/test_macros.cpp)
     target_link_libraries(test_macros PRIVATE base256)
     add_test(NAME macros COMMAND test_macros)
