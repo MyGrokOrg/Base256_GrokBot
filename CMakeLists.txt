@@ -60,6 +60,10 @@ if(BUILD_TESTING)
     # Evaluator for tools/cx_check.py (MPC accuracy check of base256::complex), not a test.
     add_executable(cx_eval tools/cx_eval.cpp)
     target_link_libraries(cx_eval PRIVATE base256)
+    # Per-call rounding overloads == the same operation under fenv::set_round(m).
+    add_executable(test_percall tests/test_percall.cpp)
+    target_link_libraries(test_percall PRIVATE base256)
+    add_test(NAME percall COMMAND test_percall)
     add_executable(test_macros tests/test_macros.cpp)
     target_link_libraries(test_macros PRIVATE base256)
     add_test(NAME macros COMMAND test_macros)
