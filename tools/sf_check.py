@@ -840,7 +840,7 @@ def main():
         cases = gen_cases(args, range_rng(rng, seed, name), n)
         inp = "".join(f"{op} {' '.join(h)}\n" for h, _ in cases)
         res = subprocess.run([exe], input=inp, capture_output=True, text=True, check=True).stdout.split("\n")
-        worst, wcase, mis = 0.0, None, 0
+        worst, wcase, mis, ovf = 0.0, None, 0, 0
         for (hs, vs), r in zip(cases, res):
             if r.startswith("?MODE"):  # SF_PERCALL: the per-call overload changed the thread's mode
                 mis += 1; worst = max(worst, 2.0)
@@ -848,11 +848,16 @@ def main():
                 continue
             got = parse_hex(r)
             want = ref(*vs)
+            if mp.isinf(got) and not mp.isinf(want):  # overflow: correct iff want rounds to inf
+                exp_v, _ = round_b256(want, "RNE")
+                if exp_v == got:
+                    ovf += 1
+                    continue
             err = ulp_err(got, want)
             if err > 0.5: mis += 1
             if err > worst: worst, wcase = err, hs
         bad_total += worst > 1
-        print(f"{name:10s} n={n} max ulp {worst:.3g}  not correctly rounded {mis}" + (f"  worst at {wcase}" if worst > 0.5 else ""), flush=True)
+        print(f"{name:10s} n={n} max ulp {worst:.3g}  not correctly rounded {mis}" + (f"  overflowed {ovf}" if ovf else "") + (f"  worst at {wcase}" if worst > 0.5 else ""), flush=True)
     sys.exit(1 if bad_total else 0)
 
 if __name__ == "__main__":
