@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <random>
 #include <string>
@@ -75,6 +76,18 @@ static void mixc(const std::string& k, complex z, unsigned fl) {
     const float256 p[2] = {z.real(), z.imag()};
     mix(k, p, sizeof p, fl);
 }
+// long double is the x87 80-bit format on x86 Linux/macOS (10 value bytes),
+// binary64 on MSVC and Apple arm64, binary128 on some other targets. Only the
+// 80-bit digest is comparable with the Linux golden digests; for binary64 the
+// result must equal to_double (bits and flags), so it is hashed under its own
+// key exactly as to_double is, and tests/digest_golden.cmake requires the two
+// digests to agree.
+static void mix_ld(long double l, unsigned fl) {
+    constexpr int dig = std::numeric_limits<long double>::digits;
+    if constexpr (dig == 64) mix("to_long_double", &l, 10, fl);
+    else if constexpr (dig == 53) mix("to_long_double_b64", &l, sizeof(double), fl);
+    else mix("to_long_double_p" + std::to_string(dig), &l, sizeof l, fl);
+}
 template <class F> static void each_mode(F&& f) {
     for (auto m : kModes) {
         fenv::set_round(m);
@@ -97,7 +110,7 @@ int main(int argc, char** argv) {
             RUN("rint", rint(a), mixf); RUN("nearbyint", nearbyint(a), mixf);
             fenv::clear_flags(); { const double d = a.to_double(); mix("to_double", &d, sizeof d, fenv::get_flags()); }
             fenv::clear_flags(); { const float f = a.to_float(); mix("to_float", &f, sizeof f, fenv::get_flags()); }
-            fenv::clear_flags(); { const long double l = a.to_long_double(); mix("to_long_double", &l, 10, fenv::get_flags()); }
+            fenv::clear_flags(); { const long double l = a.to_long_double(); mix_ld(l, fenv::get_flags()); }
         });
     }
     for (long i = 0; i < n / 20; ++i) {
