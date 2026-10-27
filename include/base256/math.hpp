@@ -543,14 +543,19 @@ namespace detail_math {
     if (x.iszero()) return signed_out(detail_dd::pio2());
     // Tiny ratio with x > 0: atan(q) = q - q^3/3, q = y/x as dd.
     if (!x.signbit() && ilogb(y) - ilogb(x) < detail_math::kTiny - 2) {
-        const dd q = dd(y) / dd(x);
-        const float256 c = q.hi * q.hi * q.hi / float256::from_int(-3);
+        // Scaled to exponent 0 (q·2^k = y/x) so that the dd quotient stays normal:
+        // y/x may lie in or below the subnormal range, where an unscaled quotient
+        // would be rounded (or flushed to 0) in the internal mode with its flags
+        // lost. The single rounding with flags happens in env.round(..., k, ...).
+        const int k = ilogb(y) - ilogb(x);
+        const dd q = dd(ldexp(y, -ilogb(y))) / dd(ldexp(x, -ilogb(x)));
+        const float256 c = ldexp(q.hi * q.hi * q.hi / float256::from_int(-3), 2 * k);
         if (c.iszero() || ilogb(q.hi) - ilogb(c) > 400) {
             // q itself may be exact; the omitted -q^3/3 points toward zero.
-            return env.round(q.hi, q.lo, 0, q.hi.signbit() ? +1 : -1);
+            return env.round(q.hi, q.lo, k, q.hi.signbit() ? +1 : -1);
         }
         const dd v = q + dd(c);
-        return env.round(v.hi, v.lo, 0, q.hi.signbit() ? -1 : +1);
+        return env.round(v.hi, v.lo, k, q.hi.signbit() ? -1 : +1);
     }
     return detail_math::atan2_dd(dd(y), dd(x)).out(env);
 }
