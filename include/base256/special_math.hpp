@@ -374,11 +374,11 @@ inline void temme_y(float256 mu, float256 x, dd& ymu, dd& y1) {
             const int l0 = ilogb((sum + one).hi) - 492, l1 = ilogb(sum1.hi) - 492;
             for (int j = i + 1; j < 100000; ++j) {
                 const float256 dj = float256::from_int(j);
-                const float256 r = float256::one() / (dj * dj - m * m);
-                F = (dj * F + P + Q) * r;
+                const float256 rinv = float256::one() / (dj * dj - m * m);
+                F = (dj * F + P + Q) * rinv;
                 C = C * dqf / dj;
-                P = P * (dj + m) * r;
-                Q = Q * (dj - m) * r;
+                P = P * (dj + m) * rinv;
+                Q = Q * (dj - m) * rinv;
                 const float256 d0 = C * (F + rs * Q), d1 = C * P - dj * d0;
                 ts = ts + d0; ts1 = ts1 + d1;
                 if ((d0.iszero() || ilogb(d0) < l0) && (d1.iszero() || ilogb(d1) < l1)) break;
@@ -423,11 +423,11 @@ inline void temme_k(float256 mu, float256 x, dd& kmu, dd& k1) {
             const int l0 = ilogb(sum.hi) - 492, l1 = ilogb(sum1.hi) - 492;
             for (int j = i + 1; j < 100000; ++j) {
                 const float256 dj = float256::from_int(j);
-                const float256 r = float256::one() / (dj * dj - m * m);
-                F = (dj * F + P + Q) * r;
+                const float256 rinv = float256::one() / (dj * dj - m * m);
+                F = (dj * F + P + Q) * rinv;
                 C = C * dqf / dj;
-                P = P * (dj + m) * r;
-                Q = Q * (dj - m) * r;
+                P = P * (dj + m) * rinv;
+                Q = Q * (dj - m) * rinv;
                 const float256 d0 = C * F, d1 = C * (P - dj * F);
                 ts = ts + d0; ts1 = ts1 + d1;
                 if ((d0.iszero() || ilogb(d0) < l0) && (d1.iszero() || ilogb(d1) < l1)) break;
@@ -818,7 +818,7 @@ enum class BesselKind { J, Y, I, K };
     long E = (be ? be : 1) - 262143 - 236;
     while (!M.is_zero() && !M.bit(0)) { M.shr(1); ++E; }
     // A 238-bit quotient needs M^n <= 2^238·D: skip long significands early.
-    if (static_cast<long>(M.bit_length() - 1) * n > 238 + D.bit_length()) return false;
+    if (static_cast<long long>(M.bit_length() - 1) * static_cast<long long>(n) > 238LL + D.bit_length()) return false;
     detail::BigInt N(1);
     for (unsigned i = 0; i < n; ++i) N.mul(M);
     detail::BigInt Dd = D;
@@ -1187,19 +1187,19 @@ namespace zeta {
     const double lsm1 = std::log2(std::fabs(sm1.hi.to_double()));
     const bool neg = s.hi.signbit();  // s < 0: terms grow with n; scale by w^{-s} instead of a^{-s}
     // Option 1: direct sum of nd terms (rest < 2^-506 relative): s log2(1 + nd/a) >= 506 + log2(1 + (a+nd)/(s−1)).
-    long nd = -1;
+    long long nd = -1;
     if (sm1.hi > float256::zero()) {
-        long lo = 1;
-        while (lo < (1L << 40)) {
+        long long lo = 1;
+        while (lo < (1LL << 40)) {
             const double n = double(lo);
             const double lg = sd * std::log1p(n / ad) * 1.4426950408889634 - std::log2(1 + (ad + n) / sm1.hi.to_double());
             if (lg >= 506) break;
             lo *= 2;
         }
-        if (lo < (1L << 40)) {
-            long hi = lo; lo = lo / 2;  // refine
+        if (lo < (1LL << 40)) {
+            long long hi = lo; lo = lo / 2;  // refine
             while (hi - lo > 1) {
-                const long mid = (lo + hi) / 2;
+                const long long mid = (lo + hi) / 2;
                 const double n = double(mid);
                 const double lg = sd * std::log1p(n / ad) * 1.4426950408889634 - std::log2(1 + (ad + n) / sm1.hi.to_double());
                 if (lg >= 506) hi = mid; else lo = mid;
@@ -1231,7 +1231,7 @@ namespace zeta {
     }
     // Relative to c^{−s}, c = a (s > 0) or c = w = N + a (s < 0), so every
     // term is <= 1: Σ_{n<N} ((n+a)/c)^{−s} [+ EM tail at w].
-    const long Nt = bestN > 0 ? bestN : nd;
+    const long long Nt = bestN > 0 ? bestN : nd;
     const dd W = D(static_cast<int>(bestN > 0 ? bestN : 0)) + A;
     const dd C = neg ? W : A;
     const dd lc = neg ? detail_dd::log(C) : la;
@@ -1241,7 +1241,7 @@ namespace zeta {
     // (error ~2^-474·s·ln((n+a)/c)) that cost ~20 dd multiplications each
     const bool sint = !neg && s.lo.iszero() && s.hi == trunc(s.hi) && s.hi <= float256(512);
     const unsigned si = sint ? static_cast<unsigned>(s.hi.to_double()) : 0;
-    for (long n = Nt - 1; n >= 0; --n) {
+    for (long long n = Nt - 1; n >= 0; --n) {
         if (n == 0 && !neg) { sum = sum + one; break; }
         const dd na = dd(float256::from_int(static_cast<int>(n))) + A;
         if (sint) {
