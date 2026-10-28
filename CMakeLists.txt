@@ -12,6 +12,10 @@ target_include_directories(base256 INTERFACE
     $<INSTALL_INTERFACE:include>
 )
 
+if(MSVC)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)  # getenv in the tests and tools
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
     add_executable(test_float256 tests/test_float256.cpp)
