@@ -67,6 +67,22 @@ if(BUILD_TESTING)
     add_executable(test_macros tests/test_macros.cpp)
     target_link_libraries(test_macros PRIVATE base256)
     add_test(NAME macros COMMAND test_macros)
+    # 512/256-bit division and isqrt against bitwise references: with the 128-bit
+    # integer type where there is one, and with the 64-bit-word path (MSVC, clang-cl).
+    add_executable(test_uint tests/test_uint.cpp)
+    target_link_libraries(test_uint PRIVATE base256)
+    add_test(NAME uint COMMAND test_uint)
+    add_executable(test_uint_noint128 tests/test_uint.cpp)
+    target_link_libraries(test_uint_noint128 PRIVATE base256)
+    target_compile_definitions(test_uint_noint128 PRIVATE BASE256_NO_INT128)
+    add_test(NAME uint_noint128 COMMAND test_uint_noint128)
+    # Default-path digests (result bits and flags, all 5 modes) against the golden
+    # file made with g++-14 on x86-64: the results must not depend on the platform.
+    add_executable(mode_digest tools/mode_digest.cpp)
+    target_link_libraries(mode_digest PRIVATE base256)
+    set(BASE256_GOLDEN_ARGS "20000 4" CACHE STRING "Arguments (arith cases, function args) of the golden digest run")
+    add_test(NAME digest_golden COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:mode_digest> "-DARGS=${BASE256_GOLDEN_ARGS}"
+             -DGOLDEN=${CMAKE_CURRENT_SOURCE_DIR}/tests/digest_golden.txt -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/digest_golden.cmake)
 
     # Differential testing against GNU MPFR (237-bit, binary256 exponent range,
     # subnormalized) with randomized operands. Requires libmpfr + libgmp.
