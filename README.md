@@ -65,7 +65,7 @@ CI builds and runs the whole ctest suite (13 tests, warnings as errors, Release)
 | MSVC (`cl`, 19.51 on `windows-latest`) | Windows x86-64 | `/W4 /WX /permissive-` |
 | Apple Clang 21 (`macos-latest`) | macOS arm64 | `-Wall -Wextra -Wpedantic -Werror` |
 
-Other compilers and targets (older GCC and Clang versions, clang-cl, Windows or Linux on arm64, macOS on x86-64) are not tested; the version numbers above are the oldest the library is known to build with only for the rows listed. Notes:
+Other compilers and targets (other GCC, Clang and MSVC versions, clang-cl, Windows or Linux on arm64, macOS on x86-64) are not tested, so there is no support claim for them. Notes:
 
 - **No 128-bit integer type** (MSVC): the 256- and 512-bit integer core (`detail/uint.hpp`) runs on 64-bit words, with `_umul128`/`__umulh`/`_udiv128` at run time and portable code in constant evaluation. Results are identical. `-DBASE256_NO_INT128` selects that path with GCC and Clang (the ctest `uint_noint128`, and `test_uint` checks multiplication, division and square root against bitwise references). Without `__int128` the integer conversions (`float256(i)`, `to_integer`) stop at 64 bits.
 - **Same results everywhere.** The ctest `digest_golden` runs `tools/mode_digest` (result bits and flags of the arithmetic, conversions, every function and every complex operation in all 5 rounding modes) and compares its 133 digests with `tests/digest_golden.txt`, made with g++-14 on x86-64. The digests must be identical on all platforms above. Only `to_long_double` depends on the target's `long double`: an x87 80-bit one must match the golden digest, a binary64 one (MSVC, Apple arm64) must equal `to_double`.
