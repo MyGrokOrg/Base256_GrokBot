@@ -57,6 +57,35 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  # Other toolchains: the whole ctest suite (test_uint on the 64-bit-word path, and
+  # digest_golden: the default-path digests must equal tests/digest_golden.txt, made
+  # with g++-14 on x86-64) with warnings as errors. No MPFR here.
+  portability:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: MSVC (windows-latest, /W4 /WX)
+            os: windows-latest
+            flags: /W4 /WX /permissive- /EHsc
+          - name: Apple Clang (macos-latest, -Werror)
+            os: macos-latest
+            flags: -Wall -Wextra -Wpedantic -Werror
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure
+        shell: bash
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS=${{ matrix.flags }}"
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release -j 4
+      - name: Test
+        shell: bash
+        run: ctest --test-dir build --output-on-failure -C Release -j 4
+
   default-path:
     # The thread-mode (default) path must stay bit-identical to 4.25.0 (98a3143):
     # tools/mode_digest.sh builds tools/mode_digest.cpp against the 98a3143 headers
