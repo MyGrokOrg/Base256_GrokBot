@@ -818,7 +818,7 @@ enum class BesselKind { J, Y, I, K };
     long E = (be ? be : 1) - 262143 - 236;
     while (!M.is_zero() && !M.bit(0)) { M.shr(1); ++E; }
     // A 238-bit quotient needs M^n <= 2^238·D: skip long significands early.
-    if (static_cast<long>(M.bit_length() - 1) * n > static_cast<long>(238 + D.bit_length())) return false;
+    if (static_cast<long long>(M.bit_length() - 1) * static_cast<long long>(n) > 238LL + D.bit_length()) return false;
     detail::BigInt N(1);
     for (unsigned i = 0; i < n; ++i) N.mul(M);
     detail::BigInt Dd = D;
