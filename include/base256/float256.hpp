@@ -3013,8 +3013,22 @@ public:
     static constexpr bool has_infinity = true;
     static constexpr bool has_quiet_NaN = true;
     static constexpr bool has_signaling_NaN = true;
+    // std::float_denorm_style and has_denorm / has_denorm_loss are deprecated in
+    // C++23 (libc++ marks them); they stay part of the specialization.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
     static constexpr std::float_denorm_style has_denorm = std::denorm_present;
     static constexpr bool has_denorm_loss = false;
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#pragma warning(pop)
+#endif
     // Not claimed (yet): the core operations, flags and all five rounding
     // modes are verified against MPFR, but decimal output is not
     // mode-aware, and totalOrder / convertToInteger are incomplete. See the

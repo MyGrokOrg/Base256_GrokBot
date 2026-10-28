@@ -64,6 +64,8 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      MSYS_NO_PATHCONV: "1"  # Git Bash must not turn /W4 into a path
     strategy:
       fail-fast: false
       matrix:
