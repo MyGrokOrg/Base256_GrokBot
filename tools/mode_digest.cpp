@@ -39,8 +39,11 @@ static float256 pick(const float256& other) {
         std::uint64_t o[4];
         std::memcpy(o, &other, sizeof o);
         std::memcpy(w, o, sizeof o);
-        w[0] ^= rng() >> (rng() % 64);
-        if (rng() & 1) w[1] ^= rng() >> (rng() % 64);
+        // Every draw is its own statement: the order of evaluation of operands is
+        // unspecified, and GCC and Clang (and MSVC) differ, which would make the
+        // arguments, and so the digests, depend on the compiler.
+        { const std::uint64_t v = rng(); w[0] ^= v >> (rng() % 64); }
+        if (rng() & 1) { const std::uint64_t v = rng(); w[1] ^= v >> (rng() % 64); }
         if (r == 15) w[3] ^= (1ULL << 63);
         be = static_cast<int>((o[3] >> 44) & 0x7FFFF) + static_cast<int>(rng() % 9) - 4;
         if (be < 0) be = 0;
@@ -54,12 +57,15 @@ static float256 pick(const float256& other) {
 }
 // Moderate arguments for the functions: (−10, 10), (0, 1) or ±2^[−30, 30].
 static float256 farg() {
-    const float256 u = ldexp(float256(static_cast<double>(rng() >> 11)), -53) +
-                       ldexp(float256(static_cast<double>(rng() >> 11)), -106);  // [0, 1), 106 bits
+    const double hi = static_cast<double>(rng() >> 11), lo = static_cast<double>(rng() >> 11);
+    const float256 u = ldexp(float256(hi), -53) + ldexp(float256(lo), -106);  // [0, 1), 106 bits
     switch (rng() % 3) {
         case 0: return u * float256(20) - float256(10);
         case 1: return u;
-        default: return ldexp(u + float256(1), static_cast<int>(rng() % 61) - 30) * float256(rng() & 1 ? 1 : -1);
+        default: {
+            const int e = static_cast<int>(rng() % 61) - 30;
+            return ldexp(u + float256(1), e) * float256(rng() & 1 ? 1 : -1);
+        }
     }
 }
 
