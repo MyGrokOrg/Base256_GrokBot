@@ -496,6 +496,21 @@ int main() {
         CHECK(std::format("{:<7}|", cx(one, two)) == "(1,2)  |");
     }
 
+    // log and arg at the nightly-fuzz point (cx_check log_wide, seed 20261019): Im = atan2(y, x)
+    // with y/x about 2^-275000, below the subnormal range. 4.26.0 returned +0 in every mode
+    // without underflow (and arg without inexact); correct: +0, or 2^-262378 upward, UNF|INX.
+    {
+        const float256 fx = float256::parse("0x14187d14ec0fd805938558f1444a2f62aba612033aaa6f0c1b092035dff8p+120770").value(),
+                       fy = float256::parse("0x1ad5b9f3f5eea603e991c4e874c1d6c91a7d4003416b3c4dee0388e6e160p-154322").value();
+        const float256 re_n = float256::parse("0x147a33215d9cab41d7b56434da7743cf1962288e87caafc0ce50d11ffecdp-220").value(),
+                       re_u = float256::parse("0x147a33215d9cab41d7b56434da7743cf1962288e87caafc0ce50d11ffecep-220").value(),
+                       tiny = float256::parse("0x1p-262378").value();
+        const V re([=] { return fenv::get_round() == round_mode::upward ? re_u : re_n; });
+        const V im([=] { return fenv::get_round() == round_mode::upward ? tiny : float256{}; });
+        EXPECTA(log(complex(fx, fy)), re, im, kUnf | kInx);
+        EXPECTA(complex(arg(complex(fx, fy)), float256{}), im, V(float256{}), kUnf | kInx);
+    }
+
     std::cout << "test_complex: " << g_pass << " passed, " << g_fails << " failed\n";
     return g_fails ? 1 : 0;
 }

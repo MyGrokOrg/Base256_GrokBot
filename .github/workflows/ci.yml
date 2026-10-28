@@ -63,6 +63,11 @@ jobs:
     # and the tree and fails on any digest difference (result bits and flags, all
     # 5 modes, arithmetic, conversions, text, every function, complex). test_percall
     # checks every per-call overload against the global path (bits, flags, mode).
+    # Recorded exceptions to bit-identity with 4.25.0 (none needs a digest override):
+    #  - atan2 tiny-ratio fix (y/x in or below the subnormal range): 4.25.0 was wrong
+    #    there (flushed to 0, lost underflow/inexact, double rounding). mode_digest's
+    #    arguments (|v| in 2^[-30, 30]) never reach that branch: all 133 digests stay
+    #    identical (g++-14, clang++-19, 200000 24). Pinned by test_math_flags/test_complex.
     runs-on: ubuntu-24.04
     defaults:
       run:

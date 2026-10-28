@@ -190,10 +190,17 @@ Expected round_b256(mpfr_t out, mpfr_srcptr ref, mpfr_rnd_t rnd) {
     return e;
 }
 
-// If the 1100-bit reference was rounded (ternary != 0), move it one 1100-bit ulp
+// If the 1100-bit reference was rounded (ternary != 0), move it half an 1100-bit ulp
 // toward the true value, so that a true value just off a binary256 number (e.g.
 // expm1(-80000) = -1 + 2^-115000) is still seen as inexact and on the right side.
+// A full ulp could overshoot onto (or past) the binary256 number when the true
+// value lies within one 1100-bit ulp of it: gamma_q(a, x) = 1 - 2^-1100.94 was
+// rounded to 1 - 2^-1100, nudged to exactly 1, and RZ/RD expected 1 instead of
+// 1 - 2^-237 (fuzz seed 20261020). Half an ulp stays strictly between the 1100-bit
+// neighbours, so the side and inexactness are kept. One extra bit of precision
+// (exact) holds the midpoint; callers reset r to 1100 bits before each reference.
 void nudge(mpfr_t r, int ternary) {
+    if (ternary != 0) mpfr_prec_round(r, mpfr_get_prec(r) + 1, MPFR_RNDN);  // exact
     if (ternary > 0) mpfr_nextbelow(r);
     else if (ternary < 0) mpfr_nextabove(r);
 }
@@ -436,7 +443,7 @@ int main(int argc, char** argv) {
             if (f.neg_too && (rng() & 1)) x = -x;
             if (f.maxabs > 0 && abs(x) > float256(f.maxabs)) { --i; continue; }
             to_mpfr(xm, x);
-            nudge(r, f.m(r, xm, MPFR_RNDN));
+            mpfr_set_prec(r, 1100), nudge(r, f.m(r, xm, MPFR_RNDN));
             check_case(st, [&] { return f.f(x); }, r, x.to_hex_string());
         }
         report(f.name, st, f.bound, bad);
@@ -453,7 +460,7 @@ int main(int argc, char** argv) {
             if (rng() & 1) y = trunc(y);
             if (abs(y * log2(x)) > float256(250000)) { --i; continue; }
             to_mpfr(xm, x); to_mpfr(ym, y);
-            nudge(r, mpfr_pow(r, xm, ym, MPFR_RNDN));
+            mpfr_set_prec(r, 1100), nudge(r, mpfr_pow(r, xm, ym, MPFR_RNDN));
             check_case(st, [&] { return C(pow, x, y); }, r, x.to_hex_string() + ", " + y.to_hex_string());
         }
         report("pow", st, 1.0, bad);
@@ -469,7 +476,7 @@ int main(int argc, char** argv) {
             if (rng() & 1) y = -y;
             if (rng() & 1) x = -x;
             to_mpfr(xm, x); to_mpfr(ym, y);
-            nudge(r, mpfr_atan2(r, ym, xm, MPFR_RNDN));
+            mpfr_set_prec(r, 1100), nudge(r, mpfr_atan2(r, ym, xm, MPFR_RNDN));
             check_case(st, [&] { return C(atan2, y, x); }, r, y.to_hex_string() + ", " + x.to_hex_string());
         }
         report("atan2", st, 1.0, bad);
@@ -488,7 +495,7 @@ int main(int argc, char** argv) {
             float256 a, b;
             gen(a, b);
             to_mpfr(am, a); to_mpfr(bm, b);
-            nudge(r, ref(r, am, bm));
+            mpfr_set_prec(r, 1100), nudge(r, ref(r, am, bm));
             check_case(st, [&] { return ours(a, b); }, r, a.to_hex_string() + ", " + b.to_hex_string());
         }
         report(name, st, 1.0, bad);
@@ -560,7 +567,16 @@ int main(int argc, char** argv) {
                 return t == 0 ? 1 : t;
             });
     two_arg("gamma_p", ig_gen, [](float256 a, float256 b) { return C(base256::gamma_p, a, b); }, ig_ref(2));
-    two_arg("gamma_q", ig_gen, [](float256 a, float256 b) { return C(base256::gamma_q, a, b); }, ig_ref(3));
+    // The first gamma_q case is the seed-20261020 point with 1 - Q = 2^-1100.94: RNE, RNA
+    // and RU give 1, RZ and RD 1 - 2^-237, all inexact (needs the half-ulp nudge).
+    bool gq_first = true;
+    two_arg("gamma_q", [&](float256& a, float256& b) {
+                ig_gen(a, b);  // drawn anyway: later functions see the same random stream
+                if (!gq_first) return;
+                gq_first = false;
+                a = float256::parse("0x1.d2f24a05dae564c513e47b2ebbe8f77a46f895725c1209a5f727df947e4p+7").value();
+                b = float256::parse("0x1.af303b937296dbef81f6edefd5288d82e491d2769f125ac3f92a67492ccp+1").value();
+            }, [](float256 a, float256 b) { return C(base256::gamma_q, a, b); }, ig_ref(3));
     // Orthogonal polynomials of integer degree n in [0, 40]: exact references from
     // the integer-coefficient forms at a precision that holds every term
     // exactly (one final rounding), so exact results and flags are checked too.
