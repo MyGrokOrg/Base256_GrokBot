@@ -405,11 +405,13 @@ struct u512 {
         for (int j = 0; j < 4; ++j) {
             std::uint64_t lo, hi;
             mulu64(a.d[i], b.d[j], lo, hi);
-            std::uint64_t c = 0;
-            const std::uint64_t s0 = addc64(r.d[i + j], lo, c);
-            const std::uint64_t s1 = addc64(s0, carry, c);
-            r.d[i + j] = s1;
-            carry = hi + c;
+            // r[i+j] + lo + carry, with the two carry-outs kept apart (the carry-in of the
+            // second add must be 0, not the first carry-out): a*b + r + carry < 2^128, so
+            // hi + c1 + c2 cannot overflow.
+            std::uint64_t c1 = 0, c2 = 0;
+            const std::uint64_t s0 = addc64(r.d[i + j], lo, c1);
+            r.d[i + j] = addc64(s0, carry, c2);
+            carry = hi + c1 + c2;
         }
         std::uint64_t c = 0;
         r.d[i + 4] = addc64(r.d[i + 4], carry, c);
