@@ -195,7 +195,14 @@ public:
 private:
     storage_type bits_{};
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4099)  // MSVC's STL declares numeric_limits as a class
+#endif
     friend struct std::numeric_limits<float256>;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
     friend constexpr float256 copysign(float256, float256) noexcept;
     friend constexpr float256 nextafter(float256, float256) noexcept;
     friend constexpr float256 ldexp(float256, int) noexcept;
@@ -952,7 +959,7 @@ public:
         constexpr int bits = static_cast<int>(sizeof(T) * 8) - (is_signed ? 1 : 0);
         constexpr u128_t maxmag = (bits >= kU128Bits) ? ~u128_t(0) : ((u128_t(1) << bits) - 1);
         const T tmax = static_cast<T>(maxmag);
-        const T tmin = is_signed ? static_cast<T>(-static_cast<T>(maxmag) - 1) : T(0);
+        const T tmin = is_signed ? static_cast<T>(T(0) - static_cast<T>(maxmag) - 1) : T(0);
         if (isnan()) {
             raise_flag(fe_invalid);
             return T(0);
@@ -1913,14 +1920,14 @@ inline std::optional<float256> float256::parse(std::string_view s) {
         return pack(u);
     }
 
-    std::string digits;
+    std::string dec_digits;
     int frac_count = 0;
     bool seen_dot = false;
     bool seen_digit = false;
     for (; i < s.size(); ++i) {
         const char c = s[i];
         if (c >= '0' && c <= '9') {
-            digits.push_back(c);
+            dec_digits.push_back(c);
             if (seen_dot) ++frac_count;
             seen_digit = true;
         } else if (c == '.' && !seen_dot) {
@@ -1951,14 +1958,14 @@ inline std::optional<float256> float256::parse(std::string_view s) {
 
     exp10 -= frac_count;
     std::size_t z = 0;
-    while (z < digits.size() && digits[z] == '0') ++z;
-    if (z == digits.size()) return zero(sign);
-    digits = digits.substr(z);
+    while (z < dec_digits.size() && dec_digits[z] == '0') ++z;
+    if (z == dec_digits.size()) return zero(sign);
+    dec_digits = dec_digits.substr(z);
 
     // Far outside the binary256 range: avoid huge big-integer powers of ten.
     // |x| >= 10^(exp10 + nd - 1) and < 10^(exp10 + nd).
     {
-        const long long mag = static_cast<long long>(exp10) + static_cast<long long>(digits.size());
+        const long long mag = static_cast<long long>(exp10) + static_cast<long long>(dec_digits.size());
         if (mag > 78915) {           // > 10^78914 > max()
             Unpacked big;
             big.sign = sign;
@@ -1978,7 +1985,7 @@ inline std::optional<float256> float256::parse(std::string_view s) {
         }
     }
 
-    BigInt m = BigInt::from_dec(digits);
+    BigInt m = BigInt::from_dec(dec_digits);
     constexpr int extra = 80;
 
     Unpacked u;
@@ -3013,8 +3020,22 @@ public:
     static constexpr bool has_infinity = true;
     static constexpr bool has_quiet_NaN = true;
     static constexpr bool has_signaling_NaN = true;
+    // std::float_denorm_style and has_denorm / has_denorm_loss are deprecated in
+    // C++23 (libc++ marks them); they stay part of the specialization.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
     static constexpr std::float_denorm_style has_denorm = std::denorm_present;
     static constexpr bool has_denorm_loss = false;
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#pragma warning(pop)
+#endif
     // Not claimed (yet): the core operations, flags and all five rounding
     // modes are verified against MPFR, but decimal output is not
     // mode-aware, and totalOrder / convertToInteger are incomplete. See the

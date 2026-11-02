@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -59,14 +60,16 @@ static float256 farg() {
 }
 
 template <class T> static bool same_bits(const T& a, const T& b) { return std::memcmp(&a, &b, sizeof(T)) == 0; }
-static bool same_bits(const long double& a, const long double& b) { return std::memcmp(&a, &b, 10) == 0; }
+// Value bytes of a long double: 10 for the x87 80-bit format (the rest is padding),
+// else all of them (binary64 on MSVC and Apple arm64, binary128 elsewhere).
+static constexpr std::size_t kLdBytes = std::numeric_limits<long double>::digits == 64 ? 10 : sizeof(long double);
+static bool same_bits(const long double& a, const long double& b) { return std::memcmp(&a, &b, kLdBytes) == 0; }
 static bool same_bits(const complex& a, const complex& b) {
     return same_bits(a.real(), b.real()) && same_bits(a.imag(), b.imag());
 }
 static bool same_bits(const std::string& a, const std::string& b) { return a == b; }
 template <class T> static bool same_bits(const std::complex<T>& a, const std::complex<T>& b) {
-    const T x[2] = {a.real(), a.imag()}, y[2] = {b.real(), b.imag()};
-    return std::memcmp(x, y, sizeof x) == 0;
+    return same_bits(a.real(), b.real()) && same_bits(a.imag(), b.imag());
 }
 static bool same_bits(const std::optional<float256>& a, const std::optional<float256>& b) {
     return a.has_value() == b.has_value() && (!a || same_bits(*a, *b));

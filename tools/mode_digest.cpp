@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <random>
 #include <string>
@@ -38,8 +39,11 @@ static float256 pick(const float256& other) {
         std::uint64_t o[4];
         std::memcpy(o, &other, sizeof o);
         std::memcpy(w, o, sizeof o);
-        w[0] ^= rng() >> (rng() % 64);
-        if (rng() & 1) w[1] ^= rng() >> (rng() % 64);
+        // Every draw is its own statement: the order of evaluation of operands is
+        // unspecified, and GCC and Clang (and MSVC) differ, which would make the
+        // arguments, and so the digests, depend on the compiler.
+        { const std::uint64_t v = rng(); w[0] ^= v >> (rng() % 64); }
+        if (rng() & 1) { const std::uint64_t v = rng(); w[1] ^= v >> (rng() % 64); }
         if (r == 15) w[3] ^= (1ULL << 63);
         be = static_cast<int>((o[3] >> 44) & 0x7FFFF) + static_cast<int>(rng() % 9) - 4;
         if (be < 0) be = 0;
@@ -53,12 +57,15 @@ static float256 pick(const float256& other) {
 }
 // Moderate arguments for the functions: (−10, 10), (0, 1) or ±2^[−30, 30].
 static float256 farg() {
-    const float256 u = ldexp(float256(static_cast<double>(rng() >> 11)), -53) +
-                       ldexp(float256(static_cast<double>(rng() >> 11)), -106);  // [0, 1), 106 bits
+    const double hi = static_cast<double>(rng() >> 11), lo = static_cast<double>(rng() >> 11);
+    const float256 u = ldexp(float256(hi), -53) + ldexp(float256(lo), -106);  // [0, 1), 106 bits
     switch (rng() % 3) {
         case 0: return u * float256(20) - float256(10);
         case 1: return u;
-        default: return ldexp(u + float256(1), static_cast<int>(rng() % 61) - 30) * float256(rng() & 1 ? 1 : -1);
+        default: {
+            const int e = static_cast<int>(rng() % 61) - 30;
+            return ldexp(u + float256(1), e) * float256(rng() & 1 ? 1 : -1);
+        }
     }
 }
 
@@ -74,6 +81,18 @@ static void mixf(const std::string& k, float256 y, unsigned fl) { mix(k, &y, siz
 static void mixc(const std::string& k, complex z, unsigned fl) {
     const float256 p[2] = {z.real(), z.imag()};
     mix(k, p, sizeof p, fl);
+}
+// long double is the x87 80-bit format on x86 Linux/macOS (10 value bytes),
+// binary64 on MSVC and Apple arm64, binary128 on some other targets. Only the
+// 80-bit digest is comparable with the Linux golden digests; for binary64 the
+// result must equal to_double (bits and flags), so it is hashed under its own
+// key exactly as to_double is, and tests/digest_golden.cmake requires the two
+// digests to agree.
+static void mix_ld(long double l, unsigned fl) {
+    constexpr int dig = std::numeric_limits<long double>::digits;
+    if constexpr (dig == 64) mix("to_long_double", &l, 10, fl);
+    else if constexpr (dig == 53) mix("to_long_double_b64", &l, sizeof(double), fl);
+    else mix("to_long_double_p" + std::to_string(dig), &l, sizeof l, fl);
 }
 template <class F> static void each_mode(F&& f) {
     for (auto m : kModes) {
@@ -97,7 +116,7 @@ int main(int argc, char** argv) {
             RUN("rint", rint(a), mixf); RUN("nearbyint", nearbyint(a), mixf);
             fenv::clear_flags(); { const double d = a.to_double(); mix("to_double", &d, sizeof d, fenv::get_flags()); }
             fenv::clear_flags(); { const float f = a.to_float(); mix("to_float", &f, sizeof f, fenv::get_flags()); }
-            fenv::clear_flags(); { const long double l = a.to_long_double(); mix("to_long_double", &l, 10, fenv::get_flags()); }
+            fenv::clear_flags(); { const long double l = a.to_long_double(); mix_ld(l, fenv::get_flags()); }
         });
     }
     for (long i = 0; i < n / 20; ++i) {
