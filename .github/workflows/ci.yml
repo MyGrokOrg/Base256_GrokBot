@@ -76,11 +76,18 @@ jobs:
           - name: Apple Clang (macos-latest, -Werror)
             os: macos-latest
             flags: -Wall -Wextra -Wpedantic -Werror
+          - name: Apple Clang (macos-15-intel, -Werror)
+            os: macos-15-intel
+            flags: -Wall -Wextra -Wpedantic -Werror
+          - name: clang-cl (windows-latest, /W4 /WX)
+            os: windows-latest
+            flags: /W4 /WX /permissive- /EHsc
+            toolset: -T ClangCL
     steps:
       - uses: actions/checkout@v5
       - name: Configure
         shell: bash
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS=${{ matrix.flags }}"
+        run: cmake -B build ${{ matrix.toolset }} -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS=${{ matrix.flags }}"
       - name: Build
         shell: bash
         run: cmake --build build --config Release -j 4
